@@ -50,4 +50,5 @@ class Config:
 
     # ---------------- Output ----------------
     output_dir: str = "snapshots_512"
+    base_name: str = "snap"
 

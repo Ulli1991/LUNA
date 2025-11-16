@@ -1,7 +1,7 @@
 from code_configuration.config import Config
 from ic_generation.ic import initial_conditions
 from time_integration.integrators import *
-from utils.plotting import save_density
+from utils.io import write_snapshot
 from time_integration.cfl import compute_dt
 
 import jax.numpy as jnp
@@ -63,15 +63,16 @@ def main():
 
         print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
 
-        # Save density every N steps (cfg never touches JAX)
+        # Save snapshot every N steps (cfg never touches JAX)
         if t >= snapshot_times[snapshot_idx]:
             print("Start saving snapshot")
-            save_density(U[0], t, cfg.Lx, cfg.Ly, snapshot_idx, cfg.output_dir)
+            # Call the updated write_snapshot function to save the full state to HDF5
+            write_snapshot(U, cfg, t, snapshot_idx)
             snapshot_idx += 1
-            print("Finished saving snapshot")
             if snapshot_idx >= len(snapshot_times):
                 snapshot_idx = len(snapshot_times) - 1
-
+            print("Finished saving snapshot")
+    
     # End the timer and calculate the total runtime
     end_time = time.time()  # Record the end time of the simulation
     total_time = end_time - start_time  # Calculate the total runtime
