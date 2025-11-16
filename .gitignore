@@ -1,0 +1,19 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# HDF5 output files
+*.hdf5
+
+# Log files
+*.log
+
+# Virtual environment
+venv/
+env/
+*.venv/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
