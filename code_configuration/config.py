@@ -51,4 +51,5 @@ class Config:
     # ---------------- Output ----------------
     output_dir: str = "snapshots_512"
     base_name: str = "snap"
+    PLOT_AFTER_SIM: bool = True
 

@@ -79,6 +79,12 @@ def main():
 
     print(f"Done! Took {total_time:.5f} seconds! Good Bye and Good Day!!!")
 
+    if cfg.PLOT_AFTER_SIM:
+        print("Generating density plots from all HDF5 snapshots...")
+        from utils.plotting_hdf5 import plot_density_from_hdf5_all
+        plot_density_from_hdf5_all(cfg.output_dir, cfg.base_name)
+
+
 if __name__ == "__main__":
     main()
 
