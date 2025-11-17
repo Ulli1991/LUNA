@@ -4,6 +4,10 @@ from dataclasses import dataclass
 @dataclass
 class Config:
 
+    # ---------------- Test Problem ----------------
+    test_problem: str = "Kelvin-Helmholtz"   # "Sod-Shock" or "Kelvin-Helmholtz"
+    #test_problem: str = "Sod-Shock"   # "Sod-Shock" or "Kelvin-Helmholtz"
+
     # ---------------- Device ----------------
     
     # 0 = CPU
@@ -12,10 +16,18 @@ class Config:
     DEVICE: int = 1 
 
     # ---------------- Domain ----------------
-    Nx: int = 512
-    Ny: int = 512
+    # 1=1D
+    # 2=2D 
+    # 3=3D (not implemented yet)
+    SPATIAL_DIMENSION: int = 2
+    BOUNDARY: int = 0 # 0 = Periodic, 1 = von Neumann, 2 = reflective
+
+    Nx: int = 1024
+    Ny: int = 1024
+    Nz: int = 1024
     Lx: float = 2.0
     Ly: float = 2.0
+    Lz: float = 2.0
 
     # ---------------- Physics ----------------
     gamma: float = 5.0 / 3.0
@@ -49,7 +61,7 @@ class Config:
     n_snapshots: int = 500
 
     # ---------------- Output ----------------
-    output_dir: str = "snapshots_512"
+    output_dir: str = "snapshots_1024"
     base_name: str = "snap"
     PLOT_AFTER_SIM: bool = True
 

@@ -1,33 +1,33 @@
 import jax.numpy as jnp
 from jax import jit
-from hydro.divergence import flux_divergence
+from hydro.divergence_new2 import flux_divergence
 
-def rk2_step(U, dt, dx, dy, gamma, order, limiter):
-    k1 = flux_divergence(U, dx, dy, gamma, order, limiter) 
-    k2 = flux_divergence(U + 0.5 * dt * k1, dx, dy, gamma, order, limiter)
+def rk2_step(U, dt, gamma, order, limiter, dx, dy=None, dz=None):
+    k1 = flux_divergence(U, gamma, order, limiter, dx, dy, dz) 
+    k2 = flux_divergence(U + 0.5 * dt * k1, gamma, order, limiter, dx, dy, dz)
     return U + dt * k2
 
-def rk4_step(U, dt, dx, dy, gamma, order, limiter):
-    k1 = flux_divergence(U, dx, dy, gamma, order, limiter)
-    k2 = flux_divergence(U + 0.5*dt*k1, dx, dy, gamma, order, limiter)
-    k3 = flux_divergence(U + 0.5*dt*k2, dx, dy, gamma, order, limiter)
-    k4 = flux_divergence(U + dt*k3, dx, dy, gamma, order, limiter)
+def rk4_step(U, dt, gamma, order, limiter, dx, dy=None, dz=None):
+    k1 = flux_divergence(U, gamma, order, limiter, dx, dy, dz)
+    k2 = flux_divergence(U + 0.5*dt*k1, gamma, order, limiter, dx, dy, dz)
+    k3 = flux_divergence(U + 0.5*dt*k2, gamma, order, limiter, dx, dy, dz)
+    k4 = flux_divergence(U + dt*k3, gamma, order, limiter, dx, dy, dz)
     return U + (dt/6.0)*(k1 + 2*k2 + 2*k3 + k4)
 
-def muscl_hancock_step(U, dt, dx, dy, gamma, order, limiter):
-    k1 = flux_divergence(U, dx, dy, gamma, order, limiter)
-    k2 = flux_divergence(U + dt * k1, dx, dy, gamma, order, limiter)
+def muscl_hancock_step(U, dt, gamma, order, limiter, dx, dy=None, dz=None):
+    k1 = flux_divergence(U, gamma, order, limiter, dx, dy, dz)
+    k2 = flux_divergence(U + dt * k1, gamma, order, limiter, dx, dy, dz)
     return U + dt * 0.5 * (k1 + k2)
 
-def time_step(U, dt, dx, dy, gamma, order, limiter, time_solver):
+def time_step(U, dt, gamma, order, limiter, time_solver, dx, dy=None, dz=None):
     """
     Choose the appropriate time integration method based on the config setting.
     """
     if time_solver == 0:  # RK2
-        return rk2_step(U, dt, dx, dy, gamma, order, limiter)
+        return rk2_step(U, dt, gamma, order, limiter, dx, dy, dz)
     elif time_solver == 1:  # Predictor-Corrector (Hancock)
-        return muscl_hancock_step(U, dt, dx, dy, gamma, order, limiter)  # Change to muscl_hancock_step
+        return muscl_hancock_step(U, dt, gamma, order, limiter, dx, dy, dz)  # Change to muscl_hancock_step
     elif time_solver == 2:  # RK4
-        return rk4_step(U, dt, dx, dy, gamma, order, limiter)
+        return rk4_step(U, dt, gamma, order, limiter, dx, dy, dz)
     else:
         raise ValueError(f"Invalid TIME_SOLVER value: {time_solver}")

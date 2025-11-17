@@ -1,26 +1,45 @@
 import jax.numpy as jnp
 
-def compute_dt(U, dx, dy, gamma, CFL):
+def compute_dt(U, gamma, CFL, dx, dy=None, dz=None):
     """
-    Compute timestep based on CFL condition.
-    U: (4, Nx, Ny) array of conservative variables
-    dx, dy: grid spacing in x and y directions
-    gamma: adiabatic index
-    CFL: CFL condition constant
+    Compute timestep based on CFL condition using total velocity magnitude.
+    
+    Parameters
+    ----------
+    U : array
+        Conservative variables, shape (Nvar, Nx[, Ny[, Nz]])
+        Order: [rho, rho*vx, rho*vy, rho*vz, E]
+    dx, dy, dz : float
+        Grid spacings (dy and dz optional for lower dimensions)
+    gamma : float
+        Adiabatic index
+    CFL : float
+        CFL number
     """
-    rho, rhou, rhov, E = U
+    rho = U[0]
+    vx = U[1] / rho
+    vy = U[2] / rho if U.shape[0] >= 4 else 0.0
+    vz = U[3] / rho if U.shape[0] >= 5 else 0.0
 
-    ux = rhou / rho
-    uy = rhov / rho
-    p  = (gamma - 1.0) * (E - 0.5 * rho * (ux**2 + uy**2))
-    c  = jnp.sqrt(gamma * p / rho)
+    # Kinetic energy
+    kinetic = 0.5 * rho * (vx**2 + vy**2 + vz**2)
+    # Pressure
+    p = (gamma - 1.0) * (U[-1] - kinetic)
+    # Sound speed
+    c = jnp.sqrt(gamma * p / rho)
 
-    # max signal speed in x and y
-    Sx = jnp.max(jnp.abs(ux) + c)
-    Sy = jnp.max(jnp.abs(uy) + c)
+    # Total velocity magnitude + sound speed
+    smax = jnp.sqrt(vx**2 + vy**2 + vz**2) + c
 
-    dt_x = CFL * dx / Sx
-    dt_y = CFL * dy / Sy
+    # Minimum grid spacing in available directions
+    spacing = [dx]
+    if dy is not None:
+        spacing.append(dy)
+    if dz is not None:
+        spacing.append(dz)
+    dx_min = jnp.min(jnp.array(spacing))
 
-    return float(jnp.minimum(dt_x, dt_y))
+    dt = CFL * dx_min / jnp.max(smax)
+
+    return float(dt)
 

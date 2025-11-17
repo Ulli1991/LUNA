@@ -14,14 +14,6 @@ def main():
     # --- Load configuration (pure Python object) ---
     cfg = Config()
 
-    # --- Precompute constants to pass explicitly ---
-    dx = cfg.Lx / cfg.Nx
-    dy = cfg.Ly / cfg.Ny
-    gamma = cfg.gamma
-    order = cfg.ORDER
-    limiter = cfg.LIMITER
-    time_solver = cfg.TIME_SOLVER
-
     device_type = cfg.DEVICE
     if device_type == 0:
         print("Initialzing Run on CPU...")
@@ -30,15 +22,25 @@ def main():
         print("Initialzing Run on GPU...")
         jax.config.update("jax_platform_name", "rocm")
 
+    # --- Precompute constants to pass explicitly ---
+    dx = cfg.Lx / cfg.Nx
+    dy = cfg.Ly / cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else None
+    dz = cfg.Lz / cfg.Nz if cfg.SPATIAL_DIMENSION == 3 else None
+
+    gamma = cfg.gamma
+    order = cfg.ORDER
+    limiter = cfg.LIMITER
+    time_solver = cfg.TIME_SOLVER
+    boundary = cfg.BOUNDARY
+
     # --- Set output frequecny ---
     snapshot_times = jnp.linspace(cfg.t_start, cfg.t_end, cfg.n_snapshots)
     snapshot_idx = 0
+    # --- Output directory ---
+    os.makedirs(cfg.output_dir, exist_ok=True)
 
     # --- Initialize fields ---
     U = initial_conditions(cfg)
-
-    # --- Output directory ---
-    os.makedirs(cfg.output_dir, exist_ok=True)
 
     # --- Time loop variables ---
     t = cfg.t_start
@@ -52,12 +54,12 @@ def main():
     while t < cfg.t_end:
 
         # dt is computed with pure arrays/scalars only
-        dt = compute_dt(U, dx, dy, gamma, cfg.CFL)
+        dt = compute_dt(U, gamma, cfg.CFL, dx, dy, dz)
         if t + dt > cfg.t_end:
             dt = cfg.t_end - t
 
         # time_stepping
-        U = time_step(U, dt, dx, dy, gamma, order, limiter, cfg.TIME_SOLVER)
+        U = time_step(U, dt, gamma, order, limiter, cfg.TIME_SOLVER, dx, dy, dz)
         t += dt
         step += 1
 

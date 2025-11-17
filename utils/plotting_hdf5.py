@@ -30,7 +30,7 @@ def plot_density_from_hdf5_all(output_dir, base_name):
             Ly  = g.attrs["Ly"]
 
         # ---- Plot figure ----
-        fig, ax = plt.subplots(figsize=(6, 5))
+        fig, ax = plt.subplots(figsize=(6, 5), dpi=300)
         im = ax.imshow(
             rho.T,
             origin="lower",
