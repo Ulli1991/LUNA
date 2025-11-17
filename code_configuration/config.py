@@ -5,8 +5,8 @@ from dataclasses import dataclass
 class Config:
 
     # ---------------- Test Problem ----------------
-    test_problem: str = "Kelvin-Helmholtz"   # "Sod-Shock" or "Kelvin-Helmholtz"
-    #test_problem: str = "Sod-Shock"   # "Sod-Shock" or "Kelvin-Helmholtz"
+    #test_problem: str = "Kelvin-Helmholtz"   # "Sod-Shock" or "Kelvin-Helmholtz"
+    test_problem: str = "Sod-Shock"   # "Sod-Shock" or "Kelvin-Helmholtz"
 
     # ---------------- Device ----------------
     
@@ -16,18 +16,21 @@ class Config:
     DEVICE: int = 1 
 
     # ---------------- Domain ----------------
-    # 1=1D
-    # 2=2D 
-    # 3=3D (not implemented yet)
-    SPATIAL_DIMENSION: int = 2
-    BOUNDARY: int = 0 # 0 = Periodic, 1 = von Neumann, 2 = reflective
+    # 1 = 1D
+    # 2 = 2D 
+    # 3 = 3D (not meaningfully implemented yet)
+    SPATIAL_DIMENSION: int = 1
+    # 0 = Periodic
+    # 1 = von Neumann 
+    # 2 = reflective
+    BOUNDARY: int = 1 
 
     Nx: int = 1024
     Ny: int = 1024
     Nz: int = 1024
-    Lx: float = 2.0
-    Ly: float = 2.0
-    Lz: float = 2.0
+    Lx: float = 1.0
+    Ly: float = 1.0
+    Lz: float = 1.0
 
     # ---------------- Physics ----------------
     gamma: float = 5.0 / 3.0
@@ -55,13 +58,13 @@ class Config:
 
     # ---------------- Time control ----------------
     t_start: float = 0.0
-    t_end: float = 5
+    t_end: float = 0.245
 
-    # Save a snapshot every N steps
-    n_snapshots: int = 500
+    # Time interval between snapshots (code units)
+    time_bet_snaps: float = 0.01
 
     # ---------------- Output ----------------
-    output_dir: str = "snapshots_1024"
+    output_dir: str = "snapshots_sod"
     base_name: str = "snap"
     PLOT_AFTER_SIM: bool = True
 

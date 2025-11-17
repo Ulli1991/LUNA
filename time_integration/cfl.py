@@ -1,8 +1,8 @@
 import jax.numpy as jnp
 
-def compute_dt(U, gamma, CFL, dx, dy=None, dz=None):
+def compute_dt(U, gamma, CFL, t, t_snapshot, dx, dy=None, dz=None):
     """
-    Compute timestep based on CFL condition using total velocity magnitude.
+    Compute timestep based on CFL condition and ensure exact snapshot time alignment.
     
     Parameters
     ----------
@@ -15,6 +15,15 @@ def compute_dt(U, gamma, CFL, dx, dy=None, dz=None):
         Adiabatic index
     CFL : float
         CFL number
+    t : float
+        Current simulation time
+    t_snapshot : float
+        Next snapshot time
+    
+    Returns
+    -------
+    dt : float
+        Computed timestep, possibly adjusted to ensure snapshot time alignment
     """
     rho = U[0]
     vx = U[1] / rho
@@ -39,7 +48,17 @@ def compute_dt(U, gamma, CFL, dx, dy=None, dz=None):
         spacing.append(dz)
     dx_min = jnp.min(jnp.array(spacing))
 
-    dt = CFL * dx_min / jnp.max(smax)
+    # Standard CFL timestep
+    dt_cfl = CFL * dx_min / jnp.max(smax)
+
+    # Compute the time difference to the next snapshot
+    time_to_snapshot = t_snapshot - t
+
+    # If the time difference is smaller than the Courant timestep, adjust dt
+    if time_to_snapshot < dt_cfl:
+        dt = time_to_snapshot  # Set the timestep to exactly match the snapshot time
+    else:
+        dt = dt_cfl  # Otherwise, use the standard CFL timestep
 
     return float(dt)
 
