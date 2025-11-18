@@ -8,6 +8,7 @@ __pycache__/
 
 # Log files
 *.log
+snap*
 
 # Virtual environment
 venv/
