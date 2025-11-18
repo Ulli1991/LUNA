@@ -1,76 +1,94 @@
-from utils.padding import periodic_pad
+from utils.padding import pad
 from hydro.slopes import compute_slopes
-from hydro.reconstruction import plm_reconstruct
 from hydro.fluxes import hllc_flux
 import jax.numpy as jnp
 from jax import jit, lax
 
 @jit
-def flux_divergence(U, dx, dy, gamma, order, limiter):
+def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
     """
-    Compute divergence of fluxes for 2D Euler equations.
+    Compute the flux divergence in 1D or 2D using first-order or second-order PLM.
     
-    Parameters
-    ----------
-    U : array
-        Conservative variables (4, Nx, Ny)
-    dx, dy : float
-        Grid spacing
-    gamma : float
-        Adiabatic index
-    order : int
-        Reconstruction order: 0 → first-order, 1 → second-order PLM
-    limiter : float
-        Slope limiter parameter for PLM
-
-    Returns
-    -------
-    divF : array
-        Negative divergence of fluxes (4, Nx, Ny)
+    U: (Nvar, Nx) or (Nvar, Nx, Ny)
+    boundary: int, 0=periodic, 1=zero-gradient, 2=reflective
+    Returns: -(dFdx + dFdy) with shapes matching U
     """
+    U_pad = pad(U, boundary)  # <-- use new general padding
+    ndim = U.ndim - 1  # number of spatial dimensions
+    Nx = U.shape[1]
+    if ndim == 2:
+        Ny = U.shape[2]
 
-    # Pad for periodic boundaries
-    U_pad = periodic_pad(U)
+    # -------------------
+    # FIRST-ORDER FLUXES
+    # -------------------
+    if ndim == 1:
+        U_Lx = U_pad[:, :-1]
+        U_Rx = U_pad[:, 1:]
+        Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
+        dFdx = (Fx[:, 1:] - Fx[:, :-1]) / dx
+        dFdy = None
+    else:  # 2D
+        U_Lx = U_pad[:, :-1, 1:-1]
+        U_Rx = U_pad[:, 1: , 1:-1]
+        Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
+        dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) / dx
 
-    # --- First-order fluxes ---
-    Fx = hllc_flux(U_pad[:, :-1, 1:-1], U_pad[:, 1:, 1:-1], axis=0, gamma=gamma)
-    Fy = hllc_flux(U_pad[:, 1:-1, :-1], U_pad[:, 1:-1, 1:], axis=1, gamma=gamma)
+        U_By = U_pad[:, 1:-1, :-1]
+        U_Ty = U_pad[:, 1:-1, 1: ]
+        Fy = hllc_flux(U_By, U_Ty, axis=1, gamma=gamma)
+        dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) / dy
 
-    dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) / dx
-    dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) / dy
+    # -------------------
+    # SECOND-ORDER PLM
+    # -------------------
+    def second_order(U_pad, dx, dy, gamma, limiter, boundary, dFdx, dFdy):
+        dUx, dUy = compute_slopes(U, limiter, boundary)  # <-- pass boundary
+        if ndim == 1:
+            Qc = U_pad[:, 1:-1]
+            UL = Qc[:, :-1] + 0.5 * dUx[:, :-1]
+            UR = Qc[:, 1:]  - 0.5 * dUx[:, 1:]
+            Fx2 = hllc_flux(UL, UR, axis=0, gamma=gamma)
+            dFdx2 = (Fx2[:, 1:] - Fx2[:, :-1]) / dx
+            dFdx = dFdx.at[:, 1:-1].set(dFdx2)
+            return dFdx, None
+        else:  # 2D
+            Qc = U_pad[:, 1:-1, 1:-1]
 
-    # --- Higher-order fluxes ---
-    def second_order_fluxes(U_pad, dx, dy, gamma, limiter, dFdx, dFdy):
-        # Compute slopes using the limiter
-        dUx, dUy = compute_slopes(U_pad, limiter)
-        Qc = U_pad[:, 1:-1, 1:-1]  # interior (4, Nx, Ny)
+            # X-direction reconstruction
+            UL = Qc[:, :-1, :] + 0.5 * dUx[:, :-1, :]
+            UR = Qc[:, 1:,  :] - 0.5 * dUx[:, 1:, :]
+            Fx2 = hllc_flux(UL, UR, axis=0, gamma=gamma)
+            dFdx2 = (Fx2[:, 1:, :] - Fx2[:, :-1, :]) / dx
+            dFdx = dFdx.at[:, 1:-1, :].set(dFdx2)
 
-        # ----- X-direction reconstruction -----
-        UL = Qc[:, :-1, :] + 0.5 * dUx[:, :-1, :]  # left state at i+1/2
-        UR = Qc[:, 1:, :] - 0.5 * dUx[:, 1:, :]    # right state at i+1/2
+            # Y-direction reconstruction
+            UB = Qc[:, :, :-1] + 0.5 * dUy[:, :, :-1]
+            UT = Qc[:, :, 1:]  - 0.5 * dUy[:, :, 1:]
+            Fy2 = hllc_flux(UB, UT, axis=1, gamma=gamma)
+            dFdy2 = (Fy2[:, :, 1:] - Fy2[:, :, :-1]) / dy
+            dFdy = dFdy.at[:, :, 1:-1].set(dFdy2)
 
-        Fx2 = hllc_flux(UL, UR, axis=0, gamma=gamma)  # shape (4, Nx-1, Ny)
-        dFdx2 = (Fx2[:, 1:, :] - Fx2[:, :-1, :]) / dx
-        dFdx = dFdx.at[:, 1:-1, :].set(dFdx2)  # update interior only
+            return dFdx, dFdy
 
-        # ----- Y-direction reconstruction -----
-        UB = Qc[:, :, :-1] + 0.5 * dUy[:, :, :-1]  # bottom state at j+1/2
-        UT = Qc[:, :, 1:] - 0.5 * dUy[:, :, 1:]    # top state at j+1/2
+    # -------------------
+    # ORDER SELECTION (JIT-safe)
+    # -------------------
+    is_first_order = jnp.array(order == 0)  # 0 = first-order, 1 = PLM
+    operand = (U_pad, dx, dy, gamma, limiter, boundary, dFdx, dFdy)
 
-        Fy2 = hllc_flux(UB, UT, axis=1, gamma=gamma)  # shape (4, Nx, Ny-1)
-        dFdy2 = (Fy2[:, :, 1:] - Fy2[:, :, :-1]) / dy
-        dFdy = dFdy.at[:, :, 1:-1].set(dFdy2)  # update interior only
-
+    def first_order_fun(ops):
+        _, _, _, _, _, _, dFdx, dFdy = ops
         return dFdx, dFdy
 
-    # Conditionally apply second-order fluxes (PLM) if order == 1
-    dFdx, dFdy = lax.cond(
-        order == 1,  # If order is 1, apply second-order fluxes (PLM)
-        second_order_fluxes,  # Function to apply second-order fluxes
-        lambda *args: (dFdx, dFdy),  # Otherwise, keep the first-order fluxes
-        U_pad, dx, dy, gamma, limiter, dFdx, dFdy
-    )
+    def second_order_fun(ops):
+        U_pad, dx, dy, gamma, limiter, boundary, dFdx, dFdy = ops
+        return second_order(U_pad, dx, dy, gamma, limiter, boundary, dFdx, dFdy)
 
-    # Return the negative divergence of fluxes
-    return -(dFdx + dFdy)
+    dFdx, dFdy = lax.cond(is_first_order, first_order_fun, second_order_fun, operand)
+
+    if ndim == 1:
+        return -dFdx
+    else:
+        return -(dFdx + dFdy)
 

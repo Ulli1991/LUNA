@@ -1,88 +1,103 @@
-import h5py
 import os
+import h5py
+import jax.numpy as jnp
+
 
 def write_snapshot(U, cfg, t, step):
     """
     Save the full simulation state (density, velocity, internal energy, etc.) to an HDF5 file.
-    
-    Parameters:
-    U (array): The full simulation state, which includes all fields (density, velocity, internal energy).
-    cfg (Config): The configuration object containing simulation settings.
-    t (float): The current time step.
-    step (int): The current step number.
+    JAX is used for all numerical operations. File I/O remains Python/HDF5.
     """
-    
-    # Extract output directory and base name from the configuration
-    output_dir = cfg.output_dir
-    base_name = cfg.base_name
-    
-    # Create a zero-padded snapshot filename with 3 digits and .hdf5 extension
-    snapshot_filename = os.path.join(output_dir, f"{base_name}_{step:03d}.hdf5")
-    
-    # Calculate kinetic energy based on spatial dimensions
+
+    # Build output path
+    os.makedirs(cfg.output_dir, exist_ok=True)
+    snapshot_filename = os.path.join(cfg.output_dir, f"{cfg.base_name}_{step:03d}.hdf5")
+
+    # --- Extract fields ---
     rho = U[0]
     vx = U[1] / rho
-    vy = U[2] / rho if cfg.SPATIAL_DIMENSION >= 2 else 0.0
-    vz = U[3] / rho if cfg.SPATIAL_DIMENSION == 3 else 0.0
 
-    # Kinetic energy based on spatial dimensions
-    if cfg.SPATIAL_DIMENSION == 1:
-        kinetic_energy = 0.5 * rho * vx**2  # 1D: only vx contributes
-    elif cfg.SPATIAL_DIMENSION == 2:
-        kinetic_energy = 0.5 * rho * (vx**2 + vy**2)  # 2D: vx and vy contribute
-    elif cfg.SPATIAL_DIMENSION == 3:
-        kinetic_energy = 0.5 * rho * (vx**2 + vy**2 + vz**2)  # 3D: vx, vy, and vz contribute
+    if cfg.SPATIAL_DIMENSION >= 2:
+        vy = U[2] / rho
+    else:
+        vy = 0.0
 
-    # Internal energy = Total energy (U[-1]) - Kinetic energy
-    internal_energy = U[-1] - kinetic_energy  # E_internal = E_total - E_kinetic
+    if cfg.SPATIAL_DIMENSION == 3:
+        vz = U[3] / rho
+    else:
+        vz = 0.0
 
-    # Ensure output directory exists
-    os.makedirs(output_dir, exist_ok=True)
+    # --- Kinetic energy ---
+    vel_sq = vx**2
+    if cfg.SPATIAL_DIMENSION >= 2:
+        vel_sq = vel_sq + vy**2
+    if cfg.SPATIAL_DIMENSION == 3:
+        vel_sq = vel_sq + vz**2
 
-    # Save the data in HDF5 format
-    with h5py.File(snapshot_filename, 'a') as f:
-        # Create a group for this time step
-        cells_group = f.create_group('cells')
+    kinetic_energy = 0.5 * rho * vel_sq
 
-        # Save the fields to the HDF5 file
-        cells_group.create_dataset('density', data=U[0])  # Density (rho)
-        cells_group.create_dataset('velocity_x', data=U[1] / U[0])  # Velocity in x-direction (ux)
-        
+    # --- Internal energy ---
+    internal_energy = U[-1] - kinetic_energy
+
+    # --- Cell-centered coordinates (always with jnp) ---
+    # 1D
+    x_positions = jnp.linspace(
+        0 + (cfg.Lx / cfg.Nx) * 0.5,
+        cfg.Lx - (cfg.Lx / cfg.Nx) * 0.5,
+        cfg.Nx,
+    )
+
+    # 2D
+    if cfg.SPATIAL_DIMENSION >= 2:
+        y_positions = jnp.linspace(
+            0 + (cfg.Ly / cfg.Ny) * 0.5,
+            cfg.Ly - (cfg.Ly / cfg.Ny) * 0.5,
+            cfg.Ny,
+        )
+
+    # 3D
+    if cfg.SPATIAL_DIMENSION == 3:
+        z_positions = jnp.linspace(
+            0 + (cfg.Lz / cfg.Nz) * 0.5,
+            cfg.Lz - (cfg.Lz / cfg.Nz) * 0.5,
+            cfg.Nz,
+        )
+
+    # --- Write HDF5 file ---
+    with h5py.File(snapshot_filename, "w") as f:
+        cells = f.create_group("cells")
+
+        # Fields
+        cells.create_dataset("density", data=rho)
+        cells.create_dataset("velocity_x", data=vx)
         if cfg.SPATIAL_DIMENSION >= 2:
-            cells_group.create_dataset('velocity_y', data=U[2] / U[0])  # Velocity in y-direction (uy)
-
+            cells.create_dataset("velocity_y", data=vy)
         if cfg.SPATIAL_DIMENSION == 3:
-            cells_group.create_dataset('velocity_z', data=U[3] / U[0])  # Velocity in z-direction (uz)
-        
-        cells_group.create_dataset('internal_energy', data=internal_energy)  # Internal energy (E_internal)
-        
-        # Create position datasets for x, y, z (depends on the spatial dimension)
-        # 1D: only x positions (midpoints)
-        x_positions = jnp.linspace(0 + (cfg.Lx / cfg.Nx) / 2, cfg.Lx - (cfg.Lx / cfg.Nx) / 2, cfg.Nx)
-        cells_group.create_dataset('x_positions', data=x_positions)
+            cells.create_dataset("velocity_z", data=vz)
 
+        cells.create_dataset("internal_energy", data=internal_energy)
+
+        # Coordinates
+        cells.create_dataset("x_positions", data=x_positions)
         if cfg.SPATIAL_DIMENSION >= 2:
-            # 2D: both x and y positions (midpoints)
-            y_positions = jnp.linspace(0 + (cfg.Ly / cfg.Ny) / 2, cfg.Ly - (cfg.Ly / cfg.Ny) / 2, cfg.Ny)
-            cells_group.create_dataset('y_positions', data=y_positions)
-
+            cells.create_dataset("y_positions", data=y_positions)
         if cfg.SPATIAL_DIMENSION == 3:
-            # 3D: x, y, and z positions (midpoints)
-            z_positions = jnp.linspace(0 + (cfg.Lz / cfg.Nz) / 2, cfg.Lz - (cfg.Lz / cfg.Nz) / 2, cfg.Nz)
-            cells_group.create_dataset('z_positions', data=z_positions)
-        
-        # Save simulation metadata as attributes
-        cells_group.attrs['time'] = t
-        cells_group.attrs['step'] = step
-        cells_group.attrs['Lx'] = cfg.Lx
-        cells_group.attrs['Ly'] = cfg.Ly
-        cells_group.attrs['dx'] = (cfg.Lx / cfg.Nx)
-        cells_group.attrs['dy'] = (cfg.Ly / cfg.Ny) if cfg.SPATIAL_DIMENSION >= 2 else None
-        cells_group.attrs['dz'] = (cfg.Lz / cfg.Nz) if cfg.SPATIAL_DIMENSION == 3 else None
-        
-        # Additional simulation metadata
-        cells_group.attrs['order'] = cfg.ORDER
-        cells_group.attrs['limiter'] = cfg.LIMITER
-        
-        print(f"Snapshot saved at time {t}, step {step} to {snapshot_filename}")
+            cells.create_dataset("z_positions", data=z_positions)
+
+        # Metadata
+        cells.attrs["time"] = float(t)
+        cells.attrs["step"] = int(step)
+        cells.attrs["Lx"] = float(cfg.Lx)
+        cells.attrs["Ly"] = float(cfg.Ly) if cfg.SPATIAL_DIMENSION >= 2 else 0.0
+        cells.attrs["Lz"] = float(cfg.Lz) if cfg.SPATIAL_DIMENSION == 3 else 0.0
+
+        cells.attrs["dx"] = float(cfg.Lx / cfg.Nx)
+        cells.attrs["dy"] = float(cfg.Ly / cfg.Ny) if cfg.SPATIAL_DIMENSION >= 2 else 0.0
+        cells.attrs["dz"] = float(cfg.Lz / cfg.Nz) if cfg.SPATIAL_DIMENSION == 3 else 0.0
+
+        cells.attrs["order"] = cfg.ORDER
+        cells.attrs["limiter"] = cfg.LIMITER
+        cells.attrs["gamma"] = cfg.gamma
+
+    print(f"Snapshot saved at time {t}, step {step} to {snapshot_filename}")
 

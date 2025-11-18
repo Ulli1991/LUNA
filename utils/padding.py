@@ -1,143 +1,121 @@
 import jax.numpy as jnp
+from jax import lax
 
-def periodic_pad(U):
+def pad(U, boundary):
     """
-    Dimension-agnostic periodic padding.
-    Pads with 1 ghost cell on each side in every spatial dimension.
+    General dimension-agnostic padding with selectable boundary conditions.
 
-    Input shapes:
-        1D: (Nvar, Nx)
-        2D: (Nvar, Nx, Ny)
-        3D: (Nvar, Nx, Ny, Nz)
+    Parameters
+    ----------
+    U : array
+        Shape (Nvar, Nx) for 1D, (Nvar, Nx, Ny) for 2D, (Nvar, Nx, Ny, Nz) for 3D.
+    boundary : int
+        0 = periodic, 1 = zero-gradient, 2 = reflective
 
-    Output shapes:
-        1D → (Nvar, Nx+2)
-        2D → (Nvar, Nx+2, Ny+2)
-        3D → (Nvar, Nx+2, Ny+2, Nz+2)
+    Returns
+    -------
+    U_pad : array
+        Padded array with 1 ghost cell per side in each spatial dimension.
     """
-    D = U.ndim - 1  # number of spatial dims
 
-    if D == 1:
-        _, Nx = U.shape
-        U_pad = jnp.zeros((U.shape[0], Nx + 2), dtype=U.dtype)
+    ndim = U.ndim - 1  # number of spatial dimensions
 
-        U_pad = U_pad.at[:, 1:-1].set(U)
-        U_pad = U_pad.at[:, 0].set(U[:, -1])
-        U_pad = U_pad.at[:, -1].set(U[:, 0])
-        return U_pad
+    # -------------------------
+    # Boundary padding functions
+    # -------------------------
 
-    elif D == 2:
-        _, Nx, Ny = U.shape
-        U_pad = jnp.zeros((U.shape[0], Nx + 2, Ny + 2), dtype=U.dtype)
+    def periodic(U):
+        """Apply periodic boundary conditions."""
+        if ndim == 1:
+            return jnp.concatenate([U[:, -1:], U, U[:, :1]], axis=1)
+        elif ndim == 2:
+            left  = U[:, -1:, :]
+            right = U[:, :1, :]
+            Ux = jnp.concatenate([left, U, right], axis=1)
+            bottom = Ux[:, :, -1:]
+            top    = Ux[:, :, :1]
+            return jnp.concatenate([bottom, Ux, top], axis=2)
+        elif ndim == 3:
+            left  = U[:, -1:, :, :]
+            right = U[:, :1, :, :]
+            Ux = jnp.concatenate([left, U, right], axis=1)
+            bottom = Ux[:, :, -1:, :]
+            top    = Ux[:, :, :1, :]
+            Uy = jnp.concatenate([bottom, Ux, top], axis=2)
+            back  = Uy[:, :, :, -1:]
+            front = Uy[:, :, :, :1]
+            return jnp.concatenate([back, Uy, front], axis=3)
 
-        U_pad = U_pad.at[:, 1:-1, 1:-1].set(U)
+    def zero_grad(U):
+        """Apply zero-gradient boundary conditions."""
+        if ndim == 1:
+            left  = U[:, 0:1]
+            right = U[:, -1:]
+            return jnp.concatenate([left, U, right], axis=1)
+        elif ndim == 2:
+            left  = U[:, 0:1, :]
+            right = U[:, -1:, :]
+            Ux = jnp.concatenate([left, U, right], axis=1)
+            bottom = Ux[:, :, 0:1]
+            top    = Ux[:, :, -1:]
+            return jnp.concatenate([bottom, Ux, top], axis=2)
+        elif ndim == 3:
+            left  = U[:, 0:1, :, :]
+            right = U[:, -1:, :, :]
+            Ux = jnp.concatenate([left, U, right], axis=1)
+            bottom = Ux[:, :, 0:1, :]
+            top    = Ux[:, :, -1:, :]
+            Uy = jnp.concatenate([bottom, Ux, top], axis=2)
+            back  = Uy[:, :, :, 0:1]
+            front = Uy[:, :, :, -1:]
+            return jnp.concatenate([back, Uy, front], axis=3)
 
-        # x-boundaries
-        U_pad = U_pad.at[:, 0, 1:-1].set(U[:, -1, :])
-        U_pad = U_pad.at[:, -1, 1:-1].set(U[:, 0, :])
+    def reflective(U):
+        """Apply reflective boundary conditions."""
+        if ndim == 1:
+            left  = U[:, 1:2]
+            right = U[:, -2:-1]
+            return jnp.concatenate([left, U, right], axis=1)
+        elif ndim == 2:
+            left  = U[:, 1:2, :]
+            right = U[:, -2:-1, :]
+            Ux = jnp.concatenate([left, U, right], axis=1)
+            bottom = Ux[:, :, 1:2]
+            top    = Ux[:, :, -2:-1]
+            return jnp.concatenate([bottom, Ux, top], axis=2)
+        elif ndim == 3:
+            left  = U[:, 1:2, :, :]
+            right = U[:, -2:-1, :, :]
+            Ux = jnp.concatenate([left, U, right], axis=1)
+            bottom = Ux[:, :, 1:2, :]
+            top    = Ux[:, :, -2:-1, :]
+            Uy = jnp.concatenate([bottom, Ux, top], axis=2)
+            back  = Uy[:, :, :, 1:2]
+            front = Uy[:, :, :, -2:-1]
+            return jnp.concatenate([back, Uy, front], axis=3)
 
-        # y-boundaries
-        U_pad = U_pad.at[:, 1:-1, 0].set(U[:, :, -1])
-        U_pad = U_pad.at[:, 1:-1, -1].set(U[:, :, 0])
+    # -------------------------
+    # Fixed JAX-boolean tests
+    # -------------------------
+    
+    # Debugging output (you can comment these out once you're confident)
+    print(f"Boundary value received: {boundary}")
 
-        # corners
-        U_pad = U_pad.at[:, 0, 0].set(U[:, -1, -1])
-        U_pad = U_pad.at[:, 0, -1].set(U[:, -1, 0])
-        U_pad = U_pad.at[:, -1, 0].set(U[:, 0, -1])
-        U_pad = U_pad.at[:, -1, -1].set(U[:, 0, 0])
+    is_periodic  = jnp.array(boundary == 0)
+    is_zero_grad = jnp.array(boundary == 1)
+    is_reflective = jnp.array(boundary == 2)
 
-        return U_pad
+    print(f"Periodic: {is_periodic}, Zero Gradient: {is_zero_grad}, Reflective: {is_reflective}")
 
-    elif D == 3:
-        _, Nx, Ny, Nz = U.shape
-        U_pad = jnp.zeros((U.shape[0], Nx + 2, Ny + 2, Nz + 2), dtype=U.dtype)
-
-        U_pad = U_pad.at[:, 1:-1, 1:-1, 1:-1].set(U)
-
-        # x-wrap planes
-        U_pad = U_pad.at[:, 0, 1:-1, 1:-1].set(U[:, -1, :, :])
-        U_pad = U_pad.at[:, -1, 1:-1, 1:-1].set(U[:, 0, :, :])
-
-        # y-wrap planes
-        U_pad = U_pad.at[:, 1:-1, 0, 1:-1].set(U[:, :, -1, :])
-        U_pad = U_pad.at[:, 1:-1, -1, 1:-1].set(U[:, :, 0, :])
-
-        # z-wrap planes
-        U_pad = U_pad.at[:, 1:-1, 1:-1, 0].set(U[:, :, :, -1])
-        U_pad = U_pad.at[:, 1:-1, 1:-1, -1].set(U[:, :, :, 0])
-
-        # corners & edges automatically handled by consistency
-        return U_pad
-
-    else:
-        raise ValueError("Periodic padding only defined for 1D, 2D, or 3D fields.")
-
-def zero_gradient_pad(U):
-    """
-    Dimension-agnostic zero-gradient padding (Neumann BCs).
-    Pads with 1 ghost cell on each side in every spatial dimension.
-
-    Input shapes:
-        1D: (Nvar, Nx)
-        2D: (Nvar, Nx, Ny)
-        3D: (Nvar, Nx, Ny, Nz)
-
-    Output shapes:
-        1D → (Nvar, Nx+2)
-        2D → (Nvar, Nx+2, Ny+2)
-        3D → (Nvar, Nx+2, Ny+2, Nz+2)
-    """
-    D = U.ndim - 1  # number of spatial dims
-
-    if D == 1:
-        _, Nx = U.shape
-        U_pad = jnp.zeros((U.shape[0], Nx + 2), dtype=U.dtype)
-
-        # interior
-        U_pad = U_pad.at[:, 1:-1].set(U)
-
-        # zero-gradient BCs: copy boundary values
-        U_pad = U_pad.at[:, 0].set(U[:, 0])
-        U_pad = U_pad.at[:, -1].set(U[:, -1])
-        return U_pad
-
-    elif D == 2:
-        _, Nx, Ny = U.shape
-        U_pad = jnp.zeros((U.shape[0], Nx + 2, Ny + 2), dtype=U.dtype)
-        U_pad = U_pad.at[:, 1:-1, 1:-1].set(U)
-
-        # zero-gradient BCs: copy edges
-        # x-boundaries
-        U_pad = U_pad.at[:, 0, 1:-1].set(U[:, 0, :])
-        U_pad = U_pad.at[:, -1, 1:-1].set(U[:, -1, :])
-        # y-boundaries
-        U_pad = U_pad.at[:, 1:-1, 0].set(U[:, :, 0])
-        U_pad = U_pad.at[:, 1:-1, -1].set(U[:, :, -1])
-        # corners
-        U_pad = U_pad.at[:, 0, 0].set(U[:, 0, 0])
-        U_pad = U_pad.at[:, 0, -1].set(U[:, 0, -1])
-        U_pad = U_pad.at[:, -1, 0].set(U[:, -1, 0])
-        U_pad = U_pad.at[:, -1, -1].set(U[:, -1, -1])
-        return U_pad
-
-    elif D == 3:
-        _, Nx, Ny, Nz = U.shape
-        U_pad = jnp.zeros((U.shape[0], Nx + 2, Ny + 2, Nz + 2), dtype=U.dtype)
-        U_pad = U_pad.at[:, 1:-1, 1:-1, 1:-1].set(U)
-
-        # zero-gradient BCs: copy faces
-        # x-boundaries
-        U_pad = U_pad.at[:, 0, 1:-1, 1:-1].set(U[:, 0, :, :])
-        U_pad = U_pad.at[:, -1, 1:-1, 1:-1].set(U[:, -1, :, :])
-        # y-boundaries
-        U_pad = U_pad.at[:, 1:-1, 0, 1:-1].set(U[:, :, 0, :])
-        U_pad = U_pad.at[:, 1:-1, -1, 1:-1].set(U[:, :, -1, :])
-        # z-boundaries
-        U_pad = U_pad.at[:, 1:-1, 1:-1, 0].set(U[:, :, :, 0])
-        U_pad = U_pad.at[:, 1:-1, 1:-1, -1].set(U[:, :, :, -1])
-        # corners & edges automatically handled
-        return U_pad
-
-    else:
-        raise ValueError("Zero-gradient padding only defined for 1D, 2D, or 3D fields.")
+    # -------------------------
+    # Correct JAX nested cond
+    # -------------------------
+    
+    # Use lax.cond to select the boundary condition
+    return lax.cond(
+        is_periodic,
+        periodic,
+        lambda U: lax.cond(is_zero_grad, zero_grad, reflective, U),
+        U
+    )
 

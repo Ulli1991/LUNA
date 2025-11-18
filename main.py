@@ -64,12 +64,12 @@ def main():
 
         # Compute the current dt based on CFL and the time to the next snapshot
         t_snapshot = snapshot_times[snapshot_idx]
-        dt = compute_dt(U, gamma, cfg.CFL, dx, dy, dz, t, t_snapshot)
+        dt = compute_dt(U, gamma, cfg.CFL, t, t_snapshot, dx, dy, dz)
         if t + dt > cfg.t_end:
             dt = cfg.t_end - t  # Ensure we do not overshoot the final time
 
         # Time stepping
-        U = time_step(U, dt, gamma, order, limiter, cfg.TIME_SOLVER, dx, dy, dz)
+        U = time_step(U, dt, gamma, order, limiter, time_solver, boundary, dx, dy, dz)
         t += dt
         step += 1
 

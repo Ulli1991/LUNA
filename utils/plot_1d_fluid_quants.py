@@ -4,69 +4,97 @@ import matplotlib.pyplot as plt
 import os
 
 def plot_1d_fluid_quantities(output_dir, base_name):
-    """
-    Plot the fluid quantities (density, velocity, internal energy, pressure) vs. x for 1D simulations,
-    and save the plots as PNG files in the output directory.
-    
-    Parameters:
-    output_dir (str): The directory where the snapshot files are stored.
-    base_name (str): The base name of the snapshot files.
-    """
-    # List all snapshots in the output directory
-    snapshot_files = sorted([f for f in os.listdir(output_dir) if f.startswith(base_name) and f.endswith('.hdf5')])
 
-    # Loop through the snapshot files and plot the desired quantities
-    for snapshot_file in snapshot_files:
-        snapshot_path = os.path.join(output_dir, snapshot_file)
-        
-        with h5py.File(snapshot_path, 'r') as f:
-            cells_group = f['cells']
-            
-            # Extract the x positions (assumes 'x' attribute is present in each snapshot)
-            x = np.array(cells_group['x'])  # x positions of the cells
-            
-            # Extract fluid quantities
-            density = np.array(cells_group['density'])
-            velocity_x = np.array(cells_group['velocity_x'])
-            internal_energy = np.array(cells_group['internal_energy'])
-            pressure = (cells_group.attrs['gamma'] - 1.0) * (internal_energy - 0.5 * velocity_x**2)  # Ideal gas equation
+    # --- find all snapshot files ---
+    files = sorted(
+        [f for f in os.listdir(output_dir) if f.startswith(base_name) and f.endswith(".hdf5")]
+    )
 
-            # Create the plot
-            fig, axs = plt.subplots(2, 2, figsize=(12, 10))
-            axs = axs.ravel()
+    if not files:
+        print("No HDF5 snapshots found!")
+        return
 
-            # Plot each quantity
-            axs[0].plot(x, density)
-            axs[0].set_xlabel('x')
-            axs[0].set_ylabel('Density')
-            axs[0].set_title('Density vs. x')
+    # --- create png directory ---
+    png_dir = os.path.join(output_dir, "png")
+    os.makedirs(png_dir, exist_ok=True)
 
-            axs[1].plot(x, velocity_x)
-            axs[1].set_xlabel('x')
-            axs[1].set_ylabel('Velocity (x)')
-            axs[1].set_title('Velocity (x) vs. x')
+    for fname in files:
+        fpath = os.path.join(output_dir, fname)
 
-            axs[2].plot(x, pressure)
-            axs[2].set_xlabel('x')
-            axs[2].set_ylabel('Pressure')
-            axs[2].set_title('Pressure vs. x')
+        with h5py.File(fpath, "r") as f:
+            cells = f["cells"]
 
-            axs[3].plot(x, internal_energy)
-            axs[3].set_xlabel('x')
-            axs[3].set_ylabel('Internal Energy')
-            axs[3].set_title('Internal Energy vs. x')
+            # Fields
+            x = np.array(cells["x_positions"])
+            density = np.array(cells["density"])
+            velocity_x = np.array(cells["velocity_x"])
+            internal_energy = np.array(cells["internal_energy"])
 
-            # Set a tight layout
-            plt.tight_layout()
+            gamma = cells.attrs["gamma"]
+            pressure = (gamma - 1.0) * internal_energy
 
-            # Add a legend with the time step in the figure (if needed)
-            time_step = cells_group.attrs['time']
-            plt.suptitle(f"Snapshot at t = {time_step:.2f}", fontsize=16)
+            t = cells.attrs["time"]
 
-            # Save the plot as a PNG file in the output directory
-            plot_filename = os.path.join(output_dir, f"{base_name}_t{time_step:.2f}.png")
-            plt.savefig(plot_filename)
-            plt.close()  # Close the plot to avoid memory issues
+        # --- plotting ---
+        fig, axs = plt.subplots(2, 2, figsize=(12, 8))
+        axs = axs.ravel()
 
-            print(f"Saved plot for snapshot at t = {time_step:.2f} to {plot_filename}")
+        # Main curves
+        axs[0].plot(x, density, lw=1.4, color="k")
+        axs[1].plot(x, velocity_x, lw=1.4, color="k")
+        axs[2].plot(x, pressure, lw=1.4, color="k")
+        axs[3].plot(x, internal_energy, lw=1.4, color="k")
+
+        # Y-axis labels (no titles)
+        axs[0].set_ylabel("density")
+        axs[1].set_ylabel("v$_{x}$")
+        axs[2].set_ylabel("pressure")
+        axs[3].set_ylabel("internal energy")
+
+        # X-axis labels only on bottom row
+        axs[2].set_xlabel("x")
+        axs[3].set_xlabel("x")
+
+        axs[0].set_xlim(0,1)
+        axs[1].set_xlim(0,1)
+        axs[2].set_xlim(0,1)
+        axs[3].set_xlim(0,1)
+
+        axs[0].set_ylim(0,1.1)
+        axs[1].set_ylim(0,1.1)
+        axs[2].set_ylim(0,1.1)
+        axs[3].set_ylim(0,1.6)
+
+        # Remove titles
+        for ax in axs:
+            ax.set_title("")
+
+        # Tick labels inside
+        for ax in axs:
+            ax.tick_params(
+                direction="in",
+                which="both",
+                labelsize=10
+            )
+            ax.grid(False)
+
+        # Time annotation in top-left panel
+        axs[0].text(
+            0.80, 0.92, f"t = {t:.4f}",
+            transform=axs[0].transAxes,
+            fontsize=12,
+            color="black",
+            ha="left", va="top",
+            bbox=dict(facecolor="white", alpha=0.6, edgecolor="none")
+        )
+
+        plt.tight_layout()
+
+        # Save file inside /png
+        png_name = fname.replace(".hdf5", ".png")
+        png_path = os.path.join(png_dir, png_name)
+        plt.savefig(png_path, dpi=300)
+        plt.close()
+
+        print(f"Saved plot: {png_path}")
 

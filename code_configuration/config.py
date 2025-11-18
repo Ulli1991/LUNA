@@ -4,9 +4,32 @@ from dataclasses import dataclass
 @dataclass
 class Config:
 
-    # ---------------- Test Problem ----------------
-    #test_problem: str = "Kelvin-Helmholtz"   # "Sod-Shock" or "Kelvin-Helmholtz"
-    test_problem: str = "Sod-Shock"   # "Sod-Shock" or "Kelvin-Helmholtz"
+    # -------------------------------------------------------------------------
+    # Test problem selection
+    # -------------------------------------------------------------------------
+    # Available options:
+    #   1D:
+    #       "Sod-Shock"
+    #       "Woodward-Colella"
+    #       "Shu-Osher"
+    #       "Soundwave"
+    #       "Soundwave-Advected"
+    #
+    #   Einfeldt (1D):
+    #       "Einfeldt-Strong"
+    #       "Einfeldt-Shear"
+    #       "Einfeldt-Transverse"
+    #
+    #   2D Advection:
+    #       "Square-Advected"
+    #       "Rotate-Slotted-Disk"
+    #       "Soundwave-Advected-2D"
+    #
+    #   2D Instability / Shock:
+    #       "Kelvin-Helmholtz"
+    #       "Double-Mach-Reflection"
+    #
+    test_problem: str = "Sod-Shock"
 
     # ---------------- Device ----------------
     
@@ -22,7 +45,7 @@ class Config:
     SPATIAL_DIMENSION: int = 1
     # 0 = Periodic
     # 1 = von Neumann 
-    # 2 = reflective
+    # 2 = Reflective
     BOUNDARY: int = 1 
 
     Nx: int = 1024
@@ -61,7 +84,7 @@ class Config:
     t_end: float = 0.245
 
     # Time interval between snapshots (code units)
-    time_bet_snaps: float = 0.01
+    time_bet_snaps: float = 0.001
 
     # ---------------- Output ----------------
     output_dir: str = "snapshots_sod"

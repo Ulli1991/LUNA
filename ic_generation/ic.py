@@ -1,18 +1,55 @@
 # ic.py
 from .sod import sod_shock
+from .woodward_colella import woodward_colella
+from .shu_osher import shu_osher
+from .soundwave import soundwave
+from .soundwave_advected import soundwave_advected
+from .einfeldt_strong_rarefaction import strong_rarefaction
+from .einfeldt_shear_rarefaction import rarefaction_with_shear
+from .einfeldt_transverse_rarefaction import rarefaction_transverse
+from .advection_square import advection_square
+from .rotation_slotted_disk import rotation_slotted_disk
+from .soundwave_advected2d import soundwave_advected2d
 from .kh import kelvin_helmholtz
+from .double_mach_reflection import double_mach_reflection 
 
 def initial_conditions(cfg):
     """
     Select initial conditions based on cfg.test_problem
     """
-
     if cfg.test_problem == "Sod-Shock":
         return sod_shock(cfg)
+    elif cfg.test_problem == "Woodward-Colella":
+        return woodward_colella(cfg)
+    elif cfg.test_problem == "Shu-Osher":
+        return shu_osher(cfg)
+    elif cfg.test_problem == "Soundwave":
+        return soundwave(cfg)
+    elif cfg.test_problem == "Soundwave-Advected":
+        return soundwave_advected(cfg)
+    elif cfg.test_problem == "Einfeldt-Strong":
+        return strong_rarefaction(cfg)
+    elif cfg.test_problem == "Einfeldt-Shear":
+        return rarefaction_with_shear(cfg)
+    elif cfg.test_problem == "Einfeldt-Transverse":
+        return rarefaction_transverse(cfg)
+    elif cfg.tes_problem == "Square-Advected":
+        return advection_square(cfg)
+    elif cfg.tes_problem == "Rotate-Slotted-Disk":
+        return rotation_slotted_disk(cfg)
+    elif cfg.tes_problem == "Soundwave-Advected2d":
+        return soundwave_advected2d(cfg)
     elif cfg.test_problem == "Kelvin-Helmholtz":
         return kelvin_helmholtz(cfg)
+    elif cfg.test_problem == "Double-Mach-Reflection":
+        return double_mach_reflection(cfg)
     else:
         raise ValueError(
-            f"Unknown test problem '{cfg.test_problem}'. "
-            "Available options: 'Sod-Shock', 'Kelvin-Helmholtz'."
+            f"Unknown test problem '{cfg.test_problem}'.\n"
+            "Available options:\n"
+            "  Sod-Shock, Woodward-Colella, Shu-Osher,\n"
+            "  Soundwave, Soundwave-Advected,\n"
+            "  Einfeldt-Strong, Einfeldt-Shear, Einfeldt-Transverse,\n"
+            "  Square-Advected, Rotate-Slotted-Disk, Soundwave-Advected-2D,\n"
+            "  Kelvin-Helmholtz, Double-Mach-Reflection"
         )
