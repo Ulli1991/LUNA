@@ -1,4 +1,4 @@
-from .config import Config
+from config import Config
 from ic_generation.ic import initial_conditions
 from time_integration.integrators import *
 from time_integration.cfl import compute_dt
