@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 from jax import lax
+import jax
 
 def pad(U, boundary):
     """
@@ -108,15 +109,10 @@ def pad(U, boundary):
     # -------------------------
     # Fixed JAX-boolean tests
     # -------------------------
-    
-    # Debugging output (you can comment these out once you're confident)
-    print(f"Boundary value received: {boundary}")
-
+   
     is_periodic  = jnp.array(boundary == 0)
     is_zero_grad = jnp.array(boundary == 1)
     is_reflective = jnp.array(boundary == 2)
-
-    print(f"Periodic: {is_periodic}, Zero Gradient: {is_zero_grad}, Reflective: {is_reflective}")
 
     # -------------------------
     # Correct JAX nested cond

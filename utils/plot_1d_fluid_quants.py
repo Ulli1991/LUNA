@@ -97,10 +97,11 @@ def plot_1d_fluid_quantities(output_dir, base_name):
         axs[3].set_xlim(0,1)
 
         # Dynamically set y-limits based on the last snapshot data
-        axs[0].set_ylim(min_density, max_density * 1.1)  # density
-        axs[1].set_ylim(min_velocity_x, max_velocity_x * 1.1)  # velocity_x
-        axs[2].set_ylim(min_pressure, max_pressure * 1.1)  # pressure
-        axs[3].set_ylim(min_internal_energy, max_internal_energy * 1.1)  # internal energy
+        # Check for identical min/max values and adjust the y-limits
+        axs[0].set_ylim(min_density, max_density * 1.1 if max_density != min_density else min_density * 1.1)  # density
+        axs[1].set_ylim(min_velocity_x, max_velocity_x * 1.1 if max_velocity_x != min_velocity_x else min_velocity_x * 1.1)  # velocity_x
+        axs[2].set_ylim(min_pressure, max_pressure * 1.1 if max_pressure != min_pressure else min_pressure * 1.1)  # pressure
+        axs[3].set_ylim(min_internal_energy, max_internal_energy * 1.1 if max_internal_energy != min_internal_energy else min_internal_energy * 1.1)  # internal energy
 
         # Remove titles
         for ax in axs:
