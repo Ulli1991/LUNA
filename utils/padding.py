@@ -73,25 +73,36 @@ def pad(U, boundary):
     def reflective(U):
         """Apply reflective boundary conditions."""
         if ndim == 1:
-            left  = U[:, 1:2]
-            right = U[:, -2:-1]
+            # For 1D, reflective boundary: replicate first and last cells
+            left  = U[:, 1:2]   # Reflect the first interior cell for left boundary
+            right = U[:, -2:-1] # Reflect the last interior cell for right boundary
             return jnp.concatenate([left, U, right], axis=1)
+
         elif ndim == 2:
-            left  = U[:, 1:2, :]
-            right = U[:, -2:-1, :]
+            # For 2D, reflective boundary: replicate first and last rows/columns
+            left  = U[:, 1:2, :]   # Reflect the first interior column for left boundary
+            right = U[:, -2:-1, :] # Reflect the last interior column for right boundary
             Ux = jnp.concatenate([left, U, right], axis=1)
-            bottom = Ux[:, :, 1:2]
-            top    = Ux[:, :, -2:-1]
+
+            # Reflect the first and last rows
+            bottom = Ux[:, :, 1:2]   # Reflect the first interior row for bottom boundary
+            top    = Ux[:, :, -2:-1] # Reflect the last interior row for top boundary
             return jnp.concatenate([bottom, Ux, top], axis=2)
+
         elif ndim == 3:
-            left  = U[:, 1:2, :, :]
-            right = U[:, -2:-1, :, :]
+            # For 3D, reflective boundary: replicate first and last rows/columns/slices
+            left  = U[:, 1:2, :, :]   # Reflect the first interior column for left boundary
+            right = U[:, -2:-1, :, :] # Reflect the last interior column for right boundary
             Ux = jnp.concatenate([left, U, right], axis=1)
-            bottom = Ux[:, :, 1:2, :]
-            top    = Ux[:, :, -2:-1, :]
+
+            # Reflect the first and last rows
+            bottom = Ux[:, :, 1:2, :]   # Reflect the first interior row for bottom boundary
+            top    = Ux[:, :, -2:-1, :] # Reflect the last interior row for top boundary
             Uy = jnp.concatenate([bottom, Ux, top], axis=2)
-            back  = Uy[:, :, :, 1:2]
-            front = Uy[:, :, :, -2:-1]
+
+            # Reflect the first and last slices
+            back  = Uy[:, :, :, 1:2]   # Reflect the first interior slice for back boundary
+            front = Uy[:, :, :, -2:-1] # Reflect the last interior slice for front boundary
             return jnp.concatenate([back, Uy, front], axis=3)
 
     # -------------------------

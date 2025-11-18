@@ -22,13 +22,25 @@ def compute_dt(U, gamma, CFL, t, t_snapshot, dx, dy=None, dz=None):
     
     Returns
     -------
-    dt : float
+    dt : float64
         Computed timestep, possibly adjusted to ensure snapshot time alignment
     """
+    # Ensure all variables are float64
+    U = U.astype(jnp.float64)
+    dx = jnp.float64(dx)
+    if dy is not None:
+        dy = jnp.float64(dy)
+    if dz is not None:
+        dz = jnp.float64(dz)
+    t = jnp.float64(t)
+    t_snapshot = jnp.float64(t_snapshot)
+    gamma = jnp.float64(gamma)
+    CFL = jnp.float64(CFL)
+
     rho = U[0]
     vx = U[1] / rho
-    vy = U[2] / rho if U.shape[0] >= 4 else 0.0
-    vz = U[3] / rho if U.shape[0] >= 5 else 0.0
+    vy = U[2] / rho if U.shape[0] >= 4 else jnp.float64(0.0)
+    vz = U[3] / rho if U.shape[0] >= 5 else jnp.float64(0.0)
 
     # Kinetic energy
     kinetic = 0.5 * rho * (vx**2 + vy**2 + vz**2)
@@ -46,7 +58,7 @@ def compute_dt(U, gamma, CFL, t, t_snapshot, dx, dy=None, dz=None):
         spacing.append(dy)
     if dz is not None:
         spacing.append(dz)
-    dx_min = jnp.min(jnp.array(spacing))
+    dx_min = jnp.min(jnp.array(spacing, dtype=jnp.float64))
 
     # Standard CFL timestep
     dt_cfl = CFL * dx_min / jnp.max(smax)
@@ -55,10 +67,7 @@ def compute_dt(U, gamma, CFL, t, t_snapshot, dx, dy=None, dz=None):
     time_to_snapshot = t_snapshot - t
 
     # If the time difference is smaller than the Courant timestep, adjust dt
-    if time_to_snapshot < dt_cfl:
-        dt = time_to_snapshot  # Set the timestep to exactly match the snapshot time
-    else:
-        dt = dt_cfl  # Otherwise, use the standard CFL timestep
+    dt = jnp.where(time_to_snapshot < dt_cfl, time_to_snapshot, dt_cfl)
 
-    return float(dt)
+    return dt.astype(jnp.float64)
 

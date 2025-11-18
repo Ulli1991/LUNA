@@ -18,6 +18,42 @@ def plot_1d_fluid_quantities(output_dir, base_name):
     png_dir = os.path.join(output_dir, "png")
     os.makedirs(png_dir, exist_ok=True)
 
+    # Initialize variables for min and max values across all files
+    min_density = float('inf')
+    max_density = float('-inf')
+    min_velocity_x = float('inf')
+    max_velocity_x = float('-inf')
+    min_pressure = float('inf')
+    max_pressure = float('-inf')
+    min_internal_energy = float('inf')
+    max_internal_energy = float('-inf')
+
+    # First, check the last snapshot for the dynamic y-axis limits
+    last_fpath = os.path.join(output_dir, files[-1])
+
+    with h5py.File(last_fpath, "r") as f:
+        cells = f["cells"]
+
+        # Fields
+        x = np.array(cells["x_positions"])
+        density = np.array(cells["density"])
+        velocity_x = np.array(cells["velocity_x"])
+        internal_energy = np.array(cells["internal_energy"])
+
+        gamma = cells.attrs["gamma"]
+        pressure = (gamma - 1.0) * internal_energy
+
+        # Update the min/max values from the last snapshot
+        min_density = min(min_density, np.min(density))
+        max_density = max(max_density, np.max(density))
+        min_velocity_x = min(min_velocity_x, np.min(velocity_x))
+        max_velocity_x = max(max_velocity_x, np.max(velocity_x))
+        min_pressure = min(min_pressure, np.min(pressure))
+        max_pressure = max(max_pressure, np.max(pressure))
+        min_internal_energy = min(min_internal_energy, np.min(internal_energy))
+        max_internal_energy = max(max_internal_energy, np.max(internal_energy))
+
+    # Now iterate through all snapshot files for plotting
     for fname in files:
         fpath = os.path.join(output_dir, fname)
 
@@ -60,10 +96,11 @@ def plot_1d_fluid_quantities(output_dir, base_name):
         axs[2].set_xlim(0,1)
         axs[3].set_xlim(0,1)
 
-        axs[0].set_ylim(0,1.1)
-        axs[1].set_ylim(0,1.1)
-        axs[2].set_ylim(0,1.1)
-        axs[3].set_ylim(0,1.6)
+        # Dynamically set y-limits based on the last snapshot data
+        axs[0].set_ylim(min_density, max_density * 1.1)  # density
+        axs[1].set_ylim(min_velocity_x, max_velocity_x * 1.1)  # velocity_x
+        axs[2].set_ylim(min_pressure, max_pressure * 1.1)  # pressure
+        axs[3].set_ylim(min_internal_energy, max_internal_energy * 1.1)  # internal energy
 
         # Remove titles
         for ax in axs:
