@@ -1,3 +1,5 @@
+import jax.numpy as jnp
+
 def soundwave(cfg):
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma
@@ -7,7 +9,7 @@ def soundwave(cfg):
     rho0 =    1.0
     p0   =    1.0
     u0   =    0.0
-    epsilon = 1e-3
+    epsilon = 1e-6
     m =       1
 
     k = 2.0 * jnp.pi * m / Lx
