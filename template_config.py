@@ -46,7 +46,7 @@ class Config:
     # 0 = Periodic
     # 1 = von Neumann 
     # 2 = Reflective
-    BOUNDARY: int = 0 
+    BOUNDARY: int = 1 
 
     Nx: int = 1024
     Ny: int = 1024
