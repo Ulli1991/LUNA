@@ -9,6 +9,8 @@ config.py
 
 # Log files
 *.log
+job.out*
+job.err*
 snap*
 
 # Virtual environment
