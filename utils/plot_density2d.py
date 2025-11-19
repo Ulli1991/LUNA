@@ -24,6 +24,9 @@ def plot_density2d(output_dir, base_name):
     # First, check the last snapshot for the dynamic colorbar limits
     last_fpath = os.path.join(output_dir, files[-1])
 
+    png_dir = os.path.join(output_dir, "png")
+    os.makedirs(png_dir, exist_ok=True)
+
     with h5py.File(last_fpath, "r") as f:
         cells = f["cells"]
 
@@ -71,16 +74,12 @@ def plot_density2d(output_dir, base_name):
         # Ticks inside, all four sides
         ax.tick_params(direction="in", top=True, right=True)
 
-        # Add x and y grid lines (optional)
-        ax.grid(True, which='both', color='white', linestyle='--', linewidth=0.5)
-
         # Add colorbar with label "Density"
         cbar = plt.colorbar(im, ax=ax, label="Density")
-        cbar.set_ticks([min_density, max_density])  # Add min/max ticks to the colorbar
 
         # Save PNG next to the HDF5 file
         png_name = fname.replace(".hdf5", ".png")
-        plt.savefig(os.path.join(output_dir, png_name), dpi=300)
+        plt.savefig(os.path.join(png_dir, png_name), dpi=300)
         plt.close(fig)
 
         print(f"Saved density plot for {fname}")

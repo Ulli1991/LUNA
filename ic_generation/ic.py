@@ -33,11 +33,11 @@ def initial_conditions(cfg):
         return rarefaction_with_shear(cfg)
     elif cfg.test_problem == "Einfeldt-Transverse":
         return rarefaction_transverse(cfg)
-    elif cfg.tes_problem == "Square-Advected":
+    elif cfg.test_problem == "Square-Advected":
         return advection_square(cfg)
-    elif cfg.tes_problem == "Rotate-Slotted-Disk":
+    elif cfg.test_problem == "Rotate-Slotted-Disk":
         return rotation_slotted_disk(cfg)
-    elif cfg.tes_problem == "Soundwave-Advected2d":
+    elif cfg.test_problem == "Soundwave-Advected2d":
         return soundwave_advected2d(cfg)
     elif cfg.test_problem == "Kelvin-Helmholtz":
         return kelvin_helmholtz(cfg)
