@@ -2,7 +2,7 @@ from config import Config
 from ic_generation.ic import initial_conditions
 from time_integration.integrators import *
 from time_integration.cfl import compute_dt
-from utils.io import write_snapshot
+from io.write_snapshot import write_snapshot
 from utils.plot_1d_fluid_quants import plot_1d_fluid_quantities
 
 import jax.numpy as jnp
