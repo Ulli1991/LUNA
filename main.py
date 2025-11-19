@@ -2,7 +2,7 @@ from config import Config
 from ic_generation.ic import initial_conditions
 from time_integration.integrators import *
 from time_integration.cfl import compute_dt
-from io.write_snapshot import write_snapshot
+from file_io.write_snapshot import write_snapshot
 
 import jax.numpy as jnp
 import jax
@@ -18,9 +18,20 @@ def main():
     if device_type == 0:
         print("Initializing Run on CPU...")
         jax.config.update("jax_platform_name", "cpu")
-    else: 
+    else:
         print("Initializing Run on GPU...")
-        jax.config.update("jax_platform_name", "rocm")
+        # Try ROCm first
+        try:
+            jax.config.update("jax_platform_name", "rocm")
+            _ = jax.devices()[0]  # Trigger device query to verify availability
+            print("Using ROCm GPU")
+        except Exception:
+            try:
+                jax.config.update("jax_platform_name", "cuda")
+                _ = jax.devices()[0]
+                print("Using CUDA GPU")
+            except Exception:
+                sys.exit("Error: No GPU available. Cannot proceed with GPU run.")
 
     # --- Precompute constants to pass explicitly ---
     dx = cfg.Lx / cfg.Nx
