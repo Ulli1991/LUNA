@@ -1,4 +1,4 @@
-from utils.padding import pad
+from hydro.padding import pad
 from hydro.slopes import compute_slopes
 from hydro.fluxes import hllc_flux
 import jax.numpy as jnp

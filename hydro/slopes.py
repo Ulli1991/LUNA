@@ -35,7 +35,7 @@ def slope_limiter(dl, dr, limiter):
                     None)
 
 # ------------------- Compute slopes -------------------
-from utils.padding import pad
+from hydro.padding import pad
 
 @jit
 def compute_slopes(U, limiter, boundary):
