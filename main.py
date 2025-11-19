@@ -3,7 +3,6 @@ from ic_generation.ic import initial_conditions
 from time_integration.integrators import *
 from time_integration.cfl import compute_dt
 from io.write_snapshot import write_snapshot
-from utils.plot_1d_fluid_quants import plot_1d_fluid_quantities
 
 import jax.numpy as jnp
 import jax
@@ -100,11 +99,12 @@ def main():
     if cfg.PLOT_AFTER_SIM:
         if cfg.SPATIAL_DIMENSION == 1:
             print("Generating 1D fluid quantity plots...")
+            from utils.plot_1d_fluid_quants import plot_1d_fluid_quantities
             plot_1d_fluid_quantities(cfg.output_dir, cfg.base_name)
         else:
             print("Generating density plots from all HDF5 snapshots...")
-            from utils.plotting_hdf5 import plot_density_from_hdf5_all
-            plot_density_from_hdf5_all(cfg.output_dir, cfg.base_name)
+            from utils.plot_density2d import plot_density2d
+            plot_density2d(cfg.output_dir, cfg.base_name)
 
 if __name__ == "__main__":
     main()
