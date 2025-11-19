@@ -1,3 +1,5 @@
+import jax.numpy as jnp
+
 def soundwave_advected(cfg):
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma
@@ -8,7 +10,7 @@ def soundwave_advected(cfg):
     rho0    = 1.0
     p0      = 1.0
     U0      = 1.0
-    epsilon = 1e-3 
+    epsilon = 1e-6 
     m       = 1
 
     k = 2.0 * jnp.pi * m / Lx
