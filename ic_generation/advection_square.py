@@ -10,12 +10,12 @@ def advection_square(cfg):
     X, Y = jnp.meshgrid(x, y)
 
     # Square in the middle of the domain
-    square = (X > 0.3 * Lx) & (X < 0.7 * Lx) & (Y > 0.3 * Ly) & (Y < 0.7 * Ly)
+    square = (X > 0.25 * Lx) & (X < 0.75 * Lx) & (Y > 0.25 * Ly) & (Y < 0.75 * Ly)
 
     # Initial conditions: density = 1, velocity = 1, pressure = 1 (uniform)
     rho = square.astype(jnp.float32) + 1.0  # square with value 1 inside
-    u = jnp.zeros_like(rho)  # zero velocity
-    v = jnp.zeros_like(rho)  # zero velocity
+    u = jnp.ones_like(rho)  # vx = 1
+    v = jnp.ones_like(rho)  # vy = 1
     p = jnp.ones_like(rho)  # constant pressure
 
     # Total energy
