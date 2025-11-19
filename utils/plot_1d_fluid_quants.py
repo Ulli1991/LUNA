@@ -70,6 +70,7 @@ def plot_1d_fluid_quantities(output_dir, base_name):
             pressure = (gamma - 1.0) * internal_energy
 
             t = cells.attrs["time"]
+            Lx = cells.attrs["Lx"]
 
         # --- plotting ---
         fig, axs = plt.subplots(2, 2, figsize=(12, 8))
@@ -91,10 +92,10 @@ def plot_1d_fluid_quantities(output_dir, base_name):
         axs[2].set_xlabel("x")
         axs[3].set_xlabel("x")
 
-        axs[0].set_xlim(0,1)
-        axs[1].set_xlim(0,1)
-        axs[2].set_xlim(0,1)
-        axs[3].set_xlim(0,1)
+        axs[0].set_xlim(0,Lx)
+        axs[1].set_xlim(0,Lx)
+        axs[2].set_xlim(0,Lx)
+        axs[3].set_xlim(0,Lx)
 
         # Dynamically set y-limits based on the last snapshot data
         # Check for identical min/max values and adjust the y-limits
