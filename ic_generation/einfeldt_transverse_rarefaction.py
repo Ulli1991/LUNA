@@ -1,11 +1,23 @@
 import jax.numpy as jnp
 
-def rarefaction_transverse(cfg):
+def einfeldt_transverse_rarefaction(cfg):
     """
-    Einfeldt rarefaction with transverse shear flow (1-1-2-5).
-    This is a 2D test per Athena test suite.
-    Left:  (ρ = 1, m = −1, n = +2, e = 5)
-    Right: (ρ = 1, m = +1, n = −2, e = 5)
+    Einfeldt rarefaction with transverse shear flow test problem (1D/2D).
+
+    Rarefaction wave with strong transverse velocity shear.
+    From Athena test suite (1-1-2-5).
+    Left: (ρ=1, m=-1, n=+2, e=5)
+    Right: (ρ=1, m=+1, n=-2, e=5)
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Lx, gamma
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*u, rho*v, E] with shape (4, Nx)
     """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma

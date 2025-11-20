@@ -1,7 +1,8 @@
-import h5py
-import numpy as np
-import matplotlib.pyplot as plt
 import os
+
+import h5py
+import matplotlib.pyplot as plt
+import numpy as np
 
 def plot_1d_fluid_quantities(output_dir, base_name):
 

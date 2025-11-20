@@ -1,11 +1,23 @@
 import jax.numpy as jnp
 
-def strong_rarefaction(cfg):
+def einfeldt_strong_rarefaction(cfg):
     """
-    Einfeldt strong rarefaction (1-2-0-3).
-    This is a 2D test per Athena test suite.
-    Left:  (ρ = 1, m = −2, n = 0, e = 3)
-    Right: (ρ = 1, m = +2, n = 0, e = 3)
+    Einfeldt strong rarefaction test problem (1D/2D).
+
+    Two states with strong opposing velocities creating a rarefaction wave.
+    From Athena test suite (1-2-0-3).
+    Left: (ρ=1, m=-2, n=0, e=3)
+    Right: (ρ=1, m=+2, n=0, e=3)
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Lx, gamma
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*u, rho*v, E] with shape (4, Nx)
     """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma

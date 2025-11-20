@@ -4,9 +4,9 @@ from .woodward_colella import woodward_colella
 from .shu_osher import shu_osher
 from .soundwave import soundwave
 from .soundwave_advected import soundwave_advected
-from .einfeldt_strong_rarefaction import strong_rarefaction
-from .einfeldt_shear_rarefaction import rarefaction_with_shear
-from .einfeldt_transverse_rarefaction import rarefaction_transverse
+from .einfeldt_strong_rarefaction import einfeldt_strong_rarefaction
+from .einfeldt_shear_rarefaction import einfeldt_shear_rarefaction
+from .einfeldt_transverse_rarefaction import einfeldt_transverse_rarefaction
 from .advection_square import advection_square
 from .rotation_slotted_disk import rotation_slotted_disk
 from .soundwave_advected2d import soundwave_advected2d
@@ -29,11 +29,11 @@ def initial_conditions(cfg):
     elif cfg.test_problem == "Soundwave-Advected":
         return soundwave_advected(cfg)
     elif cfg.test_problem == "Einfeldt-Strong":
-        return strong_rarefaction(cfg)
+        return einfeldt_strong_rarefaction(cfg)
     elif cfg.test_problem == "Einfeldt-Shear":
-        return rarefaction_with_shear(cfg)
+        return einfeldt_shear_rarefaction(cfg)
     elif cfg.test_problem == "Einfeldt-Transverse":
-        return rarefaction_transverse(cfg)
+        return einfeldt_transverse_rarefaction(cfg)
     elif cfg.test_problem == "Square-Advected":
         return advection_square(cfg)
     elif cfg.test_problem == "Rotate-Slotted-Disk":

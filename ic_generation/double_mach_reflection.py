@@ -1,6 +1,23 @@
 import jax.numpy as jnp
 
 def double_mach_reflection(cfg):
+    """
+    Double Mach reflection test problem (2D).
+
+    Strong shock wave reflecting off a wedge, producing complex shock
+    interactions and a double Mach stem structure. Classic test for
+    2D shock-capturing schemes.
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Ny, Lx, Ly, gamma
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*ux, rho*uy, E] with shape (4, Nx, Ny)
+    """
     Nx, Ny, Lx, Ly = cfg.Nx, cfg.Ny, cfg.Lx, cfg.Ly
     gamma = cfg.gamma
 

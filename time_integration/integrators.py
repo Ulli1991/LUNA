@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 from jax import jit
+
 from hydro.divergence import flux_divergence
 
 def rk2_step(U, dt, gamma, order, limiter, boundary, dx, dy=None, dz=None):

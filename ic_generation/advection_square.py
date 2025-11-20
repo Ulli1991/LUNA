@@ -1,6 +1,22 @@
 import jax.numpy as jnp
 
 def advection_square(cfg):
+    """
+    Square advection test problem (2D).
+
+    Square density region advected diagonally with uniform velocity (u=v=1).
+    Tests the scheme's ability to preserve sharp discontinuities during advection.
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Ny, Lx, Ly, gamma
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*ux, rho*uy, E] with shape (4, Nx, Ny)
+    """
     Nx, Ny, Lx, Ly = cfg.Nx, cfg.Ny, cfg.Lx, cfg.Ly
     gamma = cfg.gamma
 

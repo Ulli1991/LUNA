@@ -1,6 +1,22 @@
 import jax.numpy as jnp
 
 def soundwave_advected2d(cfg):
+    """
+    Advected sound wave test problem (2D).
+
+    2D sinusoidal density perturbation advected with uniform diagonal velocity (u=v=1).
+    Tests multi-dimensional advection with wave preservation.
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Ny, Lx, Ly, gamma
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*ux, rho*uy, E] with shape (4, Nx, Ny)
+    """
     Nx, Ny, Lx, Ly = cfg.Nx, cfg.Ny, cfg.Lx, cfg.Ly
     gamma = cfg.gamma
 

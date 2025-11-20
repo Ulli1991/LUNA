@@ -1,6 +1,23 @@
 import jax.numpy as jnp
 
 def soundwave(cfg):
+    """
+    Linear sound wave test problem (1D).
+
+    Small-amplitude sinusoidal perturbation in density and pressure
+    that propagates as an acoustic wave. Used to test accuracy and
+    numerical dissipation of the scheme.
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Lx, gamma
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*u, E] with shape (3, Nx)
+    """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma
 

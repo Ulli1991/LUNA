@@ -1,6 +1,23 @@
 import jax.numpy as jnp
 
 def rotation_slotted_disk(cfg):
+    """
+    Rotating slotted disk test problem (2D).
+
+    Annular disk with a vertical slot rotating rigidly about the center.
+    Classic test for advection schemes - tests preservation of sharp
+    discontinuities under solid body rotation.
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Ny, Lx, Ly, gamma
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*ux, rho*uy, E] with shape (4, Nx, Ny)
+    """
     Nx, Ny, Lx, Ly = cfg.Nx, cfg.Ny, cfg.Lx, cfg.Ly
     gamma = cfg.gamma
 

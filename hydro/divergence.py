@@ -1,8 +1,9 @@
+import jax.numpy as jnp
+from jax import jit, lax
+
 from hydro.padding import pad
 from hydro.slopes import compute_slopes
 from hydro.fluxes import hllc_flux
-import jax.numpy as jnp
-from jax import jit, lax
 
 @jit
 def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):

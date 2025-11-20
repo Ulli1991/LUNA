@@ -1,40 +1,42 @@
 import h5py
-import numpy as np
+import jax.numpy as jnp
 
 def read_snapshot(snapshot_filename, cfg):
     """
     Load the simulation state (density, velocity, internal energy, etc.) from an HDF5 snapshot file.
     Assumes the data was written using the same structure as the `write_snapshot` function.
+
+    Returns JAX arrays for direct use in simulation (restart capability).
     """
     # Open the snapshot file
     with h5py.File(snapshot_filename, "r") as f:
         cells = f["cells"]
 
         # Read fields (density, velocity components, internal energy)
-        rho = np.array(cells["density"])
-        vx = np.array(cells["velocity_x"])
-        
+        rho = jnp.array(cells["density"])
+        vx = jnp.array(cells["velocity_x"])
+
         if cfg.SPATIAL_DIMENSION >= 2:
-            vy = np.array(cells["velocity_y"])
+            vy = jnp.array(cells["velocity_y"])
         else:
             vy = 0.0
 
         if cfg.SPATIAL_DIMENSION == 3:
-            vz = np.array(cells["velocity_z"])
+            vz = jnp.array(cells["velocity_z"])
         else:
             vz = 0.0
 
-        internal_energy = np.array(cells["internal_energy"])
+        internal_energy = jnp.array(cells["internal_energy"])
 
         # Read coordinates
-        x_positions = np.array(cells["x_positions"])
+        x_positions = jnp.array(cells["x_positions"])
         if cfg.SPATIAL_DIMENSION >= 2:
-            y_positions = np.array(cells["y_positions"])
+            y_positions = jnp.array(cells["y_positions"])
         else:
             y_positions = None
-        
+
         if cfg.SPATIAL_DIMENSION == 3:
-            z_positions = np.array(cells["z_positions"])
+            z_positions = jnp.array(cells["z_positions"])
         else:
             z_positions = None
 

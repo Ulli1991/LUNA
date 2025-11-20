@@ -1,6 +1,22 @@
 import jax.numpy as jnp
 
 def soundwave_advected(cfg):
+    """
+    Advected sound wave test problem (1D).
+
+    Small-amplitude acoustic wave superimposed on a uniform flow (U0 = 1.0).
+    Tests the scheme's ability to maintain wave structure while advecting.
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Lx, gamma
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*u, E] with shape (3, Nx)
+    """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma
 

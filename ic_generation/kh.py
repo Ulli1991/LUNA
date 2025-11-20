@@ -1,6 +1,23 @@
 import jax.numpy as jnp
 
 def kelvin_helmholtz(cfg):
+    """
+    Kelvin-Helmholtz instability test problem (2D).
+
+    Sets up two fluid layers with different velocities and densities.
+    Small sinusoidal perturbations seed the instability, leading to
+    characteristic vortex roll-up along the shear interface.
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Ny, Lx, Ly, gamma
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*ux, rho*uy, E] with shape (4, Nx, Ny)
+    """
     Nx, Ny = cfg.Nx, cfg.Ny
     Lx, Ly = cfg.Lx, cfg.Ly
     gamma = cfg.gamma

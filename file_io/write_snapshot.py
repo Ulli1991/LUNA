@@ -1,11 +1,12 @@
 import os
+
 import h5py
 import jax.numpy as jnp
 
 def write_snapshot(U, cfg, t, step):
     """
     Save the full simulation state (density, velocity, internal energy, etc.) to an HDF5 file.
-    JAX is used for all numerical operations. File I/O remains Python/HDF5.
+    JAX is used for all numerical operations. h5py automatically converts JAX arrays to NumPy for writing.
     """
 
     # Build output path

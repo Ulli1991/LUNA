@@ -2,11 +2,22 @@ import jax.numpy as jnp
 
 def sod_shock_3d(cfg):
     """
-    3D Sod shock tube test - shock propagates in x-direction,
-    uniform in y and z directions.
+    Sod shock tube test problem in 3D.
 
+    Shock propagates in x-direction, uniform in y and z directions.
     Automatically computes Ly, Lz, Ny, Nz to maintain cubic cells (dx = dy = dz)
     with transverse dimensions close to 0.1.
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Lx, gamma.
+        Note: Ny, Nz, Ly, Lz are modified by this function.
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*vx, rho*vy, rho*vz, E] with shape (5, Nx, Ny, Nz)
     """
     Nx = cfg.Nx
     Lx = cfg.Lx

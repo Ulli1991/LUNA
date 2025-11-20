@@ -1,11 +1,23 @@
 import jax.numpy as jnp
 
-def rarefaction_with_shear(cfg):
+def einfeldt_shear_rarefaction(cfg):
     """
-    Einfeldt intermediate rarefaction (1-1-0-5).
-    This is a 2D test per Athena test suite.
-    Left:  (ρ = 1, m = −1, n = 0, e = 5)
-    Right: (ρ = 1, m = +1, n = 0, e = 5)
+    Einfeldt intermediate rarefaction test problem (1D/2D).
+
+    Two states with moderate opposing velocities creating a rarefaction wave.
+    From Athena test suite (1-1-0-5).
+    Left: (ρ=1, m=-1, n=0, e=5)
+    Right: (ρ=1, m=+1, n=0, e=5)
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Lx, gamma
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*u, rho*v, E] with shape (4, Nx)
     """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma
