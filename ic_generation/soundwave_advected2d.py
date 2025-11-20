@@ -7,7 +7,7 @@ def soundwave_advected2d(cfg):
     # 2D coordinates
     x = jnp.linspace(0, Lx, Nx, endpoint=False)
     y = jnp.linspace(0, Ly, Ny, endpoint=False)
-    X, Y = jnp.meshgrid(x, y)
+    X, Y = jnp.meshgrid(x, y, indexing='ij')
 
     # Sine wave advection
     wavelength = 0.2 * Lx  # wavelength of sine wave

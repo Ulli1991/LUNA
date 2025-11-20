@@ -7,7 +7,7 @@ def rotation_slotted_disk(cfg):
     # Grid coordinates
     x = jnp.linspace(0, Lx, Nx, endpoint=False)
     y = jnp.linspace(0, Ly, Ny, endpoint=False)
-    X, Y = jnp.meshgrid(x, y, indexing='xy')
+    X, Y = jnp.meshgrid(x, y, indexing='ij')
 
     # Centered coordinates
     xc = X - 0.5 * Lx
@@ -25,7 +25,7 @@ def rotation_slotted_disk(cfg):
     slot = slot_vertical & slot_upper
 
     # Slotted disk = disk with slot cut out
-    slotted = disk & slot
+    slotted = disk & ~slot
 
     # Density
     rho = 1.0 + slotted.astype(jnp.float32)

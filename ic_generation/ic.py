@@ -38,7 +38,7 @@ def initial_conditions(cfg):
         return advection_square(cfg)
     elif cfg.test_problem == "Rotate-Slotted-Disk":
         return rotation_slotted_disk(cfg)
-    elif cfg.test_problem == "Soundwave-Advected2d":
+    elif cfg.test_problem == "Soundwave-Advected-2D":
         return soundwave_advected2d(cfg)
     elif cfg.test_problem == "Kelvin-Helmholtz":
         return kelvin_helmholtz(cfg)

@@ -15,10 +15,12 @@ class Config:
     #       "Soundwave"
     #       "Soundwave-Advected"
     #
-    #   Einfeldt (1D):
-    #       "Einfeldt-Strong"
-    #       "Einfeldt-Shear"
-    #       "Einfeldt-Transverse"
+    #   Einfeldt (2D - effectively 1D):
+    #       "Einfeldt-Strong"       (1-2-0-3)
+    #       "Einfeldt-Shear"        (1-1-0-5)
+    #       "Einfeldt-Transverse"   (1-1-2-5)
+    #       NOTE: These are 2D tests with variation only in x-direction.
+    #             Set SPATIAL_DIMENSION=2, Ny=1, and Ly to a small value (e.g., 0.01)
     #
     #   2D Advection:
     #       "Square-Advected"

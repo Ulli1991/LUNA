@@ -2,9 +2,10 @@ import jax.numpy as jnp
 
 def rarefaction_transverse(cfg):
     """
-    Einfeldt rarefaction with transverse velocity.
-    Left:  (ρ = 1, m = −1, n = 2, e = 5)
-    Right: (ρ = 1, m = +1, n = 2, e = 5)
+    Einfeldt rarefaction with transverse shear flow (1-1-2-5).
+    This is a 2D test per Athena test suite.
+    Left:  (ρ = 1, m = −1, n = +2, e = 5)
+    Right: (ρ = 1, m = +1, n = −2, e = 5)
     """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma
@@ -15,7 +16,7 @@ def rarefaction_transverse(cfg):
 
     rho_L, rho_R = 1.0, 1.0
     m_L, m_R     = -1.0, 1.0
-    n_L, n_R     = 2.0, 2.0
+    n_L, n_R     = 2.0, -2.0  # Note: n_R is negative!
     e_L, e_R     = 5.0, 5.0
 
     u_L, u_R = m_L / rho_L, m_R / rho_R
@@ -28,6 +29,7 @@ def rarefaction_transverse(cfg):
     E   = jnp.where(left, E_L,   E_R)
 
     p = (gamma - 1.0) * (E - 0.5 * rho * (u**2 + v**2))
-    U = jnp.stack([rho, rho*u, E], axis=0)
+    # 2D conservative variables: [rho, rho*u, rho*v, E]
+    U = jnp.stack([rho, rho*u, rho*v, E], axis=0)
     return U
 

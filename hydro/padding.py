@@ -72,38 +72,46 @@ def pad(U, boundary):
             return jnp.concatenate([back, Uy, front], axis=3)
 
     def reflective(U):
-        """Apply reflective boundary conditions."""
+        """
+        Apply reflective boundary conditions.
+        For wall boundaries, the normal momentum component must be negated.
+        Conservative variables: [rho, rho*u, rho*v, (rho*w), E]
+        """
         if ndim == 1:
-            # For 1D, reflective boundary: replicate first and last cells
-            left  = U[:, 1:2]   # Reflect the first interior cell for left boundary
-            right = U[:, -2:-1] # Reflect the last interior cell for right boundary
+            # 1D: U has shape (3, Nx) with [rho, rho*u, E]
+            # Left boundary: copy interior cell but negate rho*u (index 1)
+            left = U[:, 0:1].at[1].set(-U[1, 0:1])
+            # Right boundary: copy interior cell but negate rho*u (index 1)
+            right = U[:, -1:].at[1].set(-U[1, -1:])
             return jnp.concatenate([left, U, right], axis=1)
 
         elif ndim == 2:
-            # For 2D, reflective boundary: replicate first and last rows/columns
-            left  = U[:, 1:2, :]   # Reflect the first interior column for left boundary
-            right = U[:, -2:-1, :] # Reflect the last interior column for right boundary
+            # 2D: U has shape (4, Nx, Ny) with [rho, rho*u, rho*v, E]
+            # Left/right boundaries (x-direction): negate rho*u (index 1)
+            left = U[:, 0:1, :].at[1].set(-U[1, 0:1, :])
+            right = U[:, -1:, :].at[1].set(-U[1, -1:, :])
             Ux = jnp.concatenate([left, U, right], axis=1)
 
-            # Reflect the first and last rows
-            bottom = Ux[:, :, 1:2]   # Reflect the first interior row for bottom boundary
-            top    = Ux[:, :, -2:-1] # Reflect the last interior row for top boundary
+            # Bottom/top boundaries (y-direction): negate rho*v (index 2)
+            bottom = Ux[:, :, 0:1].at[2].set(-Ux[2, :, 0:1])
+            top = Ux[:, :, -1:].at[2].set(-Ux[2, :, -1:])
             return jnp.concatenate([bottom, Ux, top], axis=2)
 
         elif ndim == 3:
-            # For 3D, reflective boundary: replicate first and last rows/columns/slices
-            left  = U[:, 1:2, :, :]   # Reflect the first interior column for left boundary
-            right = U[:, -2:-1, :, :] # Reflect the last interior column for right boundary
+            # 3D: U has shape (5, Nx, Ny, Nz) with [rho, rho*u, rho*v, rho*w, E]
+            # Left/right boundaries (x-direction): negate rho*u (index 1)
+            left = U[:, 0:1, :, :].at[1].set(-U[1, 0:1, :, :])
+            right = U[:, -1:, :, :].at[1].set(-U[1, -1:, :, :])
             Ux = jnp.concatenate([left, U, right], axis=1)
 
-            # Reflect the first and last rows
-            bottom = Ux[:, :, 1:2, :]   # Reflect the first interior row for bottom boundary
-            top    = Ux[:, :, -2:-1, :] # Reflect the last interior row for top boundary
+            # Bottom/top boundaries (y-direction): negate rho*v (index 2)
+            bottom = Ux[:, :, 0:1, :].at[2].set(-Ux[2, :, 0:1, :])
+            top = Ux[:, :, -1:, :].at[2].set(-Ux[2, :, -1:, :])
             Uy = jnp.concatenate([bottom, Ux, top], axis=2)
 
-            # Reflect the first and last slices
-            back  = Uy[:, :, :, 1:2]   # Reflect the first interior slice for back boundary
-            front = Uy[:, :, :, -2:-1] # Reflect the last interior slice for front boundary
+            # Back/front boundaries (z-direction): negate rho*w (index 3)
+            back = Uy[:, :, :, 0:1].at[3].set(-Uy[3, :, :, 0:1])
+            front = Uy[:, :, :, -1:].at[3].set(-Uy[3, :, :, -1:])
             return jnp.concatenate([back, Uy, front], axis=3)
 
     # -------------------------

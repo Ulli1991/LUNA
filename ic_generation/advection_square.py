@@ -7,7 +7,7 @@ def advection_square(cfg):
     # 2D coordinates
     x = jnp.linspace(0, Lx, Nx, endpoint=False)
     y = jnp.linspace(0, Ly, Ny, endpoint=False)
-    X, Y = jnp.meshgrid(x, y)
+    X, Y = jnp.meshgrid(x, y, indexing='ij')
 
     # Square in the middle of the domain
     square = (X > 0.25 * Lx) & (X < 0.75 * Lx) & (Y > 0.25 * Ly) & (Y < 0.75 * Ly)
