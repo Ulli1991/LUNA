@@ -35,9 +35,13 @@ def hllc_flux(U_L, U_R, axis, gamma):
         rho_L, rhou_L, E_L = U_L
         rho_R, rhou_R, E_R = U_R
 
-        # Compute primitives (fused to reduce intermediates)
-        uL = rhou_L / rho_L
-        uR = rhou_R / rho_R
+        # Cache reciprocals (each used 3 times: velocity, sound speed, E_star)
+        inv_rho_L = 1.0 / rho_L
+        inv_rho_R = 1.0 / rho_R
+
+        # Compute primitives (using cached reciprocals)
+        uL = rhou_L * inv_rho_L
+        uR = rhou_R * inv_rho_R
 
         # Kinetic energy (reused in pressure calculation)
         ke_L = 0.5 * rho_L * uL * uL
@@ -48,9 +52,9 @@ def hllc_flux(U_L, U_R, axis, gamma):
         p_L = gm1 * (E_L - ke_L)
         p_R = gm1 * (E_R - ke_R)
 
-        # Sound speed (fused computation)
-        c_L = jnp.sqrt(gamma * p_L / rho_L)
-        c_R = jnp.sqrt(gamma * p_R / rho_R)
+        # Sound speed (using cached reciprocals)
+        c_L = jnp.sqrt(gamma * p_L * inv_rho_L)
+        c_R = jnp.sqrt(gamma * p_R * inv_rho_R)
 
         # Wave speeds
         S_L = jnp.minimum(uL - c_L, uR - c_R)
@@ -63,11 +67,11 @@ def hllc_flux(U_L, U_R, axis, gamma):
         # Middle speed (uses cached denominators to avoid recomputation)
         S_M = (p_R - p_L + denom_L*uL - denom_R*uR) / (denom_L - denom_R)
 
-        # Star states (cache rho_star for reuse)
+        # Star states (using cached reciprocals)
         rho_star_L = denom_L / (S_L - S_M)
         rho_star_R = denom_R / (S_R - S_M)
-        E_star_L = E_L / rho_L + (S_M - uL)*(S_M + p_L / denom_L)
-        E_star_R = E_R / rho_R + (S_M - uR)*(S_M + p_R / denom_R)
+        E_star_L = E_L * inv_rho_L + (S_M - uL)*(S_M + p_L / denom_L)
+        E_star_R = E_R * inv_rho_R + (S_M - uR)*(S_M + p_R / denom_R)
 
         # Star state vectors (needed for flux computation)
         U_star_L = jnp.stack([rho_star_L, rho_star_L*S_M, rho_star_L*E_star_L])
@@ -96,11 +100,18 @@ def hllc_flux(U_L, U_R, axis, gamma):
         rho_L, rhou_L, rhov_L, E_L = U_L
         rho_R, rhou_R, rhov_R, E_R = U_R
 
-        # Compute all velocities upfront (outside axis branches)
-        uL_x = rhou_L / rho_L
-        uR_x = rhou_R / rho_R
-        uL_y = rhov_L / rho_L
-        uR_y = rhov_R / rho_R
+        # Cache reciprocals (each used 4 times: velocities, sound speed, E_star)
+        inv_rho_L = 1.0 / rho_L
+        inv_rho_R = 1.0 / rho_R
+
+        # Compute all velocities upfront (using cached reciprocals)
+        uL_x = rhou_L * inv_rho_L
+        uR_x = rhou_R * inv_rho_R
+        uL_y = rhov_L * inv_rho_L
+        uR_y = rhov_R * inv_rho_R
+
+        # Precompute gamma - 1 (used in both axis branches)
+        gm1 = gamma - 1.0
 
         if axis == 0:  # x-direction flux
             # Assign normal (x) and tangent (y) velocities
@@ -113,14 +124,13 @@ def hllc_flux(U_L, U_R, axis, gamma):
             ke_L = 0.5 * rho_L * (uL_n*uL_n + uL_t*uL_t)
             ke_R = 0.5 * rho_R * (uR_n*uR_n + uR_t*uR_t)
 
-            # Pressure
-            gm1 = gamma - 1.0
+            # Pressure (using precomputed gm1)
             p_L = gm1 * (E_L - ke_L)
             p_R = gm1 * (E_R - ke_R)
 
-            # Sound speed
-            c_L = jnp.sqrt(gamma * p_L / rho_L)
-            c_R = jnp.sqrt(gamma * p_R / rho_R)
+            # Sound speed (using cached reciprocals)
+            c_L = jnp.sqrt(gamma * p_L * inv_rho_L)
+            c_R = jnp.sqrt(gamma * p_R * inv_rho_R)
 
             # Wave speeds
             S_L = jnp.minimum(uL_n - c_L, uR_n - c_R)
@@ -133,11 +143,11 @@ def hllc_flux(U_L, U_R, axis, gamma):
             # Middle speed (uses cached denominators to avoid recomputation)
             S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R)
 
-            # Star states
+            # Star states (using cached reciprocals)
             rho_star_L = denom_L / (S_L - S_M)
             rho_star_R = denom_R / (S_R - S_M)
-            E_star_L = E_L/rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
-            E_star_R = E_R/rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
+            E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
+            E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
 
             U_star_L = jnp.stack([rho_star_L, rho_star_L*S_M, rho_star_L*uL_t, rho_star_L*E_star_L])
             U_star_R = jnp.stack([rho_star_R, rho_star_R*S_M, rho_star_R*uR_t, rho_star_R*E_star_R])
@@ -156,14 +166,13 @@ def hllc_flux(U_L, U_R, axis, gamma):
             ke_L = 0.5 * rho_L * (uL_n*uL_n + uL_t*uL_t)
             ke_R = 0.5 * rho_R * (uR_n*uR_n + uR_t*uR_t)
 
-            # Pressure
-            gm1 = gamma - 1.0
+            # Pressure (using precomputed gm1)
             p_L = gm1 * (E_L - ke_L)
             p_R = gm1 * (E_R - ke_R)
 
-            # Sound speed
-            c_L = jnp.sqrt(gamma * p_L / rho_L)
-            c_R = jnp.sqrt(gamma * p_R / rho_R)
+            # Sound speed (using cached reciprocals)
+            c_L = jnp.sqrt(gamma * p_L * inv_rho_L)
+            c_R = jnp.sqrt(gamma * p_R * inv_rho_R)
 
             # Wave speeds
             S_L = jnp.minimum(uL_n - c_L, uR_n - c_R)
@@ -176,11 +185,11 @@ def hllc_flux(U_L, U_R, axis, gamma):
             # Middle speed (uses cached denominators to avoid recomputation)
             S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R)
 
-            # Star states
+            # Star states (using cached reciprocals)
             rho_star_L = denom_L / (S_L - S_M)
             rho_star_R = denom_R / (S_R - S_M)
-            E_star_L = E_L/rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
-            E_star_R = E_R/rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
+            E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
+            E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
 
             U_star_L = jnp.stack([rho_star_L, rho_star_L*uL_t, rho_star_L*S_M, rho_star_L*E_star_L])
             U_star_R = jnp.stack([rho_star_R, rho_star_R*uR_t, rho_star_R*S_M, rho_star_R*E_star_R])
@@ -207,13 +216,21 @@ def hllc_flux(U_L, U_R, axis, gamma):
         rho_L, rhou_L, rhov_L, rhow_L, E_L = U_L
         rho_R, rhou_R, rhov_R, rhow_R, E_R = U_R
 
-        # Compute all velocities upfront (outside axis branches)
-        uL_x = rhou_L / rho_L
-        uR_x = rhou_R / rho_R
-        uL_y = rhov_L / rho_L
-        uR_y = rhov_R / rho_R
-        uL_z = rhow_L / rho_L
-        uR_z = rhow_R / rho_R
+        # Cache reciprocals (each used 5 times: velocities, sound speed, E_star)
+        # Eliminates 8 out of 14 divisions = 57% reduction in divisions!
+        inv_rho_L = 1.0 / rho_L
+        inv_rho_R = 1.0 / rho_R
+
+        # Compute all velocities upfront (using cached reciprocals)
+        uL_x = rhou_L * inv_rho_L
+        uR_x = rhou_R * inv_rho_R
+        uL_y = rhov_L * inv_rho_L
+        uR_y = rhov_R * inv_rho_R
+        uL_z = rhow_L * inv_rho_L
+        uR_z = rhow_R * inv_rho_R
+
+        # Precompute gamma - 1 (used in all 3 axis branches)
+        gm1 = gamma - 1.0
 
         if axis == 0:  # x-direction flux
             # Assign normal (vx) and tangent (vy, vz) velocities
@@ -226,14 +243,13 @@ def hllc_flux(U_L, U_R, axis, gamma):
             ke_L = 0.5 * rho_L * (uL_n*uL_n + uL_t1*uL_t1 + uL_t2*uL_t2)
             ke_R = 0.5 * rho_R * (uR_n*uR_n + uR_t1*uR_t1 + uR_t2*uR_t2)
 
-            # Pressure
-            gm1 = gamma - 1.0
+            # Pressure (using precomputed gm1)
             p_L = gm1 * (E_L - ke_L)
             p_R = gm1 * (E_R - ke_R)
 
-            # Sound speed
-            c_L = jnp.sqrt(gamma * p_L / rho_L)
-            c_R = jnp.sqrt(gamma * p_R / rho_R)
+            # Sound speed (using cached reciprocals)
+            c_L = jnp.sqrt(gamma * p_L * inv_rho_L)
+            c_R = jnp.sqrt(gamma * p_R * inv_rho_R)
 
             # Wave speeds (based on normal velocity)
             S_L = jnp.minimum(uL_n - c_L, uR_n - c_R)
@@ -246,11 +262,11 @@ def hllc_flux(U_L, U_R, axis, gamma):
             # Middle speed (uses cached denominators to avoid recomputation)
             S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R)
 
-            # Star states
+            # Star states (using cached reciprocals)
             rho_star_L = denom_L / (S_L - S_M)
             rho_star_R = denom_R / (S_R - S_M)
-            E_star_L = E_L/rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
-            E_star_R = E_R/rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
+            E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
+            E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
 
             # Star state vectors: [rho, rho*vx_new, rho*vy, rho*vz, rho*E]
             U_star_L = jnp.stack([rho_star_L, rho_star_L*S_M, rho_star_L*uL_t1, rho_star_L*uL_t2, rho_star_L*E_star_L])
@@ -271,14 +287,13 @@ def hllc_flux(U_L, U_R, axis, gamma):
             ke_L = 0.5 * rho_L * (uL_n*uL_n + uL_t1*uL_t1 + uL_t2*uL_t2)
             ke_R = 0.5 * rho_R * (uR_n*uR_n + uR_t1*uR_t1 + uR_t2*uR_t2)
 
-            # Pressure
-            gm1 = gamma - 1.0
+            # Pressure (using precomputed gm1)
             p_L = gm1 * (E_L - ke_L)
             p_R = gm1 * (E_R - ke_R)
 
-            # Sound speed
-            c_L = jnp.sqrt(gamma * p_L / rho_L)
-            c_R = jnp.sqrt(gamma * p_R / rho_R)
+            # Sound speed (using cached reciprocals)
+            c_L = jnp.sqrt(gamma * p_L * inv_rho_L)
+            c_R = jnp.sqrt(gamma * p_R * inv_rho_R)
 
             # Wave speeds
             S_L = jnp.minimum(uL_n - c_L, uR_n - c_R)
@@ -291,11 +306,11 @@ def hllc_flux(U_L, U_R, axis, gamma):
             # Middle speed (uses cached denominators to avoid recomputation)
             S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R)
 
-            # Star states
+            # Star states (using cached reciprocals)
             rho_star_L = denom_L / (S_L - S_M)
             rho_star_R = denom_R / (S_R - S_M)
-            E_star_L = E_L/rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
-            E_star_R = E_R/rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
+            E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
+            E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
 
             # Star state vectors: [rho, rho*vx, rho*vy_new, rho*vz, rho*E]
             U_star_L = jnp.stack([rho_star_L, rho_star_L*uL_t1, rho_star_L*S_M, rho_star_L*uL_t2, rho_star_L*E_star_L])
@@ -316,14 +331,13 @@ def hllc_flux(U_L, U_R, axis, gamma):
             ke_L = 0.5 * rho_L * (uL_n*uL_n + uL_t1*uL_t1 + uL_t2*uL_t2)
             ke_R = 0.5 * rho_R * (uR_n*uR_n + uR_t1*uR_t1 + uR_t2*uR_t2)
 
-            # Pressure
-            gm1 = gamma - 1.0
+            # Pressure (using precomputed gm1)
             p_L = gm1 * (E_L - ke_L)
             p_R = gm1 * (E_R - ke_R)
 
-            # Sound speed
-            c_L = jnp.sqrt(gamma * p_L / rho_L)
-            c_R = jnp.sqrt(gamma * p_R / rho_R)
+            # Sound speed (using cached reciprocals)
+            c_L = jnp.sqrt(gamma * p_L * inv_rho_L)
+            c_R = jnp.sqrt(gamma * p_R * inv_rho_R)
 
             # Wave speeds
             S_L = jnp.minimum(uL_n - c_L, uR_n - c_R)
@@ -336,11 +350,11 @@ def hllc_flux(U_L, U_R, axis, gamma):
             # Middle speed (uses cached denominators to avoid recomputation)
             S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R)
 
-            # Star states
+            # Star states (using cached reciprocals)
             rho_star_L = denom_L / (S_L - S_M)
             rho_star_R = denom_R / (S_R - S_M)
-            E_star_L = E_L/rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
-            E_star_R = E_R/rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
+            E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
+            E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
 
             # Star state vectors: [rho, rho*vx, rho*vy, rho*vz_new, rho*E]
             U_star_L = jnp.stack([rho_star_L, rho_star_L*uL_t1, rho_star_L*uL_t2, rho_star_L*S_M, rho_star_L*E_star_L])

@@ -27,11 +27,14 @@ def compute_dt(U, gamma, CFL, t, t_snapshot, dx, dy=None, dz=None):
     dt : float
         Computed timestep, possibly adjusted to ensure snapshot time alignment
     """
-    # JAX handles type promotion automatically - no conversions needed
+    # Cache reciprocal (used for velocities and sound speed)
     rho = U[0]
-    vx = U[1] / rho
-    vy = U[2] / rho if U.shape[0] >= 4 else 0.0
-    vz = U[3] / rho if U.shape[0] >= 5 else 0.0
+    inv_rho = 1.0 / rho
+
+    # Compute velocities (using cached reciprocal)
+    vx = U[1] * inv_rho
+    vy = U[2] * inv_rho if U.shape[0] >= 4 else 0.0
+    vz = U[3] * inv_rho if U.shape[0] >= 5 else 0.0
 
     # Velocity squared (computed once and reused)
     v2 = vx**2 + vy**2 + vz**2
@@ -40,8 +43,8 @@ def compute_dt(U, gamma, CFL, t, t_snapshot, dx, dy=None, dz=None):
     kinetic = 0.5 * rho * v2
     # Pressure
     p = (gamma - 1.0) * (U[-1] - kinetic)
-    # Sound speed
-    c = jnp.sqrt(gamma * p / rho)
+    # Sound speed (using cached reciprocal)
+    c = jnp.sqrt(gamma * p * inv_rho)
 
     # Total velocity magnitude + sound speed
     smax = jnp.sqrt(v2) + c
@@ -107,11 +110,14 @@ def compute_dt_and_diagnostics(U, gamma, CFL, t, t_snapshot, dx, dy=None, dz=Non
     has_nan = jnp.any(jnp.isnan(U))
     has_inf = jnp.any(jnp.isinf(U))
 
-    # Compute primitives (shared by both dt and diagnostics)
+    # Cache reciprocal (used for velocities and sound speed)
     rho = U[0]
-    vx = U[1] / rho
-    vy = U[2] / rho if U.shape[0] >= 4 else 0.0
-    vz = U[3] / rho if U.shape[0] >= 5 else 0.0
+    inv_rho = 1.0 / rho
+
+    # Compute velocities (using cached reciprocal)
+    vx = U[1] * inv_rho
+    vy = U[2] * inv_rho if U.shape[0] >= 4 else 0.0
+    vz = U[3] * inv_rho if U.shape[0] >= 5 else 0.0
 
     # Velocity squared (computed once, used multiple times)
     v2 = vx**2 + vy**2 + vz**2
@@ -122,8 +128,8 @@ def compute_dt_and_diagnostics(U, gamma, CFL, t, t_snapshot, dx, dy=None, dz=Non
     # Pressure (computed once, used for both sound speed and diagnostics)
     p = (gamma - 1.0) * (U[-1] - kinetic)
 
-    # Sound speed (needed for dt calculation)
-    c = jnp.sqrt(gamma * p / rho)
+    # Sound speed (using cached reciprocal)
+    c = jnp.sqrt(gamma * p * inv_rho)
 
     # Total velocity magnitude + sound speed (for dt)
     smax = jnp.sqrt(v2) + c
