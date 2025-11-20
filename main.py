@@ -8,9 +8,9 @@ import jax.numpy as jnp
 from config import Config
 from ic_generation.ic import initial_conditions
 from time_integration.integrators import time_step
-from time_integration.cfl import compute_dt
+from time_integration.cfl import compute_dt_and_diagnostics
 from file_io.write_snapshot import write_snapshot
-from hydro.physics_checks import validate_state
+from hydro.physics_checks import validate_state, validate_from_diagnostics
 
 def main():
 
@@ -83,9 +83,11 @@ def main():
     # --- Time integration loop ---
     while t < cfg.t_end:
 
-        # Compute the current dt based on CFL and the time to the next snapshot
+        # Compute dt AND physics diagnostics in one pass (fused to avoid redundant computation)
         t_snapshot = snapshot_times[snapshot_idx]
-        dt = compute_dt(U, gamma, cfg.CFL, t, t_snapshot, dx, dy, dz)
+        dt, min_rho, min_p, has_nan, has_inf = compute_dt_and_diagnostics(
+            U, gamma, cfg.CFL, t, t_snapshot, dx, dy, dz
+        )
         if t + dt > cfg.t_end:
             dt = cfg.t_end - t  # Ensure we do not overshoot the final time
 
@@ -94,9 +96,9 @@ def main():
         t += dt
         step += 1
 
-        # Validate state for unphysical values (will raise error if detected)
+        # Validate state using pre-computed diagnostics (no redundant computation)
         # GPU-resident check: only transfers 4 scalars from GPU to CPU
-        validate_state(U, gamma, step=step, time=t)
+        validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=step, time=t)
 
         print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
 

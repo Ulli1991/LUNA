@@ -59,18 +59,21 @@ def compute_physics_diagnostics(U, gamma):
     return min_rho, min_p, has_nan, has_inf
 
 
-def validate_state(U, gamma, step=None, time=None):
+def validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=None, time=None):
     """
-    Validate conservative state for physical correctness.
-    Uses GPU-resident computation with minimal data transfer.
-    Only transfers 4 scalar values from GPU to CPU for checking.
+    Validate physics diagnostics (use when diagnostics are pre-computed).
+    This function only performs the validation checks without recomputing.
 
     Parameters
     ----------
-    U : array
-        Conservative state, shape (Nvar, Nx[, Ny[, Nz]])
-    gamma : float
-        Ratio of specific heats
+    min_rho : float
+        Minimum density in domain
+    min_p : float
+        Minimum pressure in domain
+    has_nan : bool
+        True if any NaN detected
+    has_inf : bool
+        True if any Inf detected
     step : int, optional
         Current timestep number (for error message)
     time : float, optional
@@ -81,12 +84,6 @@ def validate_state(U, gamma, step=None, time=None):
     RuntimeError
         If unphysical states are detected
     """
-    # Compute diagnostics on GPU (JIT-compiled, efficient)
-    min_rho, min_p, has_nan, has_inf = compute_physics_diagnostics(U, gamma)
-
-    # Only these 4 scalars transfer from GPU to CPU (minimal overhead)
-    # The implicit block happens here, but only for 4 float values
-
     if has_nan:
         msg = "NaN detected in conservative state"
         if step is not None:
@@ -118,3 +115,32 @@ def validate_state(U, gamma, step=None, time=None):
         if time is not None:
             msg += f", t={time:.6e}"
         raise RuntimeError(msg)
+
+
+def validate_state(U, gamma, step=None, time=None):
+    """
+    Validate conservative state for physical correctness.
+    Uses GPU-resident computation with minimal data transfer.
+    Only transfers 4 scalar values from GPU to CPU for checking.
+
+    Parameters
+    ----------
+    U : array
+        Conservative state, shape (Nvar, Nx[, Ny[, Nz]])
+    gamma : float
+        Ratio of specific heats
+    step : int, optional
+        Current timestep number (for error message)
+    time : float, optional
+        Current simulation time (for error message)
+
+    Raises
+    ------
+    RuntimeError
+        If unphysical states are detected
+    """
+    # Compute diagnostics on GPU (JIT-compiled, efficient)
+    min_rho, min_p, has_nan, has_inf = compute_physics_diagnostics(U, gamma)
+
+    # Validate using the diagnostics
+    validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step, time)
