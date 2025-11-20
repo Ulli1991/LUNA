@@ -62,10 +62,13 @@ def compute_slopes_from_padded(U_pad, limiter):
 
     # 2D case
     if ndim == 2:
-        dx_L = U_pad[:, 1:-1, 1:-1] - U_pad[:, :-2, 1:-1]
-        dx_R = U_pad[:, 2:  , 1:-1] - U_pad[:, 1:-1, 1:-1]
-        dy_D = U_pad[:, 1:-1, 1:-1] - U_pad[:, 1:-1, :-2]
-        dy_U = U_pad[:, 1:-1, 2:  ] - U_pad[:, 1:-1, 1:-1]
+        # Extract center cells once (was being extracted 4 times!)
+        Qc = U_pad[:, 1:-1, 1:-1]
+
+        dx_L = Qc - U_pad[:, :-2, 1:-1]
+        dx_R = U_pad[:, 2:  , 1:-1] - Qc
+        dy_D = Qc - U_pad[:, 1:-1, :-2]
+        dy_U = U_pad[:, 1:-1, 2:  ] - Qc
 
         dUx = slope_limiter(dx_L, dx_R, limiter)
         dUy = slope_limiter(dy_D, dy_U, limiter)
@@ -73,12 +76,15 @@ def compute_slopes_from_padded(U_pad, limiter):
         return dUx, dUy, dUz
 
     # 3D case
-    dx_L = U_pad[:, 1:-1, 1:-1, 1:-1] - U_pad[:, :-2, 1:-1, 1:-1]
-    dx_R = U_pad[:, 2:  , 1:-1, 1:-1] - U_pad[:, 1:-1, 1:-1, 1:-1]
-    dy_D = U_pad[:, 1:-1, 1:-1, 1:-1] - U_pad[:, 1:-1, :-2, 1:-1]
-    dy_U = U_pad[:, 1:-1, 2:  , 1:-1] - U_pad[:, 1:-1, 1:-1, 1:-1]
-    dz_B = U_pad[:, 1:-1, 1:-1, 1:-1] - U_pad[:, 1:-1, 1:-1, :-2]
-    dz_F = U_pad[:, 1:-1, 1:-1, 2:  ] - U_pad[:, 1:-1, 1:-1, 1:-1]
+    # Extract center cells once (was being extracted 6 times!)
+    Qc = U_pad[:, 1:-1, 1:-1, 1:-1]
+
+    dx_L = Qc - U_pad[:, :-2, 1:-1, 1:-1]
+    dx_R = U_pad[:, 2:  , 1:-1, 1:-1] - Qc
+    dy_D = Qc - U_pad[:, 1:-1, :-2, 1:-1]
+    dy_U = U_pad[:, 1:-1, 2:  , 1:-1] - Qc
+    dz_B = Qc - U_pad[:, 1:-1, 1:-1, :-2]
+    dz_F = U_pad[:, 1:-1, 1:-1, 2:  ] - Qc
 
     dUx = slope_limiter(dx_L, dx_R, limiter)
     dUy = slope_limiter(dy_D, dy_U, limiter)

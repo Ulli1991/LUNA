@@ -81,16 +81,19 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
             # Extract real cells (excluding ghost cells)
             Qc = U_pad[:, 1:-1]  # Shape: (Nvar, Nx)
 
+            # Cache half-slopes to avoid redundant computation
+            half_dUx = 0.5 * dUx
+
             # Reconstruct at ALL Nx+1 interfaces (including boundaries)
             # Left states: extrapolate from left cell
             UL = jnp.concatenate([
                 U_pad[:, 0:1],                    # Left boundary: use ghost cell value
-                Qc + 0.5 * dUx                    # Interior + right boundary: cell center + slope
+                Qc + half_dUx                     # Interior + right boundary: cell center + slope
             ], axis=1)
 
             # Right states: extrapolate from right cell
             UR = jnp.concatenate([
-                Qc - 0.5 * dUx,                   # Left boundary + interior: cell center - slope
+                Qc - half_dUx,                    # Left boundary + interior: cell center - slope
                 U_pad[:, -1:]                     # Right boundary: use ghost cell value
             ], axis=1)
 
@@ -102,13 +105,17 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
         elif ndim == 2:
             Qc = U_pad[:, 1:-1, 1:-1]  # Shape: (Nvar, Nx, Ny)
 
+            # Cache half-slopes to avoid redundant computation
+            half_dUx = 0.5 * dUx
+            half_dUy = 0.5 * dUy
+
             # X-direction reconstruction at ALL Nx+1 interfaces
             UL_x = jnp.concatenate([
                 U_pad[:, 0:1, 1:-1],              # Left boundary
-                Qc + 0.5 * dUx                    # Interior + right boundary
+                Qc + half_dUx                     # Interior + right boundary
             ], axis=1)
             UR_x = jnp.concatenate([
-                Qc - 0.5 * dUx,                   # Left boundary + interior
+                Qc - half_dUx,                    # Left boundary + interior
                 U_pad[:, -1:, 1:-1]               # Right boundary
             ], axis=1)
             Fx = hllc_flux(UL_x, UR_x, axis=0, gamma=gamma)
@@ -117,10 +124,10 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
             # Y-direction reconstruction at ALL Ny+1 interfaces
             UL_y = jnp.concatenate([
                 U_pad[:, 1:-1, 0:1],              # Bottom boundary
-                Qc + 0.5 * dUy                    # Interior + top boundary
+                Qc + half_dUy                     # Interior + top boundary
             ], axis=2)
             UR_y = jnp.concatenate([
-                Qc - 0.5 * dUy,                   # Bottom boundary + interior
+                Qc - half_dUy,                    # Bottom boundary + interior
                 U_pad[:, 1:-1, -1:]               # Top boundary
             ], axis=2)
             Fy = hllc_flux(UL_y, UR_y, axis=1, gamma=gamma)
@@ -131,13 +138,18 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
         else:  # 3D
             Qc = U_pad[:, 1:-1, 1:-1, 1:-1]  # Shape: (Nvar, Nx, Ny, Nz)
 
+            # Cache half-slopes to avoid redundant computation
+            half_dUx = 0.5 * dUx
+            half_dUy = 0.5 * dUy
+            half_dUz = 0.5 * dUz
+
             # X-direction reconstruction
             UL_x = jnp.concatenate([
                 U_pad[:, 0:1, 1:-1, 1:-1],
-                Qc + 0.5 * dUx
+                Qc + half_dUx
             ], axis=1)
             UR_x = jnp.concatenate([
-                Qc - 0.5 * dUx,
+                Qc - half_dUx,
                 U_pad[:, -1:, 1:-1, 1:-1]
             ], axis=1)
             Fx = hllc_flux(UL_x, UR_x, axis=0, gamma=gamma)
@@ -146,10 +158,10 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
             # Y-direction reconstruction
             UL_y = jnp.concatenate([
                 U_pad[:, 1:-1, 0:1, 1:-1],
-                Qc + 0.5 * dUy
+                Qc + half_dUy
             ], axis=2)
             UR_y = jnp.concatenate([
-                Qc - 0.5 * dUy,
+                Qc - half_dUy,
                 U_pad[:, 1:-1, -1:, 1:-1]
             ], axis=2)
             Fy = hllc_flux(UL_y, UR_y, axis=1, gamma=gamma)
@@ -158,10 +170,10 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
             # Z-direction reconstruction
             UL_z = jnp.concatenate([
                 U_pad[:, 1:-1, 1:-1, 0:1],
-                Qc + 0.5 * dUz
+                Qc + half_dUz
             ], axis=3)
             UR_z = jnp.concatenate([
-                Qc - 0.5 * dUz,
+                Qc - half_dUz,
                 U_pad[:, 1:-1, 1:-1, -1:]
             ], axis=3)
             Fz = hllc_flux(UL_z, UR_z, axis=2, gamma=gamma)
