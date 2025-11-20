@@ -33,7 +33,13 @@ def main():
             except Exception:
                 sys.exit("Error: No GPU available. Cannot proceed with GPU run.")
 
+    # --- Initialize fields (must be done before computing grid spacing) ---
+    # Note: Some problems (e.g., Sod-Shock-3D) may modify cfg.Nx, cfg.Ny, cfg.Nz, cfg.Lx, cfg.Ly, cfg.Lz
+    # to ensure proper grid spacing, so we initialize first
+    U = initial_conditions(cfg)
+
     # --- Precompute constants to pass explicitly ---
+    # These are computed AFTER initial_conditions so that any modifications to cfg are reflected
     dx = cfg.Lx / cfg.Nx
     dy = cfg.Ly / cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else None
     dz = cfg.Lz / cfg.Nz if cfg.SPATIAL_DIMENSION == 3 else None
@@ -48,18 +54,15 @@ def main():
     # Compute number of snapshots based on time between snapshots and total simulation time
     n_snapshots = int(cfg.t_end / cfg.time_bet_snaps)  # Number of snapshots based on desired interval
     snapshot_times = jnp.linspace(cfg.t_start, cfg.t_end, n_snapshots)
-    
+
     # If the final time t_end is not exactly included, add it
     if snapshot_times[-1] < cfg.t_end:
         snapshot_times = jnp.append(snapshot_times, cfg.t_end)
 
     snapshot_idx = 0
-    
+
     # --- Output directory ---
     os.makedirs(cfg.output_dir, exist_ok=True)
-
-    # --- Initialize fields ---
-    U = initial_conditions(cfg)
 
     # --- Time loop variables ---
     t = cfg.t_start

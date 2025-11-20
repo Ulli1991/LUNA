@@ -4,10 +4,39 @@ def sod_shock_3d(cfg):
     """
     3D Sod shock tube test - shock propagates in x-direction,
     uniform in y and z directions.
+
+    Automatically computes Ly, Lz, Ny, Nz to maintain cubic cells (dx = dy = dz)
+    with transverse dimensions close to 0.1.
     """
-    Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
-    Lx, Ly, Lz = cfg.Lx, cfg.Ly, cfg.Lz
+    Nx = cfg.Nx
+    Lx = cfg.Lx
     gamma = cfg.gamma
+
+    # Compute grid spacing in x-direction
+    dx = Lx / Nx
+
+    # Target transverse physical size
+    transverse_target = 0.1
+
+    # Compute Ny, Nz to get cubic cells
+    Ny = max(1, round(transverse_target / dx))
+    Nz = max(1, round(transverse_target / dx))
+
+    # Compute Ly, Lz to ensure exactly cubic cells
+    Ly = Ny * dx
+    Lz = Nz * dx
+
+    # Update the config object so the rest of the code uses these values
+    cfg.Ny = Ny
+    cfg.Nz = Nz
+    cfg.Ly = Ly
+    cfg.Lz = Lz
+
+    print(f"3D Sod Shock Tube Configuration:")
+    print(f"  X-direction: Nx={Nx}, Lx={Lx:.6f}, dx={dx:.6f}")
+    print(f"  Y-direction: Ny={Ny}, Ly={Ly:.6f}, dy={Ly/Ny:.6f}")
+    print(f"  Z-direction: Nz={Nz}, Lz={Lz:.6f}, dz={Lz/Nz:.6f}")
+    print(f"  Total cells: {Nx*Ny*Nz:,}")
 
     # 3D coordinates
     x = jnp.linspace(0, Lx, Nx, endpoint=False)
