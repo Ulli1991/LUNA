@@ -10,6 +10,7 @@ from ic_generation.ic import initial_conditions
 from time_integration.integrators import time_step
 from time_integration.cfl import compute_dt
 from file_io.write_snapshot import write_snapshot
+from hydro.physics_checks import validate_state
 
 def main():
 
@@ -39,6 +40,11 @@ def main():
     # Note: Some problems (e.g., Sod-Shock-3D) may modify cfg.Nx, cfg.Ny, cfg.Nz, cfg.Lx, cfg.Ly, cfg.Lz
     # to ensure proper grid spacing, so we initialize first
     U = initial_conditions(cfg)
+
+    # Validate initial conditions
+    print("Validating initial conditions...")
+    validate_state(U, cfg.gamma, step=0, time=cfg.t_start)
+    print("Initial conditions validated successfully")
 
     # --- Precompute constants to pass explicitly ---
     # These are computed AFTER initial_conditions so that any modifications to cfg are reflected
@@ -87,6 +93,10 @@ def main():
         U = time_step(U, dt, gamma, order, limiter, time_solver, boundary, dx, dy, dz)
         t += dt
         step += 1
+
+        # Validate state for unphysical values (will raise error if detected)
+        # GPU-resident check: only transfers 4 scalars from GPU to CPU
+        validate_state(U, gamma, step=step, time=t)
 
         print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
 
