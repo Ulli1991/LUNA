@@ -28,50 +28,38 @@ def pad(U, boundary):
     # -------------------------
 
     def periodic(U):
-        """Apply periodic boundary conditions."""
+        """
+        Apply periodic boundary conditions using jnp.pad.
+        Memory-optimized: uses JAX's built-in padding which avoids intermediate copies.
+        """
         if ndim == 1:
-            return jnp.concatenate([U[:, -1:], U, U[:, :1]], axis=1)
+            # Pad 1 cell on each side in the x-direction only
+            pad_width = ((0, 0), (1, 1))  # (Nvar axis, x axis)
         elif ndim == 2:
-            left  = U[:, -1:, :]
-            right = U[:, :1, :]
-            Ux = jnp.concatenate([left, U, right], axis=1)
-            bottom = Ux[:, :, -1:]
-            top    = Ux[:, :, :1]
-            return jnp.concatenate([bottom, Ux, top], axis=2)
+            # Pad 1 cell on each side in x and y directions
+            pad_width = ((0, 0), (1, 1), (1, 1))  # (Nvar, x, y)
         elif ndim == 3:
-            left  = U[:, -1:, :, :]
-            right = U[:, :1, :, :]
-            Ux = jnp.concatenate([left, U, right], axis=1)
-            bottom = Ux[:, :, -1:, :]
-            top    = Ux[:, :, :1, :]
-            Uy = jnp.concatenate([bottom, Ux, top], axis=2)
-            back  = Uy[:, :, :, -1:]
-            front = Uy[:, :, :, :1]
-            return jnp.concatenate([back, Uy, front], axis=3)
+            # Pad 1 cell on each side in x, y, z directions
+            pad_width = ((0, 0), (1, 1), (1, 1), (1, 1))  # (Nvar, x, y, z)
+
+        return jnp.pad(U, pad_width, mode='wrap')
 
     def zero_grad(U):
-        """Apply zero-gradient boundary conditions."""
+        """
+        Apply zero-gradient (Neumann) boundary conditions using jnp.pad.
+        Memory-optimized: uses JAX's built-in padding which avoids intermediate copies.
+        """
         if ndim == 1:
-            left  = U[:, 0:1]
-            right = U[:, -1:]
-            return jnp.concatenate([left, U, right], axis=1)
+            # Pad 1 cell on each side in the x-direction only
+            pad_width = ((0, 0), (1, 1))  # (Nvar axis, x axis)
         elif ndim == 2:
-            left  = U[:, 0:1, :]
-            right = U[:, -1:, :]
-            Ux = jnp.concatenate([left, U, right], axis=1)
-            bottom = Ux[:, :, 0:1]
-            top    = Ux[:, :, -1:]
-            return jnp.concatenate([bottom, Ux, top], axis=2)
+            # Pad 1 cell on each side in x and y directions
+            pad_width = ((0, 0), (1, 1), (1, 1))  # (Nvar, x, y)
         elif ndim == 3:
-            left  = U[:, 0:1, :, :]
-            right = U[:, -1:, :, :]
-            Ux = jnp.concatenate([left, U, right], axis=1)
-            bottom = Ux[:, :, 0:1, :]
-            top    = Ux[:, :, -1:, :]
-            Uy = jnp.concatenate([bottom, Ux, top], axis=2)
-            back  = Uy[:, :, :, 0:1]
-            front = Uy[:, :, :, -1:]
-            return jnp.concatenate([back, Uy, front], axis=3)
+            # Pad 1 cell on each side in x, y, z directions
+            pad_width = ((0, 0), (1, 1), (1, 1), (1, 1))  # (Nvar, x, y, z)
+
+        return jnp.pad(U, pad_width, mode='edge')
 
     def reflective(U):
         """

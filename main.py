@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from config import Config
+from utils.memory_utils import print_memory_usage
 from ic_generation.ic import initial_conditions
 from time_integration.integrators import time_step
 from time_integration.cfl import compute_dt_and_diagnostics
@@ -46,6 +47,9 @@ def main():
     validate_state(U, cfg.gamma, step=0, time=cfg.t_start)
     print("Initial conditions validated successfully")
 
+    # Print initial memory usage after all arrays are allocated
+    print_memory_usage("After initialization: ")
+
     # --- Precompute constants to pass explicitly ---
     # These are computed AFTER initial_conditions so that any modifications to cfg are reflected
     dx = cfg.Lx / cfg.Nx
@@ -80,6 +84,9 @@ def main():
     # Start the timer for the total runtime
     start_time = time.time()  # Record the start time of the simulation
 
+    # Flag to print memory after first few steps (to measure peak during computation)
+    printed_peak_memory = False
+
     # --- Time integration loop ---
     while t < cfg.t_end:
 
@@ -102,6 +109,11 @@ def main():
 
         print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
 
+        # Print peak memory after first 3 steps (after JIT compilation and warmup)
+        if not printed_peak_memory and step == 3:
+            print_memory_usage("After 3 steps (peak during computation): ")
+            printed_peak_memory = True
+
         # Save snapshot if the current time matches the snapshot time
         if t >= t_snapshot:
             print(f"Start saving snapshot at t = {t:.5f}")
@@ -122,6 +134,9 @@ def main():
     total_time = end_time - start_time  # Calculate the total runtime
 
     print(f"Done! Took {total_time:.5f} seconds! Good Bye and Good Day!!!")
+
+    # Print final memory usage
+    print_memory_usage("Final memory usage: ")
 
     # Plotting phase
     if cfg.PLOT_AFTER_SIM:
