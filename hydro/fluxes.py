@@ -6,7 +6,9 @@ Follows the old 2D code line by line.
 
 import jax
 import jax.numpy as jnp
+from functools import partial
 
+@partial(jax.jit, static_argnums=(2,))
 def hllc_flux(U_L, U_R, axis, gamma):
     """
     HLLC Riemann solver for 1D and 2D.

@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 from jax import jit, lax
+from functools import partial
 
 # ------------------- Slope limiters -------------------
 @jit
@@ -23,31 +24,32 @@ def vanleer(dl, dr):
     return jnp.where(dl*dr > 0, 2*dl*dr/(dl+dr), 0.0)
 
 # ------------------- Slope selection -------------------
+@partial(jit, static_argnums=(2,))
 def slope_limiter(dl, dr, limiter):
-    # Wrap limiters for lax.cond
+    """
+    Apply slope limiter based on limiter type.
+    Uses lax.switch for efficient 3-way branching.
+    """
+    # Wrap limiters for lax.switch
     def apply_minmod(_): return minmod(dl, dr)
     def apply_moncen(_): return moncen(dl, dr)
     def apply_vanleer(_): return vanleer(dl, dr)
 
-    return lax.cond(limiter == 0,
-                    apply_minmod,
-                    lambda _: lax.cond(limiter == 1, apply_moncen, apply_vanleer, None),
-                    None)
+    return lax.switch(limiter, [apply_minmod, apply_moncen, apply_vanleer], None)
 
 # ------------------- Compute slopes -------------------
 from hydro.padding import pad
 
-@jit
-def compute_slopes(U, limiter, boundary):
+@partial(jit, static_argnums=(1,))
+def compute_slopes_from_padded(U_pad, limiter):
     """
-    Compute slopes in 1D or 2D depending on U shape.
-    Pads U first using the selected boundary condition.
+    Compute slopes from an already-padded array.
+    More efficient when padding was already done externally.
 
-    U: (Nvar, Nx) or (Nvar, Nx, Ny)
+    U_pad: (Nvar, Nx+2) for 1D, (Nvar, Nx+2, Ny+2) for 2D, (Nvar, Nx+2, Ny+2, Nz+2) for 3D
     Returns slopes for interior cells only.
     """
-    U_pad = pad(U, boundary)  # <-- now uses general BC
-    ndim = U.ndim - 1  # number of spatial dimensions
+    ndim = U_pad.ndim - 1  # number of spatial dimensions
 
     # 1D case
     if ndim == 1:
@@ -83,4 +85,16 @@ def compute_slopes(U, limiter, boundary):
     dUz = slope_limiter(dz_B, dz_F, limiter)
 
     return dUx, dUy, dUz
+
+@partial(jit, static_argnums=(1, 2))
+def compute_slopes(U, limiter, boundary):
+    """
+    Compute slopes in 1D, 2D, or 3D depending on U shape.
+    Pads U first using the selected boundary condition, then computes slopes.
+
+    U: (Nvar, Nx) or (Nvar, Nx, Ny) or (Nvar, Nx, Ny, Nz)
+    Returns slopes for interior cells only.
+    """
+    U_pad = pad(U, boundary)
+    return compute_slopes_from_padded(U_pad, limiter)
 

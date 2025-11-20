@@ -1,11 +1,12 @@
 import jax.numpy as jnp
 from jax import jit, lax
+from functools import partial
 
 from hydro.padding import pad
-from hydro.slopes import compute_slopes
+from hydro.slopes import compute_slopes_from_padded
 from hydro.fluxes import hllc_flux
 
-@jit
+@partial(jit, static_argnums=(2, 3, 4))
 def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
     """
     Compute the flux divergence in 1D or 2D using first-order or second-order PLM.
@@ -64,7 +65,8 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
     # SECOND-ORDER PLM
     # -------------------
     def second_order(U_pad, dx, dy, dz, gamma, limiter, boundary, dFdx, dFdy, dFdz):
-        dUx, dUy, dUz = compute_slopes(U, limiter, boundary)  # <-- now returns 3 values
+        # Use already-padded array to avoid redundant padding
+        dUx, dUy, dUz = compute_slopes_from_padded(U_pad, limiter)
         if ndim == 1:
             Qc = U_pad[:, 1:-1]
             UL = Qc[:, :-1] + 0.5 * dUx[:, :-1]
@@ -121,14 +123,16 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
     # ORDER SELECTION (JIT-safe)
     # -------------------
     is_first_order = jnp.array(order == 0)  # 0 = first-order, 1 = PLM
-    operand = (U_pad, dx, dy, dz, gamma, limiter, boundary, dFdx, dFdy, dFdz)
+    # Don't pass static args (limiter, boundary) through operand - use closure instead
+    operand = (U_pad, dx, dy, dz, gamma, dFdx, dFdy, dFdz)
 
     def first_order_fun(ops):
-        _, _, _, _, _, _, _, dFdx, dFdy, dFdz = ops
+        _, _, _, _, _, dFdx, dFdy, dFdz = ops
         return dFdx, dFdy, dFdz
 
     def second_order_fun(ops):
-        U_pad, dx, dy, dz, gamma, limiter, boundary, dFdx, dFdy, dFdz = ops
+        U_pad, dx, dy, dz, gamma, dFdx, dFdy, dFdz = ops
+        # limiter and boundary are captured from outer scope (they're static)
         return second_order(U_pad, dx, dy, dz, gamma, limiter, boundary, dFdx, dFdy, dFdz)
 
     dFdx, dFdy, dFdz = lax.cond(is_first_order, first_order_fun, second_order_fun, operand)
