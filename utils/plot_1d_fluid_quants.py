@@ -40,6 +40,23 @@ def plot_1d_fluid_quantities(output_dir, base_name):
         velocity_x = np.array(cells["velocity_x"])
         internal_energy = np.array(cells["internal_energy"])
 
+        # If data is 3D or 2D, take a slice through the center
+        if density.ndim == 3:
+            # Extract 1D profile along x-axis at center of y,z
+            Ny, Nz = density.shape[1], density.shape[2]
+            j, k = Ny // 2, Nz // 2
+            density = density[:, j, k]
+            velocity_x = velocity_x[:, j, k]
+            internal_energy = internal_energy[:, j, k]
+        elif density.ndim == 2:
+            # For 2D, take a slice along x at center of y
+            Ny = density.shape[1]
+            j = Ny // 2
+            density = density[:, j]
+            velocity_x = velocity_x[:, j]
+            internal_energy = internal_energy[:, j]
+        # else: already 1D, nothing to do
+
         gamma = cells.attrs["gamma"]
         pressure = (gamma - 1.0) * internal_energy
 
@@ -65,6 +82,23 @@ def plot_1d_fluid_quantities(output_dir, base_name):
             density = np.array(cells["density"])
             velocity_x = np.array(cells["velocity_x"])
             internal_energy = np.array(cells["internal_energy"])
+
+            # If data is 3D or 2D, take a slice through the center
+            if density.ndim == 3:
+                # Extract 1D profile along x-axis at center of y,z
+                Ny, Nz = density.shape[1], density.shape[2]
+                j, k = Ny // 2, Nz // 2
+                density = density[:, j, k]
+                velocity_x = velocity_x[:, j, k]
+                internal_energy = internal_energy[:, j, k]
+            elif density.ndim == 2:
+                # For 2D, take a slice along x at center of y
+                Ny = density.shape[1]
+                j = Ny // 2
+                density = density[:, j]
+                velocity_x = velocity_x[:, j]
+                internal_energy = internal_energy[:, j]
+            # else: already 1D, nothing to do
 
             gamma = cells.attrs["gamma"]
             pressure = (gamma - 1.0) * internal_energy

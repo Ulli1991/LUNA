@@ -108,11 +108,11 @@ def main():
 
     # Plotting phase
     if cfg.PLOT_AFTER_SIM:
-        if cfg.SPATIAL_DIMENSION == 1:
+        if cfg.SPATIAL_DIMENSION == 1 or cfg.SPATIAL_DIMENSION == 3:
             print("Generating 1D fluid quantity plots...")
             from utils.plot_1d_fluid_quants import plot_1d_fluid_quantities
             plot_1d_fluid_quantities(cfg.output_dir, cfg.base_name)
-        else:
+        elif cfg.SPATIAL_DIMENSION == 2:
             print("Generating density plots from all HDF5 snapshots...")
             from utils.plot_density2d import plot_density2d
             plot_density2d(cfg.output_dir, cfg.base_name)

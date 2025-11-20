@@ -29,6 +29,9 @@ class Config:
     #       "Kelvin-Helmholtz"
     #       "Double-Mach-Reflection"
     #
+    #   3D:
+    #       "Sod-Shock-3D"
+    #
     test_problem: str = "Shu-Osher"
 
     # ---------------- Device ----------------

@@ -14,7 +14,7 @@ def rk4_step(U, dt, gamma, order, limiter, boundary, dx, dy=None, dz=None):
     k4 = flux_divergence(U + dt*k3, gamma, order, limiter, boundary, dx, dy, dz)
     return U + (dt/6.0)*(k1 + 2*k2 + 2*k3 + k4)
 
-def muscl_hancock_step(U, dt, gamma, order, limiter, dx, dy=None, dz=None):
+def muscl_hancock_step(U, dt, gamma, order, limiter, boundary, dx, dy=None, dz=None):
     k1 = flux_divergence(U, gamma, order, limiter, boundary, dx, dy, dz)
     k2 = flux_divergence(U + dt * k1, gamma, order, limiter, boundary, dx, dy, dz)
     return U + dt * 0.5 * (k1 + k2)

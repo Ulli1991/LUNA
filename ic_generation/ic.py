@@ -11,7 +11,8 @@ from .advection_square import advection_square
 from .rotation_slotted_disk import rotation_slotted_disk
 from .soundwave_advected2d import soundwave_advected2d
 from .kh import kelvin_helmholtz
-from .double_mach_reflection import double_mach_reflection 
+from .double_mach_reflection import double_mach_reflection
+from .sod3d import sod_shock_3d 
 
 def initial_conditions(cfg):
     """
@@ -43,13 +44,16 @@ def initial_conditions(cfg):
         return kelvin_helmholtz(cfg)
     elif cfg.test_problem == "Double-Mach-Reflection":
         return double_mach_reflection(cfg)
+    elif cfg.test_problem == "Sod-Shock-3D":
+        return sod_shock_3d(cfg)
     else:
         raise ValueError(
             f"Unknown test problem '{cfg.test_problem}'.\n"
             "Available options:\n"
-            "  Sod-Shock, Woodward-Colella, Shu-Osher,\n"
-            "  Soundwave, Soundwave-Advected,\n"
-            "  Einfeldt-Strong, Einfeldt-Shear, Einfeldt-Transverse,\n"
-            "  Square-Advected, Rotate-Slotted-Disk, Soundwave-Advected-2D,\n"
-            "  Kelvin-Helmholtz, Double-Mach-Reflection"
+            "  1D: Sod-Shock, Woodward-Colella, Shu-Osher,\n"
+            "      Soundwave, Soundwave-Advected,\n"
+            "      Einfeldt-Strong, Einfeldt-Shear, Einfeldt-Transverse\n"
+            "  2D: Square-Advected, Rotate-Slotted-Disk, Soundwave-Advected-2D,\n"
+            "      Kelvin-Helmholtz, Double-Mach-Reflection\n"
+            "  3D: Sod-Shock-3D"
         )

@@ -55,16 +55,32 @@ def compute_slopes(U, limiter, boundary):
         dx_R = U_pad[:, 2:  ] - U_pad[:, 1:-1]
         dUx = slope_limiter(dx_L, dx_R, limiter)
         dUy = None
-        return dUx, dUy
+        dUz = None
+        return dUx, dUy, dUz
 
     # 2D case
-    dx_L = U_pad[:, 1:-1, 1:-1] - U_pad[:, :-2, 1:-1]
-    dx_R = U_pad[:, 2:  , 1:-1] - U_pad[:, 1:-1, 1:-1]
-    dy_D = U_pad[:, 1:-1, 1:-1] - U_pad[:, 1:-1, :-2]
-    dy_U = U_pad[:, 1:-1, 2:  ] - U_pad[:, 1:-1, 1:-1]
+    if ndim == 2:
+        dx_L = U_pad[:, 1:-1, 1:-1] - U_pad[:, :-2, 1:-1]
+        dx_R = U_pad[:, 2:  , 1:-1] - U_pad[:, 1:-1, 1:-1]
+        dy_D = U_pad[:, 1:-1, 1:-1] - U_pad[:, 1:-1, :-2]
+        dy_U = U_pad[:, 1:-1, 2:  ] - U_pad[:, 1:-1, 1:-1]
+
+        dUx = slope_limiter(dx_L, dx_R, limiter)
+        dUy = slope_limiter(dy_D, dy_U, limiter)
+        dUz = None
+        return dUx, dUy, dUz
+
+    # 3D case
+    dx_L = U_pad[:, 1:-1, 1:-1, 1:-1] - U_pad[:, :-2, 1:-1, 1:-1]
+    dx_R = U_pad[:, 2:  , 1:-1, 1:-1] - U_pad[:, 1:-1, 1:-1, 1:-1]
+    dy_D = U_pad[:, 1:-1, 1:-1, 1:-1] - U_pad[:, 1:-1, :-2, 1:-1]
+    dy_U = U_pad[:, 1:-1, 2:  , 1:-1] - U_pad[:, 1:-1, 1:-1, 1:-1]
+    dz_B = U_pad[:, 1:-1, 1:-1, 1:-1] - U_pad[:, 1:-1, 1:-1, :-2]
+    dz_F = U_pad[:, 1:-1, 1:-1, 2:  ] - U_pad[:, 1:-1, 1:-1, 1:-1]
 
     dUx = slope_limiter(dx_L, dx_R, limiter)
     dUy = slope_limiter(dy_D, dy_U, limiter)
+    dUz = slope_limiter(dz_B, dz_F, limiter)
 
-    return dUx, dUy
+    return dUx, dUy, dUz
 
