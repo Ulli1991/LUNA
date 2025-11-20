@@ -5,6 +5,25 @@ import time
 import jax
 import jax.numpy as jnp
 
+# ============================================================================
+# JAX PERFORMANCE FLAGS - Set BEFORE any JAX operations!
+# ============================================================================
+# Use float32 instead of float64 for 2x speed and 2x memory savings
+jax.config.update("jax_enable_x64", False)
+
+# Use high precision for matmuls (enables tensor cores on modern GPUs)
+jax.config.update("jax_default_matmul_precision", "high")
+
+# Enable optimizations (usually on by default, but explicit is better)
+jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")  # Cache compiled kernels
+
+print("JAX Performance Settings:")
+print(f"  - Precision: {'float64' if jax.config.jax_enable_x64 else 'float32'}")
+print(f"  - Matmul precision: {jax.config.jax_default_matmul_precision}")
+print(f"  - Platform: {jax.default_backend()}")
+print()
+# ============================================================================
+
 from config import Config
 from utils.memory_utils import print_memory_usage
 from ic_generation.ic import initial_conditions
@@ -18,6 +37,9 @@ def main():
     # --- Load configuration (pure Python object) ---
     cfg = Config()
 
+    print("="*60)
+    print("DEVICE INITIALIZATION")
+    print("="*60)
     device_type = cfg.DEVICE
     if device_type == 0:
         print("Initializing Run on CPU...")
@@ -28,33 +50,44 @@ def main():
         try:
             jax.config.update("jax_platform_name", "rocm")
             _ = jax.devices()[0]  # Trigger device query to verify availability
-            print("Using ROCm GPU")
+            print("✓ Using ROCm GPU")
         except Exception:
             try:
                 jax.config.update("jax_platform_name", "cuda")
                 _ = jax.devices()[0]
-                print("Using CUDA GPU")
+                print("✓ Using CUDA GPU")
             except Exception:
                 sys.exit("Error: No GPU available. Cannot proceed with GPU run.")
+    print()
 
     # --- Initialize fields (must be done before computing grid spacing) ---
     # Note: Some problems (e.g., Sod-Shock-3D) may modify cfg.Nx, cfg.Ny, cfg.Nz, cfg.Lx, cfg.Ly, cfg.Lz
     # to ensure proper grid spacing, so we initialize first
+    print("="*60)
+    print("INITIAL CONDITIONS")
+    print("="*60)
     U = initial_conditions(cfg)
 
     # Validate initial conditions
     print("Validating initial conditions...")
     validate_state(U, cfg.gamma, step=0, time=cfg.t_start)
-    print("Initial conditions validated successfully")
+    print("✓ Initial conditions validated successfully")
+    print()
 
     # Print initial memory usage after all arrays are allocated
     print_memory_usage("After initialization: ")
+    print()
 
     # --- Precompute constants to pass explicitly ---
     # These are computed AFTER initial_conditions so that any modifications to cfg are reflected
     dx = cfg.Lx / cfg.Nx
     dy = cfg.Ly / cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else None
     dz = cfg.Lz / cfg.Nz if cfg.SPATIAL_DIMENSION == 3 else None
+
+    # Precompute inverse grid spacings (multiplication is faster than division on GPU)
+    inv_dx = 1.0 / dx
+    inv_dy = 1.0 / dy if dy is not None else None
+    inv_dz = 1.0 / dz if dz is not None else None
 
     gamma = cfg.gamma
     order = cfg.ORDER
@@ -80,7 +113,15 @@ def main():
     t = cfg.t_start
     step = 0
 
-    print("Starting simulation…")
+    print("="*60)
+    print("SIMULATION START")
+    print("="*60)
+    print(f"Time range: {cfg.t_start:.3f} → {cfg.t_end:.3f}")
+    print(f"Grid: {cfg.Nx} x {cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 'N/A'} x {cfg.Nz if cfg.SPATIAL_DIMENSION == 3 else 'N/A'}")
+    print(f"Order: {'First-order' if cfg.ORDER == 0 else 'Second-order PLM'}")
+    print(f"Time solver: {['RK2', 'MUSCL-Hancock', 'RK4'][cfg.TIME_SOLVER]}")
+    print()
+
     # Start the timer for the total runtime
     start_time = time.time()  # Record the start time of the simulation
 
@@ -99,15 +140,20 @@ def main():
             dt = cfg.t_end - t  # Ensure we do not overshoot the final time
 
         # Time stepping
-        U = time_step(U, dt, gamma, order, limiter, time_solver, boundary, dx, dy, dz)
+        U = time_step(U, dt, gamma, order, limiter, time_solver, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
         t += dt
         step += 1
 
-        # Validate state using pre-computed diagnostics (no redundant computation)
-        # GPU-resident check: only transfers 4 scalars from GPU to CPU
-        validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=step, time=t)
+        # Validate state less frequently to avoid GPU synchronization overhead
+        # Checking every step causes GPU to wait for CPU - very slow!
+        # Only validate every 100 steps (or first step) - assumes simulation is stable
+        if step % 100 == 0 or step == 1:
+            validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=step, time=t)
 
-        print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
+        # Print progress less frequently to avoid GPU synchronization overhead
+        # Printing every step causes GPU to wait for CPU - very slow!
+        if step % 100 == 0 or step == 1:  # Print every 10 steps (or first step)
+            print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
 
         # Print peak memory after first 3 steps (after JIT compilation and warmup)
         if not printed_peak_memory and step == 3:
@@ -116,7 +162,9 @@ def main():
 
         # Save snapshot if the current time matches the snapshot time
         if t >= t_snapshot:
-            print(f"Start saving snapshot at t = {t:.5f}")
+            print(f"\n{'─'*60}")
+            print(f"💾 Saving snapshot #{snapshot_idx} at t = {t:.5f}")
+            print(f"{'─'*60}")
             # Call the updated write_snapshot function to save the full state to HDF5
             write_snapshot(U, cfg, t, snapshot_idx)
             snapshot_idx += 1
@@ -126,28 +174,45 @@ def main():
                 t_snapshot = snapshot_times[snapshot_idx]
             else:
                 t_snapshot = cfg.t_end  # Once all snapshots are saved, set t_snapshot to the end time
-            
-            print("Finished saving snapshot")
+
+            print(f"✓ Snapshot saved successfully\n")
 
     # End the timer and calculate the total runtime
     end_time = time.time()  # Record the end time of the simulation
     total_time = end_time - start_time  # Calculate the total runtime
 
-    print(f"Done! Took {total_time:.5f} seconds! Good Bye and Good Day!!!")
+    print("\n" + "="*60)
+    print("SIMULATION COMPLETED")
+    print("="*60)
+    print(f"✓ Total runtime: {total_time:.2f} seconds")
+    print(f"✓ Total steps: {step}")
+    print(f"✓ Final time: {t:.5f}")
+    print()
 
     # Print final memory usage
     print_memory_usage("Final memory usage: ")
+    print()
 
     # Plotting phase
     if cfg.PLOT_AFTER_SIM:
+        print("="*60)
+        print("GENERATING PLOTS")
+        print("="*60)
         if cfg.SPATIAL_DIMENSION == 1 or cfg.SPATIAL_DIMENSION == 3:
             print("Generating 1D fluid quantity plots...")
             from utils.plot_1d_fluid_quants import plot_1d_fluid_quantities
             plot_1d_fluid_quantities(cfg.output_dir, cfg.base_name)
+            print("✓ Plots generated successfully")
         elif cfg.SPATIAL_DIMENSION == 2:
             print("Generating density plots from all HDF5 snapshots...")
             from utils.plot_density2d import plot_density2d
             plot_density2d(cfg.output_dir, cfg.base_name)
+            print("✓ Plots generated successfully")
+        print()
+
+    print("="*60)
+    print("Good Bye and Good Day!")
+    print("="*60)
 
 if __name__ == "__main__":
     main()

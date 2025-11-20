@@ -7,7 +7,7 @@ from hydro.slopes import compute_slopes_from_padded
 from hydro.fluxes import hllc_flux
 
 @partial(jit, static_argnums=(2, 3, 4))
-def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
+def flux_divergence(U, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz):
     """
     Compute the flux divergence in 1D, 2D, or 3D using first-order or second-order PLM.
 
@@ -18,6 +18,7 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
     U: (Nvar, Nx) or (Nvar, Nx, Ny) or (Nvar, Nx, Ny, Nz)
     boundary: int, 0=periodic, 1=zero-gradient, 2=reflective
     order: int, 0=first-order Godunov, 1=second-order PLM
+    inv_dx, inv_dy, inv_dz: Precomputed 1/dx, 1/dy, 1/dz (faster than division)
     Returns: -(dFdx + dFdy + dFdz) with shapes matching U
     """
     U_pad = pad(U, boundary)
@@ -32,37 +33,37 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
             U_Lx = U_pad[:, :-1]
             U_Rx = U_pad[:, 1:]
             Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:] - Fx[:, :-1]) / dx
+            dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx  # Multiplication faster than division
             return dFdx, None, None
         elif ndim == 2:
             U_Lx = U_pad[:, :-1, 1:-1]
             U_Rx = U_pad[:, 1: , 1:-1]
             Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) / dx
+            dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) * inv_dx  # Multiplication faster than division
 
             U_By = U_pad[:, 1:-1, :-1]
             U_Ty = U_pad[:, 1:-1, 1: ]
             Fy = hllc_flux(U_By, U_Ty, axis=1, gamma=gamma)
-            dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) / dy
+            dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) * inv_dy  # Multiplication faster than division
             return dFdx, dFdy, None
         else:  # 3D
             # X-direction flux
             U_Lx = U_pad[:, :-1, 1:-1, 1:-1]
             U_Rx = U_pad[:, 1: , 1:-1, 1:-1]
             Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) / dx
+            dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx  # Multiplication faster than division
 
             # Y-direction flux
             U_By = U_pad[:, 1:-1, :-1, 1:-1]
             U_Ty = U_pad[:, 1:-1, 1: , 1:-1]
             Fy = hllc_flux(U_By, U_Ty, axis=1, gamma=gamma)
-            dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) / dy
+            dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy  # Multiplication faster than division
 
             # Z-direction flux
             U_Bz = U_pad[:, 1:-1, 1:-1, :-1]
             U_Fz = U_pad[:, 1:-1, 1:-1, 1: ]
             Fz = hllc_flux(U_Bz, U_Fz, axis=2, gamma=gamma)
-            dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) / dz
+            dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz  # Multiplication faster than division
             return dFdx, dFdy, dFdz
 
     # -------------------
@@ -99,7 +100,7 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
 
             # Compute fluxes at all interfaces
             Fx = hllc_flux(UL, UR, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:] - Fx[:, :-1]) / dx
+            dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx  # Multiplication faster than division
             return dFdx, None, None
 
         elif ndim == 2:
@@ -119,7 +120,7 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
                 U_pad[:, -1:, 1:-1]               # Right boundary
             ], axis=1)
             Fx = hllc_flux(UL_x, UR_x, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) / dx
+            dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) * inv_dx  # Multiplication faster than division
 
             # Y-direction reconstruction at ALL Ny+1 interfaces
             UL_y = jnp.concatenate([
@@ -131,7 +132,7 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
                 U_pad[:, 1:-1, -1:]               # Top boundary
             ], axis=2)
             Fy = hllc_flux(UL_y, UR_y, axis=1, gamma=gamma)
-            dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) / dy
+            dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) * inv_dy  # Multiplication faster than division
 
             return dFdx, dFdy, None
 
@@ -153,7 +154,7 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
                 U_pad[:, -1:, 1:-1, 1:-1]
             ], axis=1)
             Fx = hllc_flux(UL_x, UR_x, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) / dx
+            dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx  # Multiplication faster than division
 
             # Y-direction reconstruction
             UL_y = jnp.concatenate([
@@ -165,7 +166,7 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
                 U_pad[:, 1:-1, -1:, 1:-1]
             ], axis=2)
             Fy = hllc_flux(UL_y, UR_y, axis=1, gamma=gamma)
-            dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) / dy
+            dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy  # Multiplication faster than division
 
             # Z-direction reconstruction
             UL_z = jnp.concatenate([
@@ -177,7 +178,7 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy=None, dz=None):
                 U_pad[:, 1:-1, 1:-1, -1:]
             ], axis=3)
             Fz = hllc_flux(UL_z, UR_z, axis=2, gamma=gamma)
-            dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) / dz
+            dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz  # Multiplication faster than division
 
             return dFdx, dFdy, dFdz
 
