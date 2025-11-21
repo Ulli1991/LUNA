@@ -24,13 +24,16 @@ print(f"  - Platform: {jax.default_backend()}")
 print()
 # ============================================================================
 
+from functools import partial
+
 from config import Config
 from utils.memory_utils import print_memory_usage
 from ic_generation.ic import initial_conditions
-from time_integration.integrators import time_step
+from time_integration.integrators import rk2_step, rk4_step, muscl_hancock_step
 from time_integration.cfl import compute_dt_and_diagnostics
 from file_io.write_snapshot import write_snapshot
 from hydro.physics_checks import validate_state, validate_from_diagnostics
+from hydro.divergence import flux_divergence
 
 def main():
 
@@ -89,11 +92,36 @@ def main():
     inv_dy = 1.0 / dy if dy is not None else None
     inv_dz = 1.0 / dz if dz is not None else None
 
-    gamma = cfg.gamma
-    order = cfg.ORDER
-    limiter = cfg.LIMITER
-    time_solver = cfg.TIME_SOLVER
-    boundary = cfg.BOUNDARY
+    # --- Create specialized functions using partial application ---
+    # These functions have all constant parameters baked in, eliminating parameter threading
+    print("="*60)
+    print("CREATING SPECIALIZED SIMULATION FUNCTIONS")
+    print("="*60)
+    print("Baking constant parameters into functions:")
+    print(f"  - Grid spacing: dx={dx:.6f}, dy={dy}, dz={dz}")
+    print(f"  - Physics: gamma={cfg.gamma:.3f}")
+    print(f"  - Numerics: order={cfg.ORDER}, limiter={cfg.LIMITER}, boundary={cfg.BOUNDARY}")
+    print(f"  - Time solver: {['RK2', 'MUSCL-Hancock', 'RK4'][cfg.TIME_SOLVER]}")
+    print()
+
+    # Create specialized flux_divergence with all parameters baked in
+    flux_fn = partial(
+        flux_divergence,
+        gamma=cfg.gamma,
+        order=cfg.ORDER,
+        limiter=cfg.LIMITER,
+        boundary=cfg.BOUNDARY,
+        dx=dx, dy=dy, dz=dz,
+        inv_dx=inv_dx, inv_dy=inv_dy, inv_dz=inv_dz
+    )
+
+    # Select and specialize the time integration method
+    time_solver_map = {
+        0: rk2_step,
+        1: muscl_hancock_step,
+        2: rk4_step
+    }
+    time_step_fn = partial(time_solver_map[cfg.TIME_SOLVER], flux_fn=flux_fn)
 
     # --- Set output frequency ---
     # Compute number of snapshots based on time between snapshots and total simulation time
@@ -118,8 +146,6 @@ def main():
     print("="*60)
     print(f"Time range: {cfg.t_start:.3f} → {cfg.t_end:.3f}")
     print(f"Grid: {cfg.Nx} x {cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 'N/A'} x {cfg.Nz if cfg.SPATIAL_DIMENSION == 3 else 'N/A'}")
-    print(f"Order: {'First-order' if cfg.ORDER == 0 else 'Second-order PLM'}")
-    print(f"Time solver: {['RK2', 'MUSCL-Hancock', 'RK4'][cfg.TIME_SOLVER]}")
     print()
 
     # Start the timer for the total runtime
@@ -134,13 +160,13 @@ def main():
         # Compute dt AND physics diagnostics in one pass (fused to avoid redundant computation)
         t_snapshot = snapshot_times[snapshot_idx]
         dt, min_rho, min_p, has_nan, has_inf = compute_dt_and_diagnostics(
-            U, gamma, cfg.CFL, t, t_snapshot, dx, dy, dz
+            U, cfg.gamma, cfg.CFL, t, t_snapshot, dx, dy, dz
         )
         if t + dt > cfg.t_end:
             dt = cfg.t_end - t  # Ensure we do not overshoot the final time
 
-        # Time stepping
-        U = time_step(U, dt, gamma, order, limiter, time_solver, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
+        # Time stepping with specialized function (all parameters baked in!)
+        U = time_step_fn(U, dt)
         t += dt
         step += 1
 

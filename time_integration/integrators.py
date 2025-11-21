@@ -2,38 +2,58 @@ import jax.numpy as jnp
 from jax import jit
 from functools import partial
 
-from hydro.divergence import flux_divergence
+@partial(jit, static_argnames=['flux_fn'])
+def rk2_step(U, dt, flux_fn):
+    """
+    RK2 time integration.
 
-@partial(jit, static_argnums=(3, 4, 5))
-def rk2_step(U, dt, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz):
-    k1 = flux_divergence(U, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
-    k2 = flux_divergence(U + 0.5 * dt * k1, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
+    Parameters
+    ----------
+    U : array
+        Conservative state
+    dt : float
+        Timestep
+    flux_fn : callable (static argument)
+        Flux divergence function with signature flux_fn(U) -> dU/dt
+    """
+    k1 = flux_fn(U)
+    k2 = flux_fn(U + 0.5 * dt * k1)
     return U + dt * k2
 
-@partial(jit, static_argnums=(3, 4, 5))
-def rk4_step(U, dt, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz):
-    k1 = flux_divergence(U, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
-    k2 = flux_divergence(U + 0.5*dt*k1, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
-    k3 = flux_divergence(U + 0.5*dt*k2, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
-    k4 = flux_divergence(U + dt*k3, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
+@partial(jit, static_argnames=['flux_fn'])
+def rk4_step(U, dt, flux_fn):
+    """
+    RK4 time integration.
+
+    Parameters
+    ----------
+    U : array
+        Conservative state
+    dt : float
+        Timestep
+    flux_fn : callable (static argument)
+        Flux divergence function with signature flux_fn(U) -> dU/dt
+    """
+    k1 = flux_fn(U)
+    k2 = flux_fn(U + 0.5*dt*k1)
+    k3 = flux_fn(U + 0.5*dt*k2)
+    k4 = flux_fn(U + dt*k3)
     return U + (dt/6.0)*(k1 + 2*k2 + 2*k3 + k4)
 
-@partial(jit, static_argnums=(3, 4, 5))
-def muscl_hancock_step(U, dt, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz):
-    k1 = flux_divergence(U, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
-    k2 = flux_divergence(U + dt * k1, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
-    return U + dt * 0.5 * (k1 + k2)
+@partial(jit, static_argnames=['flux_fn'])
+def muscl_hancock_step(U, dt, flux_fn):
+    """
+    MUSCL-Hancock predictor-corrector time integration.
 
-@partial(jit, static_argnums=(3, 4, 5, 6))
-def time_step(U, dt, gamma, order, limiter, time_solver, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz):
+    Parameters
+    ----------
+    U : array
+        Conservative state
+    dt : float
+        Timestep
+    flux_fn : callable (static argument)
+        Flux divergence function with signature flux_fn(U) -> dU/dt
     """
-    Choose the appropriate time integration method based on the config setting.
-    """
-    if time_solver == 0:  # RK2
-        return rk2_step(U, dt, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
-    elif time_solver == 1:  # Predictor-Corrector (Hancock)
-        return muscl_hancock_step(U, dt, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
-    elif time_solver == 2:  # RK4
-        return rk4_step(U, dt, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz)
-    else:
-        raise ValueError(f"Invalid TIME_SOLVER value: {time_solver}")
+    k1 = flux_fn(U)
+    k2 = flux_fn(U + dt * k1)
+    return U + dt * 0.5 * (k1 + k2)
