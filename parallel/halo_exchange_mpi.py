@@ -111,7 +111,14 @@ def _exchange_halos_nonblocking(patch: GridPatch, comm: MPI.Comm) -> None:
     1. Post all Irecv first
     2. Post all Isend
     3. Wait for all to complete
+
+    OPTIMIZATION: Early return if no neighbors (single-rank case).
     """
+    # Check if we have any neighbors at all (optimization for single-rank)
+    has_neighbors = any(neighbors for neighbors in patch.neighbors.values())
+    if not has_neighbors:
+        return  # No communication needed
+
     rank = comm.Get_rank()
 
     send_requests = []
