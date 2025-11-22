@@ -211,7 +211,7 @@ class GridPatch:
                     else:
                         slices.append(slice(None, ng))    # Lower ghost cells
             else:
-                # For other dimensions, include all cells
+                # For other dimensions, include all cells (including ghost)
                 slices.append(slice(None))
 
         return tuple(slices)

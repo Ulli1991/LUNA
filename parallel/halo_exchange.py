@@ -230,6 +230,9 @@ def _apply_zero_gradient(patch: GridPatch, direction: str) -> None:
 
     elif ndim == 3:
         # Build slice for each axis
+        # For non-boundary dimensions, use slice(None) to fill ENTIRE ghost slab
+        # including edges/corners. Values in edge/corner cells will be filled
+        # by subsequent boundary applications in other directions.
         slices_ghost = [slice(None)]  # Field dimension
         slices_interior = [slice(None)]
 
@@ -242,6 +245,7 @@ def _apply_zero_gradient(patch: GridPatch, direction: str) -> None:
                     slices_ghost.append(slice(None, ng))
                     slices_interior.append(slice(ng, ng+1))
             else:
+                # Use all cells (including ghost) so edges/corners get filled
                 slices_ghost.append(slice(None))
                 slices_interior.append(slice(None))
 
@@ -270,8 +274,22 @@ def _apply_zero_gradient(patch: GridPatch, direction: str) -> None:
                 else:
                     patch.data = patch.data.at[:, :, i].set(interior_values[:, :, 0])
         elif ndim == 3:
-            # Fill each ghost layer
-            pass  # More complex, implement if needed
+            # Fill each ghost layer for 3D - fill ENTIRE slab including edges/corners
+            if axis == 0:  # x-boundary
+                if is_upper:
+                    patch.data = patch.data.at[:, -ng+i, :, :].set(interior_values[:, 0, :, :])
+                else:
+                    patch.data = patch.data.at[:, i, :, :].set(interior_values[:, 0, :, :])
+            elif axis == 1:  # y-boundary
+                if is_upper:
+                    patch.data = patch.data.at[:, :, -ng+i, :].set(interior_values[:, :, 0, :])
+                else:
+                    patch.data = patch.data.at[:, :, i, :].set(interior_values[:, :, 0, :])
+            else:  # z-boundary (axis == 2)
+                if is_upper:
+                    patch.data = patch.data.at[:, :, :, -ng+i].set(interior_values[:, :, :, 0])
+                else:
+                    patch.data = patch.data.at[:, :, :, i].set(interior_values[:, :, :, 0])
 
 
 def _apply_reflective(patch: GridPatch, direction: str) -> None:
@@ -331,12 +349,75 @@ def _apply_reflective(patch: GridPatch, direction: str) -> None:
                 patch.data = patch.data.at[mom_field, ghost_idx].set(-patch.data[mom_field, interior_idx])
 
     elif ndim == 2:
-        # Similar logic for 2D
-        pass  # Implement if needed
+        # 2D reflective boundary
+        if axis == 0:  # x-boundary
+            if is_upper:
+                for i in range(ng):
+                    ghost_idx = -ng + i
+                    interior_idx = -ng - 1 - i
+                    patch.data = patch.data.at[:, ghost_idx, :].set(patch.data[:, interior_idx, :])
+                    patch.data = patch.data.at[mom_field, ghost_idx, :].set(-patch.data[mom_field, interior_idx, :])
+            else:
+                for i in range(ng):
+                    ghost_idx = i
+                    interior_idx = 2*ng - 1 - i
+                    patch.data = patch.data.at[:, ghost_idx, :].set(patch.data[:, interior_idx, :])
+                    patch.data = patch.data.at[mom_field, ghost_idx, :].set(-patch.data[mom_field, interior_idx, :])
+        else:  # y-boundary (axis == 1)
+            if is_upper:
+                for i in range(ng):
+                    ghost_idx = -ng + i
+                    interior_idx = -ng - 1 - i
+                    patch.data = patch.data.at[:, :, ghost_idx].set(patch.data[:, :, interior_idx])
+                    patch.data = patch.data.at[mom_field, :, ghost_idx].set(-patch.data[mom_field, :, interior_idx])
+            else:
+                for i in range(ng):
+                    ghost_idx = i
+                    interior_idx = 2*ng - 1 - i
+                    patch.data = patch.data.at[:, :, ghost_idx].set(patch.data[:, :, interior_idx])
+                    patch.data = patch.data.at[mom_field, :, ghost_idx].set(-patch.data[mom_field, :, interior_idx])
 
     elif ndim == 3:
-        # Similar logic for 3D
-        pass  # Implement if needed
+        # 3D reflective boundary - fill ENTIRE slab including edges/corners
+        if axis == 0:  # x-boundary
+            if is_upper:
+                for i in range(ng):
+                    ghost_idx = -ng + i
+                    interior_idx = -ng - 1 - i
+                    patch.data = patch.data.at[:, ghost_idx, :, :].set(patch.data[:, interior_idx, :, :])
+                    patch.data = patch.data.at[mom_field, ghost_idx, :, :].set(-patch.data[mom_field, interior_idx, :, :])
+            else:
+                for i in range(ng):
+                    ghost_idx = i
+                    interior_idx = 2*ng - 1 - i
+                    patch.data = patch.data.at[:, ghost_idx, :, :].set(patch.data[:, interior_idx, :, :])
+                    patch.data = patch.data.at[mom_field, ghost_idx, :, :].set(-patch.data[mom_field, interior_idx, :, :])
+        elif axis == 1:  # y-boundary
+            if is_upper:
+                for i in range(ng):
+                    ghost_idx = -ng + i
+                    interior_idx = -ng - 1 - i
+                    patch.data = patch.data.at[:, :, ghost_idx, :].set(patch.data[:, :, interior_idx, :])
+                    patch.data = patch.data.at[mom_field, :, ghost_idx, :].set(-patch.data[mom_field, :, interior_idx, :])
+            else:
+                for i in range(ng):
+                    ghost_idx = i
+                    interior_idx = 2*ng - 1 - i
+                    patch.data = patch.data.at[:, :, ghost_idx, :].set(patch.data[:, :, interior_idx, :])
+                    patch.data = patch.data.at[mom_field, :, ghost_idx, :].set(-patch.data[mom_field, :, interior_idx, :])
+        else:  # z-boundary (axis == 2)
+            if is_upper:
+                for i in range(ng):
+                    ghost_idx = -ng + i
+                    interior_idx = -ng - 1 - i
+                    patch.data = patch.data.at[:, :, :, ghost_idx].set(patch.data[:, :, :, interior_idx])
+                    patch.data = patch.data.at[mom_field, :, :, ghost_idx].set(-patch.data[mom_field, :, :, interior_idx])
+            else:
+                for i in range(ng):
+                    ghost_idx = i
+                    interior_idx = 2*ng - 1 - i
+                    patch.data = patch.data.at[:, :, :, ghost_idx].set(patch.data[:, :, :, interior_idx])
+                    patch.data = patch.data.at[mom_field, :, :, ghost_idx].set(-patch.data[mom_field, :, :, interior_idx])
 
 
 def _get_opposite_direction(direction: str) -> str:
@@ -353,9 +434,17 @@ def update_ghosts(domain: Domain, boundary_type: int, devices: Optional[List[jax
     """
     Convenience function to update all ghost cells.
 
+    IMPORTANT: Order matters for correctness at domain boundaries!
+
     Performs:
-    1. Halo exchange (interior boundaries)
-    2. Boundary conditions (domain boundaries)
+    1. Halo exchange (fills inter-patch ghost cells from neighbors)
+    2. Boundary conditions (fills domain edge ghost cells)
+
+    This order ensures:
+    - Interior patches get fresh neighbor data first
+    - Domain boundary ghost cells are filled AFTER exchange (won't be overwritten)
+    - Corner cells in 2D/3D are properly handled (face exchanges fill corners,
+      then domain BC overwrites only the actual boundary corners)
 
     Parameters
     ----------
@@ -375,9 +464,9 @@ def update_ghosts(domain: Domain, boundary_type: int, devices: Optional[List[jax
     >>> devices = jax.devices()
     >>> update_ghosts(domain, boundary_type=0, devices=devices)
     """
-    # Step 1: Exchange halos between patches
+    # Step 1: Exchange halos between patches FIRST
     exchange_halos(domain, devices)
 
-    # Step 2: Apply boundary conditions at domain edges
+    # Step 2: Apply boundary conditions at domain edges AFTER
     for patch in domain.patches:
         apply_boundary_conditions(patch, boundary_type)

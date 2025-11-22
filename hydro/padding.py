@@ -141,13 +141,13 @@ def pad(U, boundary):
 
     is_periodic  = jnp.array(boundary == 0)
     is_zero_grad = jnp.array(boundary == 1)
-    is_reflective = jnp.array(boundary == 2)
 
     # -------------------------
     # Correct JAX nested cond
     # -------------------------
 
     # Use lax.cond to select the boundary condition
+    # Note: boundary=3 (no-pad) is handled above with Python if/else
     return lax.cond(
         is_periodic,
         periodic,

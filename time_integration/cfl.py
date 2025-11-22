@@ -146,8 +146,11 @@ def compute_dt_and_diagnostics(U, gamma, CFL, t, t_snapshot, dx, dy=None, dz=Non
     dt_cfl = CFL * dx_min / jnp.max(smax)
 
     # Adjust for snapshot time
+    # If time_to_snapshot is zero or negative (already at/past snapshot), use CFL dt
     time_to_snapshot = t_snapshot - t
-    dt = jnp.where(time_to_snapshot < dt_cfl, time_to_snapshot, dt_cfl)
+    dt = jnp.where(time_to_snapshot > 1e-14,
+                   jnp.minimum(time_to_snapshot, dt_cfl),
+                   dt_cfl)
 
     # Physics diagnostics (for validation)
     min_rho = jnp.min(rho)

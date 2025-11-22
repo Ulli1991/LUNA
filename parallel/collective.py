@@ -186,7 +186,7 @@ def compute_global_dt(
 
         dt, _, _, _, _ = compute_dt_and_diagnostics(
             U_interior, gamma, cfl,
-            t=0.0, t_end=1e10,  # Dummy values, we only care about dt
+            t=0.0, t_snapshot=1e10,  # Dummy values, we only care about dt
             dx=dx, dy=dy, dz=dz
         )
 

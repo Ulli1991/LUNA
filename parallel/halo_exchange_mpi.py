@@ -98,7 +98,8 @@ def _exchange_halos_blocking(patch: GridPatch, comm: MPI.Comm) -> None:
         comm.Recv(recv_data, source=neighbor.rank, tag=recv_tag)
 
         # Copy into ghost cells
-        recv_slice = patch.get_ghost_slice(opposite, send=False)
+        # If I have a neighbor to my RIGHT, I receive INTO my RIGHT ghost cells
+        recv_slice = patch.get_ghost_slice(direction, send=False)
         patch.data = patch.data.at[recv_slice].set(jnp.array(recv_data))
 
 
@@ -126,7 +127,9 @@ def _exchange_halos_nonblocking(patch: GridPatch, comm: MPI.Comm) -> None:
         opposite = _get_opposite_direction(direction)
 
         # Get receive slice and allocate buffer
-        recv_slice = patch.get_ghost_slice(opposite, send=False)
+        # If I have a neighbor to my RIGHT, I receive INTO my RIGHT ghost cells
+        # (opposite is only used for tag matching, not for the slice)
+        recv_slice = patch.get_ghost_slice(direction, send=False)
         recv_shape = patch.data[recv_slice].shape
         recv_buffer = np.empty(recv_shape, dtype=np.float32)
 
@@ -211,6 +214,17 @@ def update_ghosts_mpi(
     """
     Convenience function: halo exchange + boundary conditions.
 
+    IMPORTANT: Order matters for correctness at domain boundaries!
+
+    1. First exchange halos (fills inter-patch ghost cells from neighbors)
+    2. Then apply boundary conditions (fills domain edge ghost cells)
+
+    This order ensures:
+    - Interior patches get fresh neighbor data first
+    - Domain boundary ghost cells are filled AFTER exchange (won't be overwritten)
+    - Corner cells in 2D/3D are properly handled (face exchanges fill corners,
+      then domain BC overwrites only the actual boundary corners)
+
     Parameters
     ----------
     patch : GridPatch
@@ -230,10 +244,13 @@ def update_ghosts_mpi(
     >>> # After each timestep:
     >>> update_ghosts_mpi(my_patch, boundary_type=1, comm=comm)
     """
-    # Step 1: Exchange halos between patches
+    # Step 1: Exchange halos between patches FIRST
+    # This fills ghost cells from neighboring patches
     exchange_halos_mpi(patch, comm, use_non_blocking=True)
 
-    # Step 2: Apply boundary conditions at domain edges
+    # Step 2: Apply boundary conditions at domain edges AFTER
+    # This fills domain edge ghost cells (and won't be overwritten by halo exchange)
+    # Only patches at domain boundaries will actually do anything here
     rank = comm.Get_rank()
     apply_boundary_conditions_mpi(patch, boundary_type, rank)
 
@@ -242,6 +259,8 @@ def compute_global_dt_mpi(
     patch: GridPatch,
     gamma: float,
     cfl: float,
+    t: float,
+    t_snapshot: float,
     comm: MPI.Comm
 ) -> float:
     """
@@ -257,6 +276,10 @@ def compute_global_dt_mpi(
         Ratio of specific heats
     cfl : float
         CFL number
+    t : float
+        Current simulation time
+    t_snapshot : float
+        Next snapshot time (used to adjust dt to hit snapshots exactly)
     comm : MPI.Comm
         MPI communicator
 
@@ -267,7 +290,7 @@ def compute_global_dt_mpi(
 
     Examples
     --------
-    >>> dt_global = compute_global_dt_mpi(my_patch, gamma=1.4, cfl=0.5, comm=comm)
+    >>> dt_global = compute_global_dt_mpi(my_patch, gamma=1.4, cfl=0.5, t=0.1, t_snapshot=0.2, comm=comm)
     >>> # All ranks get the same dt_global
     """
     from time_integration.cfl import compute_dt_and_diagnostics
@@ -276,10 +299,10 @@ def compute_global_dt_mpi(
     interior_slice = patch.get_interior_slice()
     U_interior = patch.data[interior_slice]
 
-    # Compute local dt
+    # Compute local dt with proper t_snapshot to hit output times exactly
     dt_local, _, _, _, _ = compute_dt_and_diagnostics(
         U_interior, gamma, cfl,
-        t=0.0, t_end=1e10,  # Dummy values
+        t=t, t_snapshot=t_snapshot,
         dx=patch.dx, dy=patch.dy, dz=patch.dz
     )
 
