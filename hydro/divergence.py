@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from jax import jit, lax
 from functools import partial
@@ -255,6 +256,7 @@ def flux_divergence_from_2ghost(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx
             U_Fz = U_pad[:, 2:-2, 2:-2, 2:-1]
             Fz = hllc_flux(U_Bz, U_Fz, axis=2, gamma=gamma)
             dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz
+
             return dFdx, dFdy, dFdz
 
     # SECOND-ORDER PATH

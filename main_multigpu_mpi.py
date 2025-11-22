@@ -107,9 +107,23 @@ def create_mpi_flux_fn(flux_divergence_fn, patch, cfg):
     NOTE: U_with_ghost should have 2 ghost cells per side for proper PLM reconstruction
     at MPI boundaries. With 2 ghost cells, we can compute slopes OF the ghost cells,
     enabling symmetric flux computation at inter-patch interfaces.
+
+    CRITICAL FIX: After setting U_interior, we re-apply domain boundary conditions
+    to ghost cells at PHYSICAL boundaries (not MPI boundaries). During RK sub-steps,
+    interior is updated but ghost cells are stale, creating discontinuities that
+    cause spurious transverse fluxes.
     """
     ndim = cfg.SPATIAL_DIMENSION
     ng = patch.n_ghost  # Should be 2
+    boundary_type = cfg.BOUNDARY
+
+    # Determine which faces are PHYSICAL domain boundaries (not MPI boundaries)
+    is_x_left_boundary = patch.is_boundary('left')
+    is_x_right_boundary = patch.is_boundary('right')
+    is_y_bottom_boundary = patch.is_boundary('bottom') if ndim >= 2 else False
+    is_y_top_boundary = patch.is_boundary('top') if ndim >= 2 else False
+    is_z_back_boundary = patch.is_boundary('back') if ndim == 3 else False
+    is_z_front_boundary = patch.is_boundary('front') if ndim == 3 else False
 
     # Slice to extract interior from 2-ghost array
     if ndim == 1:
@@ -128,10 +142,53 @@ def create_mpi_flux_fn(flux_divergence_fn, patch, cfg):
         Returns: flux divergence with same shape as U_interior
         """
         # Replace interior with U_interior (handles intermediate RK states)
-        # Ghost cells remain from U_with_ghost (passed as argument, not closure!)
         U_combined = U_with_ghost.at[interior_in_2g].set(U_interior)
 
-        # Compute flux divergence from padded data (now with 2 ghost cells)
+        # Re-apply domain BCs at PHYSICAL boundaries (not MPI boundaries)
+        if boundary_type == 1:  # Zero-gradient (Neumann)
+            if ndim == 3:
+                # Y boundaries
+                if is_y_bottom_boundary:
+                    U_combined = U_combined.at[:, :, 0, :].set(U_combined[:, :, ng, :])
+                    U_combined = U_combined.at[:, :, 1, :].set(U_combined[:, :, ng, :])
+                if is_y_top_boundary:
+                    U_combined = U_combined.at[:, :, -1, :].set(U_combined[:, :, -ng-1, :])
+                    U_combined = U_combined.at[:, :, -2, :].set(U_combined[:, :, -ng-1, :])
+                # Z boundaries
+                if is_z_back_boundary:
+                    U_combined = U_combined.at[:, :, :, 0].set(U_combined[:, :, :, ng])
+                    U_combined = U_combined.at[:, :, :, 1].set(U_combined[:, :, :, ng])
+                if is_z_front_boundary:
+                    U_combined = U_combined.at[:, :, :, -1].set(U_combined[:, :, :, -ng-1])
+                    U_combined = U_combined.at[:, :, :, -2].set(U_combined[:, :, :, -ng-1])
+                # X boundaries (only at domain edges, not MPI boundaries)
+                if is_x_left_boundary:
+                    U_combined = U_combined.at[:, 0, :, :].set(U_combined[:, ng, :, :])
+                    U_combined = U_combined.at[:, 1, :, :].set(U_combined[:, ng, :, :])
+                if is_x_right_boundary:
+                    U_combined = U_combined.at[:, -1, :, :].set(U_combined[:, -ng-1, :, :])
+                    U_combined = U_combined.at[:, -2, :, :].set(U_combined[:, -ng-1, :, :])
+            elif ndim == 2:
+                if is_y_bottom_boundary:
+                    U_combined = U_combined.at[:, :, 0].set(U_combined[:, :, ng])
+                    U_combined = U_combined.at[:, :, 1].set(U_combined[:, :, ng])
+                if is_y_top_boundary:
+                    U_combined = U_combined.at[:, :, -1].set(U_combined[:, :, -ng-1])
+                    U_combined = U_combined.at[:, :, -2].set(U_combined[:, :, -ng-1])
+                if is_x_left_boundary:
+                    U_combined = U_combined.at[:, 0, :].set(U_combined[:, ng, :])
+                    U_combined = U_combined.at[:, 1, :].set(U_combined[:, ng, :])
+                if is_x_right_boundary:
+                    U_combined = U_combined.at[:, -1, :].set(U_combined[:, -ng-1, :])
+                    U_combined = U_combined.at[:, -2, :].set(U_combined[:, -ng-1, :])
+            elif ndim == 1:
+                if is_x_left_boundary:
+                    U_combined = U_combined.at[:, 0].set(U_combined[:, ng])
+                    U_combined = U_combined.at[:, 1].set(U_combined[:, ng])
+                if is_x_right_boundary:
+                    U_combined = U_combined.at[:, -1].set(U_combined[:, -ng-1])
+                    U_combined = U_combined.at[:, -2].set(U_combined[:, -ng-1])
+
         return flux_divergence_fn(U_combined)
 
     return mpi_flux_fn
@@ -571,6 +628,42 @@ def main():
     # Initial halo exchange
     update_ghosts_mpi(my_patch, cfg.BOUNDARY, comm)
 
+    # === DEBUG: Check ghost cell filling ===
+    if cfg.SPATIAL_DIMENSION == 3:
+        ng = my_patch.n_ghost
+        # Check if y ghost cells match first interior y (should be equal for zero-gradient BC)
+        y_ghost_0 = my_patch.data[:, ng:-ng, 0, ng:-ng]  # y=0 ghost
+        y_ghost_1 = my_patch.data[:, ng:-ng, 1, ng:-ng]  # y=1 ghost
+        y_interior = my_patch.data[:, ng:-ng, ng, ng:-ng]  # y=ng (first interior)
+        y_diff_0 = float(jnp.max(jnp.abs(y_ghost_0 - y_interior)))
+        y_diff_1 = float(jnp.max(jnp.abs(y_ghost_1 - y_interior)))
+
+        # Check z ghost cells similarly
+        z_ghost_0 = my_patch.data[:, ng:-ng, ng:-ng, 0]  # z=0 ghost
+        z_ghost_1 = my_patch.data[:, ng:-ng, ng:-ng, 1]  # z=1 ghost
+        z_interior = my_patch.data[:, ng:-ng, ng:-ng, ng]  # z=ng (first interior)
+        z_diff_0 = float(jnp.max(jnp.abs(z_ghost_0 - z_interior)))
+        z_diff_1 = float(jnp.max(jnp.abs(z_ghost_1 - z_interior)))
+
+        # Check for any y/z variation in interior (should be zero for 1D shock)
+        interior_data = my_patch.data[interior_slice]
+        rho = interior_data[0]
+        mom_y = interior_data[2]  # rho*vy
+        mom_z = interior_data[3]  # rho*vz
+
+        # Variation along y (should be 0)
+        rho_y_var = float(jnp.max(jnp.std(rho, axis=1)))
+        # Variation along z (should be 0)
+        rho_z_var = float(jnp.max(jnp.std(rho, axis=2)))
+
+        print(f"Rank {rank} ghost cell check:")
+        print(f"  y ghost: max|y0-interior|={y_diff_0:.2e}, max|y1-interior|={y_diff_1:.2e}")
+        print(f"  z ghost: max|z0-interior|={z_diff_0:.2e}, max|z1-interior|={z_diff_1:.2e}")
+        print(f"  Interior variation: rho_y_std={rho_y_var:.2e}, rho_z_std={rho_z_var:.2e}")
+        print(f"  max|rho*vy|={float(jnp.max(jnp.abs(mom_y))):.2e}, max|rho*vz|={float(jnp.max(jnp.abs(mom_z))):.2e}")
+    comm.Barrier()
+    # === END DEBUG ===
+
     if rank == 0:
         print("✓ Initial conditions set")
         print()
@@ -594,6 +687,7 @@ def main():
     # each rank to compute different fluxes at their shared interface.
     # With 2 ghost cells, we can compute slopes OF the ghost cells, enabling
     # symmetric reconstruction on both sides of the interface.
+
     flux_divergence_base = partial(
         flux_divergence_from_2ghost,
         gamma=cfg.gamma,

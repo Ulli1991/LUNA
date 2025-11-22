@@ -184,6 +184,13 @@ def _apply_zero_gradient(patch: GridPatch, direction: str) -> None:
 
     Copies the interior cells adjacent to boundary into ghost cells.
 
+    IMPORTANT: For 2D and 3D, this function extracts interior values from ONLY
+    interior positions (excluding ghost regions in other dimensions), then pads
+    these values to cover the full ghost region including corners/edges.
+
+    This ensures corner ghost cells get the correct interior corner value,
+    regardless of the order in which boundary conditions are applied.
+
     Parameters
     ----------
     patch : GridPatch
@@ -203,93 +210,98 @@ def _apply_zero_gradient(patch: GridPatch, direction: str) -> None:
 
     axis, is_upper = direction_map[direction]
 
-    # Build slices for ghost region and interior edge
     if ndim == 1:
+        # 1D: Simple case, no corners to worry about
         if is_upper:
-            ghost_slice = (slice(None), slice(-ng, None))
             interior_slice = (slice(None), slice(-ng-1, -ng))
         else:
-            ghost_slice = (slice(None), slice(None, ng))
             interior_slice = (slice(None), slice(ng, ng+1))
 
-    elif ndim == 2:
-        if axis == 0:  # x-axis
-            if is_upper:
-                ghost_slice = (slice(None), slice(-ng, None), slice(None))
-                interior_slice = (slice(None), slice(-ng-1, -ng), slice(None))
-            else:
-                ghost_slice = (slice(None), slice(None, ng), slice(None))
-                interior_slice = (slice(None), slice(ng, ng+1), slice(None))
-        else:  # y-axis
-            if is_upper:
-                ghost_slice = (slice(None), slice(None), slice(-ng, None))
-                interior_slice = (slice(None), slice(None), slice(-ng-1, -ng))
-            else:
-                ghost_slice = (slice(None), slice(None), slice(None, ng))
-                interior_slice = (slice(None), slice(None), slice(ng, ng+1))
+        interior_values = patch.data[interior_slice]
 
-    elif ndim == 3:
-        # Build slice for each axis
-        # For non-boundary dimensions, use slice(None) to fill ENTIRE ghost slab
-        # including edges/corners. Values in edge/corner cells will be filled
-        # by subsequent boundary applications in other directions.
-        slices_ghost = [slice(None)]  # Field dimension
-        slices_interior = [slice(None)]
-
-        for d in range(ndim):
-            if d == axis:
-                if is_upper:
-                    slices_ghost.append(slice(-ng, None))
-                    slices_interior.append(slice(-ng-1, -ng))
-                else:
-                    slices_ghost.append(slice(None, ng))
-                    slices_interior.append(slice(ng, ng+1))
-            else:
-                # Use all cells (including ghost) so edges/corners get filled
-                slices_ghost.append(slice(None))
-                slices_interior.append(slice(None))
-
-        ghost_slice = tuple(slices_ghost)
-        interior_slice = tuple(slices_interior)
-
-    # Copy interior edge to all ghost layers
-    interior_values = patch.data[interior_slice]
-
-    # Broadcast to fill all ghost cells
-    for i in range(ng):
-        if ndim == 1:
+        for i in range(ng):
             if is_upper:
                 patch.data = patch.data.at[:, -ng+i].set(interior_values[:, 0])
             else:
                 patch.data = patch.data.at[:, i].set(interior_values[:, 0])
-        elif ndim == 2:
-            if axis == 0:
-                if is_upper:
-                    patch.data = patch.data.at[:, -ng+i, :].set(interior_values[:, 0, :])
-                else:
-                    patch.data = patch.data.at[:, i, :].set(interior_values[:, 0, :])
+
+    elif ndim == 2:
+        # 2D: Extract from interior ONLY (exclude ghost in other dimension)
+        # Then pad to cover corners
+        if axis == 0:  # x-boundary
+            if is_upper:
+                interior_values = patch.data[:, -ng-1:-ng, ng:-ng]  # (Nvar, 1, Ny)
             else:
+                interior_values = patch.data[:, ng:ng+1, ng:-ng]  # (Nvar, 1, Ny)
+            # Pad y-dimension to cover corners
+            interior_padded = jnp.pad(interior_values, ((0, 0), (0, 0), (ng, ng)), mode='edge')
+            for i in range(ng):
                 if is_upper:
-                    patch.data = patch.data.at[:, :, -ng+i].set(interior_values[:, :, 0])
+                    patch.data = patch.data.at[:, -ng+i, :].set(interior_padded[:, 0, :])
                 else:
-                    patch.data = patch.data.at[:, :, i].set(interior_values[:, :, 0])
-        elif ndim == 3:
-            # Fill each ghost layer for 3D - fill ENTIRE slab including edges/corners
-            if axis == 0:  # x-boundary
+                    patch.data = patch.data.at[:, i, :].set(interior_padded[:, 0, :])
+        else:  # y-boundary (axis == 1)
+            if is_upper:
+                interior_values = patch.data[:, ng:-ng, -ng-1:-ng]  # (Nvar, Nx, 1)
+            else:
+                interior_values = patch.data[:, ng:-ng, ng:ng+1]  # (Nvar, Nx, 1)
+            # Pad x-dimension to cover corners
+            interior_padded = jnp.pad(interior_values, ((0, 0), (ng, ng), (0, 0)), mode='edge')
+            for i in range(ng):
                 if is_upper:
-                    patch.data = patch.data.at[:, -ng+i, :, :].set(interior_values[:, 0, :, :])
+                    patch.data = patch.data.at[:, :, -ng+i].set(interior_padded[:, :, 0])
                 else:
-                    patch.data = patch.data.at[:, i, :, :].set(interior_values[:, 0, :, :])
-            elif axis == 1:  # y-boundary
+                    patch.data = patch.data.at[:, :, i].set(interior_padded[:, :, 0])
+
+    elif ndim == 3:
+        # 3D: Extract from interior ONLY (exclude ghost in other dimensions)
+        # Then pad to cover edges and corners
+        #
+        # Key insight: Corner ghost cells should have the value of the nearest
+        # interior corner, NOT values from other ghost cells that might be
+        # unfilled or incorrect. Using jnp.pad with mode='edge' ensures this.
+
+        if axis == 0:  # x-boundary
+            if is_upper:
+                interior_values = patch.data[:, -ng-1:-ng, ng:-ng, ng:-ng]  # (Nvar, 1, Ny, Nz)
+            else:
+                interior_values = patch.data[:, ng:ng+1, ng:-ng, ng:-ng]  # (Nvar, 1, Ny, Nz)
+            # Pad y and z dimensions to cover edges/corners
+            interior_padded = jnp.pad(interior_values,
+                                      ((0, 0), (0, 0), (ng, ng), (ng, ng)), mode='edge')
+            for i in range(ng):
                 if is_upper:
-                    patch.data = patch.data.at[:, :, -ng+i, :].set(interior_values[:, :, 0, :])
+                    patch.data = patch.data.at[:, -ng+i, :, :].set(interior_padded[:, 0, :, :])
                 else:
-                    patch.data = patch.data.at[:, :, i, :].set(interior_values[:, :, 0, :])
-            else:  # z-boundary (axis == 2)
+                    patch.data = patch.data.at[:, i, :, :].set(interior_padded[:, 0, :, :])
+
+        elif axis == 1:  # y-boundary
+            if is_upper:
+                interior_values = patch.data[:, ng:-ng, -ng-1:-ng, ng:-ng]  # (Nvar, Nx, 1, Nz)
+            else:
+                interior_values = patch.data[:, ng:-ng, ng:ng+1, ng:-ng]  # (Nvar, Nx, 1, Nz)
+            # Pad x and z dimensions to cover edges/corners
+            interior_padded = jnp.pad(interior_values,
+                                      ((0, 0), (ng, ng), (0, 0), (ng, ng)), mode='edge')
+            for i in range(ng):
                 if is_upper:
-                    patch.data = patch.data.at[:, :, :, -ng+i].set(interior_values[:, :, :, 0])
+                    patch.data = patch.data.at[:, :, -ng+i, :].set(interior_padded[:, :, 0, :])
                 else:
-                    patch.data = patch.data.at[:, :, :, i].set(interior_values[:, :, :, 0])
+                    patch.data = patch.data.at[:, :, i, :].set(interior_padded[:, :, 0, :])
+
+        else:  # z-boundary (axis == 2)
+            if is_upper:
+                interior_values = patch.data[:, ng:-ng, ng:-ng, -ng-1:-ng]  # (Nvar, Nx, Ny, 1)
+            else:
+                interior_values = patch.data[:, ng:-ng, ng:-ng, ng:ng+1]  # (Nvar, Nx, Ny, 1)
+            # Pad x and y dimensions to cover edges/corners
+            interior_padded = jnp.pad(interior_values,
+                                      ((0, 0), (ng, ng), (ng, ng), (0, 0)), mode='edge')
+            for i in range(ng):
+                if is_upper:
+                    patch.data = patch.data.at[:, :, :, -ng+i].set(interior_padded[:, :, :, 0])
+                else:
+                    patch.data = patch.data.at[:, :, :, i].set(interior_padded[:, :, :, 0])
 
 
 def _apply_reflective(patch: GridPatch, direction: str) -> None:
