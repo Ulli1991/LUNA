@@ -84,18 +84,14 @@ from grid.neighbors import setup_neighbor_connectivity, print_connectivity
 from ic_generation.ic import initial_conditions
 from time_integration.cfl import compute_dt_and_diagnostics
 from time_integration.integrators_mpi import (
-    mpi_rk2_step,
-    mpi_rk4_step,
-    mpi_muscl_hancock_step,
+    mpi_rk2_step_fast,
+    mpi_rk4_step_fast,
+    mpi_muscl_hancock_step_fast,
 )
 from hydro.physics_checks import validate_from_diagnostics
 from hydro.divergence import flux_divergence_from_2ghost
-from parallel.halo_exchange_mpi import (
-    update_ghosts_mpi,
-    compute_global_dt_mpi,
-    gather_field_for_output_mpi
-)
-from parallel.mpi_flux import create_mpi_flux_fn, get_ghost_slices
+from parallel.halo_exchange_mpi import update_ghosts_mpi
+from parallel.mpi_flux import create_mpi_flux_fn_fast
 from file_io.write_snapshot import write_snapshot
 from file_io.gather_mpi import reconstruct_global_array
 
@@ -259,40 +255,22 @@ def main():
     # Place into patch data (interior cells)
     my_patch.data = my_patch.data.at[interior_slice].set(U_local)
 
-    # Initial halo exchange
+    # Initial halo exchange to fill ghost cells
     update_ghosts_mpi(my_patch, cfg.BOUNDARY, comm)
 
-    # === DEBUG: Check ghost cell filling ===
+    # === DEBUG: Check initial interior data ===
     if cfg.SPATIAL_DIMENSION == 3:
-        ng = my_patch.n_ghost
-        # Check if y ghost cells match first interior y (should be equal for zero-gradient BC)
-        y_ghost_0 = my_patch.data[:, ng:-ng, 0, ng:-ng]  # y=0 ghost
-        y_ghost_1 = my_patch.data[:, ng:-ng, 1, ng:-ng]  # y=1 ghost
-        y_interior = my_patch.data[:, ng:-ng, ng, ng:-ng]  # y=ng (first interior)
-        y_diff_0 = float(jnp.max(jnp.abs(y_ghost_0 - y_interior)))
-        y_diff_1 = float(jnp.max(jnp.abs(y_ghost_1 - y_interior)))
-
-        # Check z ghost cells similarly
-        z_ghost_0 = my_patch.data[:, ng:-ng, ng:-ng, 0]  # z=0 ghost
-        z_ghost_1 = my_patch.data[:, ng:-ng, ng:-ng, 1]  # z=1 ghost
-        z_interior = my_patch.data[:, ng:-ng, ng:-ng, ng]  # z=ng (first interior)
-        z_diff_0 = float(jnp.max(jnp.abs(z_ghost_0 - z_interior)))
-        z_diff_1 = float(jnp.max(jnp.abs(z_ghost_1 - z_interior)))
-
         # Check for any y/z variation in interior (should be zero for 1D shock)
-        interior_data = my_patch.data[interior_slice]
-        rho = interior_data[0]
-        mom_y = interior_data[2]  # rho*vy
-        mom_z = interior_data[3]  # rho*vz
+        rho = U_local[0]
+        mom_y = U_local[2]  # rho*vy
+        mom_z = U_local[3]  # rho*vz
 
         # Variation along y (should be 0)
         rho_y_var = float(jnp.max(jnp.std(rho, axis=1)))
         # Variation along z (should be 0)
         rho_z_var = float(jnp.max(jnp.std(rho, axis=2)))
 
-        print(f"Rank {rank} ghost cell check:")
-        print(f"  y ghost: max|y0-interior|={y_diff_0:.2e}, max|y1-interior|={y_diff_1:.2e}")
-        print(f"  z ghost: max|z0-interior|={z_diff_0:.2e}, max|z1-interior|={z_diff_1:.2e}")
+        print(f"Rank {rank} initial data check:")
         print(f"  Interior variation: rho_y_std={rho_y_var:.2e}, rho_z_std={rho_z_var:.2e}")
         print(f"  max|rho*vy|={float(jnp.max(jnp.abs(mom_y))):.2e}, max|rho*vz|={float(jnp.max(jnp.abs(mom_z))):.2e}")
     comm.Barrier()
@@ -331,16 +309,20 @@ def main():
         inv_dx=inv_dx, inv_dy=inv_dy, inv_dz=inv_dz
     )
 
-    # Create MPI flux function that takes BOTH U_interior and U_with_ghost
-    # This avoids closure capture of patch.data (which causes stale data in JIT)
-    flux_fn = create_mpi_flux_fn(flux_divergence_base, my_patch, cfg)
+    # Create FAST MPI flux function using concatenation (avoids expensive .at[].set())
+    flux_fn, is_x_left_domain, is_x_right_domain = create_mpi_flux_fn_fast(
+        flux_divergence_base, my_patch, cfg
+    )
 
-    # Get slice for extracting data with ALL 2 ghost cells per side
-    slice_2g = get_ghost_slices(my_patch, cfg)
+    # Ghost cell count
+    ng = my_patch.n_ghost
 
-    # Use MPI-specific time integrators that pass ghost data as argument
-    # Ghost cells are held fixed during RK stages (standard approach, faster)
-    mpi_time_solver_map = {0: mpi_rk2_step, 1: mpi_muscl_hancock_step, 2: mpi_rk4_step}
+    # Use FAST MPI time integrators with separate ghost arguments
+    mpi_time_solver_map = {
+        0: mpi_rk2_step_fast,
+        1: mpi_muscl_hancock_step_fast,
+        2: mpi_rk4_step_fast
+    }
     time_step_fn = partial(mpi_time_solver_map[cfg.TIME_SOLVER], flux_fn=flux_fn)
 
     # === WARMUP (JIT COMPILATION) ===
@@ -350,14 +332,24 @@ def main():
         print("="*60)
         print("Compiling kernels...")
 
-    # Extract interior and ghost data for warmup
+    # Extract interior and ghost slices for warmup
     U_interior = my_patch.data[interior_slice]
-    U_with_ghost = my_patch.data[slice_2g]  # All 2 ghost cells per side
+
+    # Extract X ghost slices (used for MPI boundaries)
+    if cfg.SPATIAL_DIMENSION == 3:
+        left_mpi_ghost = my_patch.data[:, :ng, ng:-ng, ng:-ng]
+        right_mpi_ghost = my_patch.data[:, -ng:, ng:-ng, ng:-ng]
+    elif cfg.SPATIAL_DIMENSION == 2:
+        left_mpi_ghost = my_patch.data[:, :ng, ng:-ng]
+        right_mpi_ghost = my_patch.data[:, -ng:, ng:-ng]
+    else:  # 1D
+        left_mpi_ghost = my_patch.data[:, :ng]
+        right_mpi_ghost = my_patch.data[:, -ng:]
 
     # Warmup time step for JIT compilation
     dt = 0.001
     for _ in range(3):
-        U_interior = time_step_fn(U_interior, U_with_ghost, dt)
+        U_interior = time_step_fn(U_interior, left_mpi_ghost, right_mpi_ghost, dt)
     jax.block_until_ready(U_interior)
 
     if rank == 0:
@@ -365,27 +357,7 @@ def main():
         print()
 
     # === RESTORE INITIAL CONDITIONS AFTER WARMUP ===
-    # The warmup was just for JIT compilation; now restore the original initial conditions
-    if cfg.SPATIAL_DIMENSION == 1:
-        ix_start = offset[0]
-        ix_end = offset[0] + my_patch.shape[0]
-        U_local = U_global[:, ix_start:ix_end]
-    elif cfg.SPATIAL_DIMENSION == 2:
-        ix_start, iy_start = offset
-        ix_end = ix_start + my_patch.shape[0]
-        iy_end = iy_start + my_patch.shape[1]
-        U_local = U_global[:, ix_start:ix_end, iy_start:iy_end]
-    else:
-        ix_start, iy_start, iz_start = offset
-        ix_end = ix_start + my_patch.shape[0]
-        iy_end = iy_start + my_patch.shape[1]
-        iz_end = iz_start + my_patch.shape[2]
-        U_local = U_global[:, ix_start:ix_end, iy_start:iy_end, iz_start:iz_end]
-
-    # Restore initial conditions to patch data
     my_patch.data = my_patch.data.at[interior_slice].set(U_local)
-
-    # Fresh halo exchange with restored initial conditions
     update_ghosts_mpi(my_patch, cfg.BOUNDARY, comm)
 
     if rank == 0:
@@ -422,50 +394,56 @@ def main():
     # Start wallclock timer for total runtime
     wall_start = time.time()
 
+    # Initialize working state U (interior only, like single-GPU version!)
+    U = my_patch.data[interior_slice]
+
     while t < cfg.t_end:
-        # === HALO EXCHANGE (FIRST!) ===
-        # CRITICAL: Update ghost cells BEFORE time integration!
-        # This ensures fluxes are computed with fresh boundary data.
-        # For shocks at domain boundaries, using stale ghost cells causes
-        # the shock to see incorrect boundary states.
+        # === HALO EXCHANGE using numpy-based MPI ===
         t_comm_start = time.time()
+
+        # Update patch.data with current U, then do halo exchange
+        my_patch.data = my_patch.data.at[interior_slice].set(U)
         update_ghosts_mpi(my_patch, cfg.BOUNDARY, comm)
+
+        # Extract ghost slices after exchange
+        if cfg.SPATIAL_DIMENSION == 3:
+            left_mpi_ghost = my_patch.data[:, :ng, ng:-ng, ng:-ng]
+            right_mpi_ghost = my_patch.data[:, -ng:, ng:-ng, ng:-ng]
+        elif cfg.SPATIAL_DIMENSION == 2:
+            left_mpi_ghost = my_patch.data[:, :ng, ng:-ng]
+            right_mpi_ghost = my_patch.data[:, -ng:, ng:-ng]
+        else:  # 1D
+            left_mpi_ghost = my_patch.data[:, :ng]
+            right_mpi_ghost = my_patch.data[:, -ng:]
+
         t_comm = (time.time() - t_comm_start) * 1000
 
         # === COMPUTE TIMESTEP ===
-        # Get the next snapshot time from the pre-computed array
         t_snapshot = snapshot_times[snapshot_idx] if snapshot_idx < len(snapshot_times) else cfg.t_end
 
-        # Pass t_snapshot to ensure dt is adjusted to hit snapshot times exactly
-        # Now uses fresh ghost data for CFL computation
-        dt = compute_global_dt_mpi(my_patch, cfg.gamma, cfg.CFL, t, t_snapshot, comm)
+        # Compute local dt
+        dt_local, min_rho, min_p, has_nan, has_inf = compute_dt_and_diagnostics(
+            U, cfg.gamma, cfg.CFL, t, t_snapshot, dx, dy, dz
+        )
+
+        # Global reduction using mpi4py
+        dt = comm.allreduce(float(dt_local), op=MPI.MIN)
 
         # Don't overshoot end time
         if t + dt > cfg.t_end:
             dt = cfg.t_end - t
-            # If dt is now effectively zero, we've reached the end
             if dt < 1e-12:
                 break
 
         # === TIME INTEGRATION ===
         t_compute_start = time.time()
 
-        # Extract interior AND ghost data
-        U_interior = my_patch.data[interior_slice]
-        U_with_ghost = my_patch.data[slice_2g]
+        # Time step using FAST integrator (works directly on U, no patch.data!)
+        U = time_step_fn(U, left_mpi_ghost, right_mpi_ghost, dt)
 
-        # Time step - pass BOTH interior and ghost data
-        # Ghost data is a JAX array argument, not captured from closure,
-        # so it will be the CURRENT data, not stale data from JIT compile time
-        U_interior = time_step_fn(U_interior, U_with_ghost, dt)
-
-        # Update interior in patch data
-        my_patch.data = my_patch.data.at[interior_slice].set(U_interior)
-
-        # Note: block_until_ready is needed for accurate timing AND because
-        # the next iteration's halo exchange uses np.asarray() which requires
-        # the data to be ready. Without GPU-aware MPI, this sync is unavoidable.
-        jax.block_until_ready(my_patch.data)
+        # Only sync when needed for timing
+        if step % cfg.output_cadence == 0:
+            jax.block_until_ready(U)
         t_compute = (time.time() - t_compute_start) * 1000
 
         # Update time
@@ -481,7 +459,7 @@ def main():
         if step % cfg.output_cadence == 0 or t >= cfg.t_end:
             # Compute local diagnostics
             dt_diag, min_rho, min_p, has_nan, has_inf = compute_dt_and_diagnostics(
-                U_interior, cfg.gamma, cfg.CFL, t, t_snapshot=t_snapshot, dx=dx, dy=dy, dz=dz
+                U, cfg.gamma, cfg.CFL, t, t_snapshot=t_snapshot, dx=dx, dy=dy, dz=dz
             )
 
             # Global reduction for diagnostics
@@ -522,12 +500,11 @@ def main():
                 print(f"{'─'*60}")
 
             # Gather all fields from all patches to rank 0
-            n_fields = my_patch.data.shape[0]
-            U_interior = my_patch.data[interior_slice]
+            n_fields = U.shape[0]
 
             gathered_fields = []
             for field_idx in range(n_fields):
-                local_field = jnp.array(U_interior[field_idx])
+                local_field = jnp.array(U[field_idx])
                 all_patches = comm.gather(jnp.asarray(local_field), root=0)
                 if rank == 0:
                     gathered_fields.append(all_patches)
