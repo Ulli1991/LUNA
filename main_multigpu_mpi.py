@@ -87,10 +87,6 @@ from time_integration.integrators_mpi import (
     mpi_rk2_step,
     mpi_rk4_step,
     mpi_muscl_hancock_step,
-    mpi_rk2_step_substep,
-    mpi_rk4_step_substep,
-    mpi_muscl_hancock_step_substep,
-    _compute_k_stage
 )
 from hydro.physics_checks import validate_from_diagnostics
 from hydro.divergence import flux_divergence_from_2ghost
@@ -343,27 +339,9 @@ def main():
     slice_2g = get_ghost_slices(my_patch, cfg)
 
     # Use MPI-specific time integrators that pass ghost data as argument
-    # Choose between standard (fixed ghost cells) or sub-step (updated ghost cells) versions
-    use_substep = getattr(cfg, 'SUBSTEP_HALO_EXCHANGE', False)
-
-    if use_substep:
-        # Sub-step versions: ghost cells updated between RK stages (more accurate at boundaries)
-        mpi_time_solver_substep_map = {
-            0: mpi_rk2_step_substep,
-            1: mpi_muscl_hancock_step_substep,
-            2: mpi_rk4_step_substep
-        }
-        time_step_substep_fn = mpi_time_solver_substep_map[cfg.TIME_SOLVER]
-        time_step_fn = None  # Will use substep version in main loop
-        if rank == 0:
-            print("Using SUB-STEP halo exchange for RK stages (more accurate at boundaries)")
-    else:
-        # Standard versions: ghost cells fixed during RK stages (faster)
-        mpi_time_solver_map = {0: mpi_rk2_step, 1: mpi_muscl_hancock_step, 2: mpi_rk4_step}
-        time_step_fn = partial(mpi_time_solver_map[cfg.TIME_SOLVER], flux_fn=flux_fn)
-        time_step_substep_fn = None
-        if rank == 0:
-            print("Using STANDARD time integration (ghost cells fixed during RK stages)")
+    # Ghost cells are held fixed during RK stages (standard approach, faster)
+    mpi_time_solver_map = {0: mpi_rk2_step, 1: mpi_muscl_hancock_step, 2: mpi_rk4_step}
+    time_step_fn = partial(mpi_time_solver_map[cfg.TIME_SOLVER], flux_fn=flux_fn)
 
     # === WARMUP (JIT COMPILATION) ===
     if rank == 0:
@@ -376,18 +354,11 @@ def main():
     U_interior = my_patch.data[interior_slice]
     U_with_ghost = my_patch.data[slice_2g]  # All 2 ghost cells per side
 
-    # Warmup time step - only for standard mode (substep mode has MPI calls, can't fully JIT)
+    # Warmup time step for JIT compilation
     dt = 0.001
-    if use_substep:
-        # For substep mode, just warmup the single-stage compute function
-        for _ in range(3):
-            _ = _compute_k_stage(U_interior, U_with_ghost, flux_fn)
-        jax.block_until_ready(_)
-    else:
-        # Standard mode: warmup full time step
-        for _ in range(3):
-            U_interior = time_step_fn(U_interior, U_with_ghost, dt)
-        jax.block_until_ready(U_interior)
+    for _ in range(3):
+        U_interior = time_step_fn(U_interior, U_with_ghost, dt)
+    jax.block_until_ready(U_interior)
 
     if rank == 0:
         print("✓ Compilation complete")
@@ -483,23 +454,13 @@ def main():
         U_interior = my_patch.data[interior_slice]
         U_with_ghost = my_patch.data[slice_2g]
 
-        if use_substep:
-            # Sub-step mode: integrator handles its own halo exchanges between stages
-            # This is more accurate for shocks at boundaries but slower due to extra MPI calls
-            U_interior = time_step_substep_fn(
-                my_patch, dt, flux_fn, cfg.BOUNDARY, comm, interior_slice, slice_2g
-            )
-            # Update interior in patch data (substep fn modified patch.data internally for stages)
-            my_patch.data = my_patch.data.at[interior_slice].set(U_interior)
-        else:
-            # Standard JIT mode: ghost cells fixed during RK stages
-            # Time step - pass BOTH interior and ghost data
-            # Ghost data is a JAX array argument, not captured from closure,
-            # so it will be the CURRENT data, not stale data from JIT compile time
-            U_interior = time_step_fn(U_interior, U_with_ghost, dt)
+        # Time step - pass BOTH interior and ghost data
+        # Ghost data is a JAX array argument, not captured from closure,
+        # so it will be the CURRENT data, not stale data from JIT compile time
+        U_interior = time_step_fn(U_interior, U_with_ghost, dt)
 
-            # Update interior in patch data
-            my_patch.data = my_patch.data.at[interior_slice].set(U_interior)
+        # Update interior in patch data
+        my_patch.data = my_patch.data.at[interior_slice].set(U_interior)
 
         # Note: block_until_ready is needed for accurate timing AND because
         # the next iteration's halo exchange uses np.asarray() which requires
@@ -553,7 +514,8 @@ def main():
 
         # === WRITE SNAPSHOT IF TIME MATCHES ===
         # Save snapshot if the current time matches the snapshot time
-        if t >= t_snapshot:
+        # Only write if we haven't exceeded the planned number of snapshots
+        if t >= t_snapshot and snapshot_idx < len(snapshot_times):
             if rank == 0:
                 print(f"\n{'─'*60}")
                 print(f"💾 Saving snapshot #{snapshot_idx} at t = {t:.5f}")
