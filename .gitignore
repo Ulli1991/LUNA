@@ -22,5 +22,5 @@ env/
 .DS_Store
 Thumbs.db
 
-# bash scripts
-*.sh
+# bash scripts in main
+/*.sh
