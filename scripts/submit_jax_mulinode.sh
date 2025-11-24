@@ -2,11 +2,8 @@
 # Standard output and error:
 #SBATCH -o ./job.out.%j
 #SBATCH -e ./job.err.%j
-# Initial working directory:
 #SBATCH -D ./
-# Job name
 #SBATCH -J test_gpu
-#
 #SBATCH --nodes=4            # Request 1 or more full nodes
 #SBATCH --constraint="apu"   #   providing APUs.
 #SBATCH --gres=gpu:2         # Request 2 APUs per node.
