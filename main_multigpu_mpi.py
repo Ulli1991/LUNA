@@ -94,7 +94,7 @@ from parallel.halo_exchange_mpi import update_ghosts_mpi
 from parallel.mpi_flux import create_mpi_flux_fn_fast
 from file_io.write_snapshot import write_snapshot
 from file_io.gather_mpi import reconstruct_global_array
-
+from utils.logo import print_SPITE_banner
 
 def main():
     # === MPI INITIALIZATION ===
@@ -120,6 +120,9 @@ def main():
         print(f"MPI ranks: {n_ranks}")
         print(f"JAX backend: {jax.default_backend()}")
         print()
+
+    # === LOAD the LOGO
+    print_SPITE_banner()
 
     # === LOAD CONFIGURATION ===
     cfg = Config()
