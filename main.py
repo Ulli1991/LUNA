@@ -177,12 +177,12 @@ def main():
         # Validate state less frequently to avoid GPU synchronization overhead
         # Checking every step causes GPU to wait for CPU - very slow!
         # Only validate every 100 steps (or first step) - assumes simulation is stable
-        if step % 100 == 0 or step == 1:
+        if step % cfg.output_cadence == 0 or step == 1:
             validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=step, time=t)
 
         # Print progress less frequently to avoid GPU synchronization overhead
         # Printing every step causes GPU to wait for CPU - very slow!
-        if step % 100 == 0 or step == 1:  # Print every 10 steps (or first step)
+        if step % cfg.output_cadence == 0 or step == 1:  # Print every 10 steps (or first step)
             print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
 
         # Print peak memory after first 3 steps (after JIT compilation and warmup)
