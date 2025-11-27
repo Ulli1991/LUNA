@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-
 import jax
 import jax.numpy as jnp
 
@@ -10,22 +9,18 @@ import jax.numpy as jnp
 # ============================================================================
 # Use float32 instead of float64 for 2x speed and 2x memory savings
 jax.config.update("jax_enable_x64", False)
-
 # Use high precision for matmuls (enables tensor cores on modern GPUs)
 jax.config.update("jax_default_matmul_precision", "high")
-
 # Enable optimizations (usually on by default, but explicit is better)
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")  # Cache compiled kernels
-
 print("JAX Performance Settings:")
 print(f"  - Precision: {'float64' if jax.config.jax_enable_x64 else 'float32'}")
 print(f"  - Matmul precision: {jax.config.jax_default_matmul_precision}")
 print(f"  - Platform: {jax.default_backend()}")
 print()
+
 # ============================================================================
-
 from functools import partial
-
 from config import Config
 from utils.memory_utils import print_memory_usage
 from ic_generation.ic import initial_conditions
@@ -156,7 +151,7 @@ def main():
     start_time = time.time()  # Record the start time of the simulation
 
     # Flag to print memory after first few steps (to measure peak during computation)
-    printed_peak_memory = False
+    printed_peak_memory = cfg.check_memory
 
     # --- Time integration loop ---
     while t < cfg.t_end:
