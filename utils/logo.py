@@ -23,6 +23,16 @@ def print_SPITE_banner():
         "#      "
     ]
 
+    R = [
+        "###### ",
+        "#     #",
+        "#     #",
+        "###### ",
+        "#  #   ",
+        "#   #  ",
+        "#    # "
+    ]
+
     I = [
         "#######",
         "   #   ",
@@ -55,7 +65,7 @@ def print_SPITE_banner():
 
     # Combine letters row by row
     for row in range(len(S)):
-        line = S[row] + " " + P[row] + " " + I[row] + " " + T[row] + " " + E[row]
+        line = S[row] + " " + P[row] + " " + R[row] + " " + I[row] + " " + T[row] + " " + E[row]
         print(line)
 
     # Bottom line
