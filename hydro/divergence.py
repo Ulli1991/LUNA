@@ -4,11 +4,12 @@ from jax import jit, lax
 from functools import partial
 
 from hydro.padding import pad
-from hydro.slopes import compute_slopes_from_padded, slope_limiter
+from hydro.slopes import compute_slopes_from_padded, slope_limiter, compute_slopes_from_padded_smooth
 from hydro.fluxes import hllc_flux
 
-@partial(jit, static_argnums=(2, 3, 4))
-def flux_divergence(U, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz):
+@partial(jit, static_argnums=(2, 3, 4, 11, 12))
+def flux_divergence(U, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz,
+                    use_smooth_limiters=False, sharpness=10.0):
     """
     Compute the flux divergence in 1D, 2D, or 3D using first-order or second-order PLM.
 
@@ -16,11 +17,18 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_
     - First-order mode: Direct flux computation from padded states
     - Second-order mode: Reconstruction at ALL interfaces (including boundaries)
 
+    Parameters
+    ----------
     U: (Nvar, Nx) or (Nvar, Nx, Ny) or (Nvar, Nx, Ny, Nz)
     boundary: int, 0=periodic, 1=zero-gradient, 2=reflective
     order: int, 0=first-order Godunov, 1=second-order PLM
     inv_dx, inv_dy, inv_dz: Precomputed 1/dx, 1/dy, 1/dz (faster than division)
-    Returns: -(dFdx + dFdy + dFdz) with shapes matching U
+    use_smooth_limiters: bool (static), if True uses differentiable smooth limiters for autodiff
+    sharpness: float (static), controls smoothness of limiters (higher = closer to original)
+
+    Returns
+    -------
+    -(dFdx + dFdy + dFdz) with shapes matching U
     """
     U_pad = pad(U, boundary)
     ndim = U.ndim - 1  # number of spatial dimensions
@@ -77,7 +85,11 @@ def flux_divergence(U, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_
         Slope limiting ensures stability at boundaries.
         """
         # Compute slopes for all real cells (using ghost cells in stencil)
-        dUx, dUy, dUz = compute_slopes_from_padded(U_pad, limiter)
+        # Use regular if since use_smooth_limiters is static (known at compile time)
+        if use_smooth_limiters:
+            dUx, dUy, dUz = compute_slopes_from_padded_smooth(U_pad, limiter, sharpness)
+        else:
+            dUx, dUy, dUz = compute_slopes_from_padded(U_pad, limiter)
 
         if ndim == 1:
             # Extract real cells (excluding ghost cells)
