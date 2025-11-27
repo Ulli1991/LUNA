@@ -6,6 +6,8 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 - ✅ Single-GPU and multi-GPU (MPI) execution
 - ✅ HLLC Riemann solver with optimized flux computation
 - ✅ PLM reconstruction with multiple limiters
+- ✅ Smooth limiters for automatic differentiation
+- ✅ Full autodiff support with gradient visualization
 - ✅ Multiple time integrators (RK2, RK4, MUSCL-Hancock)
 - ✅ Patch-based domain decomposition (AMR-ready)
 - ✅ Scales from 1 GPU to 1000s of GPUs
@@ -16,11 +18,12 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 1. [Quick Start](#quick-start)
 2. [Single-GPU Usage](#single-gpu-usage)
-3. [Multi-GPU Usage (MPI)](#multi-gpu-usage-mpi)
-4. [Architecture](#architecture)
-5. [Performance](#performance)
-6. [File Structure](#file-structure)
-7. [Development Roadmap](#development-roadmap)
+3. [Autodiff & Gradient Analysis](#autodiff--gradient-analysis)
+4. [Multi-GPU Usage (MPI)](#multi-gpu-usage-mpi)
+5. [Architecture](#architecture)
+6. [Performance](#performance)
+7. [File Structure](#file-structure)
+8. [Development Roadmap](#development-roadmap)
 
 ---
 
@@ -112,6 +115,196 @@ python utils/benchmark_hllc.py
 ```
 
 See `utils/PROFILING_GUIDE.md` for detailed profiling instructions.
+
+---
+
+## Autodiff & Gradient Analysis
+
+### Overview
+
+JAX-Hydro supports **automatic differentiation** through the entire solver, enabling:
+- **Sensitivity analysis**: Which parts of initial conditions affect final observables?
+- **Inverse problems**: Optimize ICs to match desired outcomes
+- **Adjoint-based methods**: Efficient gradient computation for large systems
+- **Physics-informed learning**: Train neural network components
+
+The implementation uses **smooth slope limiters** that approximate traditional limiters (minmod, moncen, vanleer) with differentiable functions (tanh, logaddexp).
+
+### Quick Start
+
+**1. Configure for autodiff in `config.py`:**
+
+```python
+# Choose a shock problem (activates limiters)
+test_problem = "Sod-Shock"  # or "Woodward-Colella"
+
+# Enable smooth limiters
+use_smooth_limiters = True
+smooth_limiter_sharpness = 10.0  # 10-20 typical
+
+# Small grid for testing
+Nx = 256
+t_end = 0.1
+```
+
+**2. Run autodiff test:**
+
+```bash
+python main_autodiff.py
+```
+
+This will:
+- Run forward simulation
+- Compute gradients via autodiff
+- Verify with finite differences
+- Save results to `snapshots_*/autodiff_result.hdf5`
+
+**3. Visualize gradients:**
+
+```bash
+python utils/plot_autodiff_gradients.py snapshots_*/autodiff_result.hdf5
+```
+
+Creates 4 plots showing gradient structure and domain of influence.
+
+### Understanding the Gradients
+
+For observable `J = ρ_final[x=0.5]` (density at domain center):
+
+**Gradient**: `∂J/∂U₀(x)` for all x
+
+**Physical meaning**: How much does perturbing the initial condition at position x affect the final density at x=0.5?
+
+**Expected pattern for Sod shock**:
+```
+     Rarefaction    Contact    Shock
+x=0 ←-----------← ←---------← ←----← x=1
+                    ↑
+                  x=0.5 (observation)
+```
+
+- **Non-zero gradients**: In regions that can causally influence x=0.5 by t_end
+- **Zero gradients**: Outside domain of influence (too far to reach)
+- **Boundaries**: Determined by characteristic speeds (sound waves, shocks)
+
+### Observable Functions
+
+The code auto-selects observables based on test problem:
+
+| Observable | Formula | Best For | Gradient Meaning |
+|-----------|---------|----------|------------------|
+| `density_at_point` | ρ[Nx/2] | Shock tubes | Shock position sensitivity |
+| `momentum_region` | Σ(ρu) in [1/4, 3/4] | Strong shocks | Flow through region |
+| `kinetic_energy` | Σ(½ρv²) | Shu-Osher | Energy distribution |
+| `pressure_integral` | Σ(p) | Shock problems | Thermodynamic sensitivity |
+| `total_energy` | Σ(E) | ⚠️ Avoid (conserved!) | Near-zero gradients |
+
+### Visualization Outputs
+
+**1. `autodiff_gradients_stacked.png`**
+- Separate plots for ∂J/∂ρ₀, ∂J/∂(ρu)₀, ∂J/∂E₀
+- Shows which variables are most sensitive
+
+**2. `autodiff_gradients_overlay.png`**
+- Top: Initial condition (ρ, p)
+- Bottom: Normalized gradients
+- Compare gradient structure with IC features
+
+**3. `autodiff_gradients_domain.png`**
+- Gradient magnitude ||∇J||
+- Domain of influence boundaries
+- Shows causal structure
+
+**4. `autodiff_gradients_evolution.png`**
+- Initial vs final density
+- Gradient magnitude overlay
+- Connects dynamics to sensitivity
+
+### Test Problem Recommendations
+
+**✅ Good (activates limiters):**
+- **Sod-Shock**: Classic, moderate difficulty
+- **Woodward-Colella**: Strong shocks, ultimate test
+- **Shu-Osher**: Shock-turbulence interaction
+
+**❌ Avoid (too smooth):**
+- **Soundwave**: Linear, limiters barely activate
+- **Soundwave-Advected**: Same issue
+
+### Smooth Limiters
+
+Traditional limiters (minmod, etc.) use non-differentiable operations:
+```python
+# Non-smooth (breaks autodiff)
+minmod(a, b) = sign(a) * min(|a|, |b|) if a*b > 0 else 0
+```
+
+Smooth approximations use differentiable functions:
+```python
+# Smooth (autodiff-compatible)
+minmod_smooth(a, b) = smooth_sign(a) * smooth_min(|a|, |b|) * smooth_heaviside(a*b)
+```
+
+**Sharpness parameter** controls approximation quality:
+- `5-10`: Very smooth, better for optimization
+- `10-20`: Good balance (recommended)
+- `50-100`: Very close to original limiters
+
+### HDF5 File Structure
+
+```
+autodiff_result.hdf5
+├── initial/          # U₀, decomposed fields
+├── final/            # U_final, decomposed fields
+├── gradients/        # ∂J/∂U₀, decomposed by variable
+├── observable/       # Name, value, observation point
+├── coordinates/      # x, y, z positions
+└── metadata/         # All config parameters
+```
+
+### Verification
+
+The code automatically verifies gradients via finite differences:
+
+```
+∂J/∂U₀[i] ≈ (J(U₀ + ε*e_i) - J(U₀ - ε*e_i)) / (2ε)
+```
+
+**Success criteria:**
+- ✓ Excellent: Max relative error < 1e-3
+- ✓ Good: Max relative error < 1e-2
+- ⚠️ Warning: Max relative error < 1e-1
+- ✗ Failed: Max relative error > 1e-1
+
+### Troubleshooting
+
+**Gradients are NaN/Inf:**
+- Ensure `use_smooth_limiters = True`
+- Increase `smooth_limiter_sharpness` (try 20.0)
+- Check time solver compatibility (RK2, RK4, Hancock work)
+
+**Gradients don't match finite differences:**
+- Check relative error threshold
+- Try smaller timestep or finer grid
+- Adjust `smooth_limiter_sharpness`
+
+**Gradients near zero:**
+- Observable may be poorly chosen (e.g., total_energy)
+- Evolution time too short
+- Problem too smooth (use shock problem)
+
+### Advanced: Custom Observables
+
+To add custom observables, edit `main_autodiff.py`:
+
+```python
+def observable_max_density(U_final, spatial_dim):
+    """Maximum density in domain."""
+    return jnp.max(U_final[0])
+
+# Add to dictionary
+OBSERVABLES['max_density'] = observable_max_density
+```
 
 ---
 
@@ -454,23 +647,24 @@ exchange_halos_mpi_between_nodes(boundary_patches, comm)
 jax-hydro/
 ├── main.py                      # Single-GPU driver
 ├── main_multigpu_mpi.py         # Multi-GPU (MPI) driver
+├── main_autodiff.py             # Autodiff testing (NEW)
 ├── config.py                    # Configuration (user-created)
 ├── template_config.py           # Configuration template
 │
-├── grid/                        # Domain decomposition (NEW)
+├── grid/                        # Domain decomposition
 │   ├── patch.py                 # GridPatch class
 │   ├── domain.py                # Domain class
 │   ├── decomposition.py         # Decomposition strategies
 │   └── neighbors.py             # Connectivity logic
 │
-├── parallel/                    # Communication (NEW)
+├── parallel/                    # Communication
 │   ├── halo_exchange.py         # Generic halo exchange
 │   ├── halo_exchange_mpi.py     # MPI-specific implementation
 │   └── collective.py            # Global reductions
 │
 ├── hydro/                       # Physics kernels
 │   ├── fluxes.py                # HLLC Riemann solver
-│   ├── slopes.py                # PLM reconstruction
+│   ├── slopes.py                # PLM + smooth limiters (NEW)
 │   ├── divergence.py            # Flux divergence
 │   ├── padding.py               # Boundary padding
 │   └── physics_checks.py        # Validation
@@ -483,12 +677,16 @@ jax-hydro/
 │   └── ic.py                    # Test problems
 │
 ├── file_io/                     # I/O
-│   └── output.py                # HDF5 output
+│   ├── write_snapshot.py        # Regular HDF5 output
+│   ├── read_snapshot.py         # Read snapshots
+│   ├── write_autodiff_result.py # Autodiff HDF5 output (NEW)
+│   └── read_autodiff_result.py  # Read gradients (NEW)
 │
-├── utils/                       # Profiling & benchmarking
+├── utils/                       # Analysis & profiling
 │   ├── profile_simulation.py   # High-level profiling
 │   ├── profile_detailed.py     # Component profiling
 │   ├── benchmark_hllc.py        # HLLC benchmark
+│   ├── plot_autodiff_gradients.py  # Gradient visualization (NEW)
 │   ├── PROFILING_GUIDE.md       # Profiling documentation
 │   └── README.md                # Utils documentation
 │
@@ -523,6 +721,15 @@ mpirun -np 2 python main_multigpu_mpi.py
 - [x] Neighbor connectivity
 - [x] MPI halo exchange
 - [x] Global reductions (CFL)
+- [x] Documentation and examples
+
+### ✅ Phase 2.5: Automatic Differentiation (Complete)
+- [x] Smooth slope limiters (minmod, moncen, vanleer)
+- [x] Full solver differentiability
+- [x] Multiple observable functions
+- [x] Finite difference verification
+- [x] Gradient visualization tools
+- [x] HDF5 I/O for gradients
 - [x] Documentation and examples
 
 ### 🔄 Phase 3: Multi-GPU Testing (In Progress)
