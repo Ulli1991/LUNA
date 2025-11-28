@@ -6,8 +6,30 @@ Creates publication-quality plots showing:
 2. Initial condition with gradient overlay
 3. Comparison of forward and adjoint sensitivities
 """
+import sys
+from pathlib import Path
+import os
+import warnings
+import logging
+
+# Suppress JAX warnings since we're only doing plotting
+os.environ['JAX_PLATFORMS'] = 'cpu'
+os.environ['JAX_ENABLE_X64'] = 'True'
+
+# Suppress JAX logging errors about GPU plugins
+logging.getLogger('jax._src.xla_bridge').setLevel(logging.CRITICAL)
+
+# Add parent directory to path so we can import file_io module
+script_dir = Path(__file__).parent
+parent_dir = script_dir.parent
+sys.path.insert(0, str(parent_dir))
+
 import matplotlib.pyplot as plt
 import numpy as np
+
+# Suppress matplotlib legend warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+
 from file_io.read_autodiff_result import read_autodiff_result
 
 def plot_gradients_1d(filename, output_prefix="autodiff_gradients"):
@@ -62,9 +84,9 @@ def plot_gradients_1d(filename, output_prefix="autodiff_gradients"):
     axes[0].axhline(0, color='k', linestyle='--', alpha=0.3)
     if obs_x is not None:
         axes[0].axvline(obs_x, color='r', linestyle='--', alpha=0.5, label=f'Obs. point')
+        axes[0].legend()
     axes[0].set_ylabel(r'$\partial J / \partial \rho_0$', fontsize=12)
     axes[0].grid(alpha=0.3)
-    axes[0].legend()
 
     # Gradient w.r.t. momentum
     axes[1].plot(x, dJ_dmomx, 'g-', linewidth=1.5)
@@ -221,10 +243,10 @@ def plot_gradients_1d(filename, output_prefix="autodiff_gradients"):
     axes[1].fill_between(x, 0, grad_magnitude, alpha=0.5, color='purple')
     if obs_x is not None:
         axes[1].axvline(obs_x, color='r', linestyle='--', alpha=0.5, linewidth=2, label='Observation')
+        axes[1].legend()
     axes[1].set_xlabel('Position x', fontsize=12)
     axes[1].set_ylabel(r'$\|\nabla_U J\|$', fontsize=12)
     axes[1].set_title('Sensitivity (Gradient Magnitude)', fontsize=12, fontweight='bold')
-    axes[1].legend()
     axes[1].grid(alpha=0.3)
 
     plt.tight_layout()
