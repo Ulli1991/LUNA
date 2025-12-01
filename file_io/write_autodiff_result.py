@@ -2,7 +2,8 @@ import os
 import h5py
 import jax.numpy as jnp
 
-def write_autodiff_result(U0, U_final, grads, observable_value, observable_name, cfg, filename="autodiff_result.hdf5"):
+def write_autodiff_result(U0, U_final, grads, observable_value, observable_name, cfg,
+                         fd_grads=None, fd_sample_indices=None, filename="autodiff_result.hdf5"):
     """
     Save autodiff results to HDF5 file for post-processing and visualization.
 
@@ -10,6 +11,7 @@ def write_autodiff_result(U0, U_final, grads, observable_value, observable_name,
     - Initial condition U0 (conservative variables)
     - Final state U_final (conservative variables)
     - Gradients dJ/dU0 (same shape as U0)
+    - Finite difference gradients (if provided, for sampled points)
     - Observable value and metadata
     - Spatial coordinates for plotting
 
@@ -27,6 +29,10 @@ def write_autodiff_result(U0, U_final, grads, observable_value, observable_name,
         Name of the observable function (e.g., 'density_at_point')
     cfg : Config
         Configuration object
+    fd_grads : jax.numpy.ndarray, optional
+        Finite difference gradients, shape (Nvar, num_samples)
+    fd_sample_indices : jax.numpy.ndarray, optional
+        Spatial indices where finite differences were computed
     filename : str
         Output filename (default: 'autodiff_result.hdf5')
     """
@@ -101,6 +107,27 @@ def write_autodiff_result(U0, U_final, grads, observable_value, observable_name,
         gradients.attrs["mean"] = float(jnp.mean(grads))
         gradients.attrs["std"] = float(jnp.std(grads))
         gradients.attrs["l2norm"] = float(jnp.linalg.norm(grads))
+
+        # ===== Finite difference gradients (if provided) =====
+        if fd_grads is not None and fd_sample_indices is not None:
+            fd_group = f.create_group("finite_difference")
+            fd_group.create_dataset("gradients", data=fd_grads)  # Shape: (Nvar, num_samples)
+            fd_group.create_dataset("sample_indices", data=fd_sample_indices)  # Shape: (num_samples,)
+
+            # Also split by variable for easier plotting
+            fd_group.create_dataset("dJ_drho0_fd", data=fd_grads[0])
+            fd_group.create_dataset("dJ_dmomx0_fd", data=fd_grads[1])
+            if cfg.SPATIAL_DIMENSION >= 2:
+                fd_group.create_dataset("dJ_dmomy0_fd", data=fd_grads[2])
+            if cfg.SPATIAL_DIMENSION == 3:
+                fd_group.create_dataset("dJ_dmomz0_fd", data=fd_grads[3])
+            fd_group.create_dataset("dJ_dE0_fd", data=fd_grads[-1])
+
+            # Statistics
+            fd_group.attrs["num_samples"] = len(fd_sample_indices)
+            fd_group.attrs["min"] = float(jnp.min(fd_grads))
+            fd_group.attrs["max"] = float(jnp.max(fd_grads))
+            fd_group.attrs["mean"] = float(jnp.mean(fd_grads))
 
         # ===== Observable info =====
         observable = f.create_group("observable")
