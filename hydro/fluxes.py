@@ -65,19 +65,14 @@ def hllc_flux_1d(U_L, U_R, gamma):
     denom_L = rho_L * (S_L - uL)
     denom_R = rho_R * (S_R - uR)
 
-    # Epsilon for autodiff stability (prevent divide-by-near-zero in backprop)
-    eps = 1e-10
-
     # Middle speed (uses cached denominators to avoid recomputation)
-    # Add epsilon to prevent divide-by-zero during autodiff backprop
-    S_M = (p_R - p_L + denom_L*uL - denom_R*uR) / (denom_L - denom_R + eps)
+    S_M = (p_R - p_L + denom_L*uL - denom_R*uR) / (denom_L - denom_R)
 
     # Star states (using cached reciprocals)
-    # Add epsilon to all divisions for autodiff stability
-    rho_star_L = denom_L / (S_L - S_M + eps)
-    rho_star_R = denom_R / (S_R - S_M + eps)
-    E_star_L = E_L * inv_rho_L + (S_M - uL)*(S_M + p_L / (denom_L + eps))
-    E_star_R = E_R * inv_rho_R + (S_M - uR)*(S_M + p_R / (denom_R + eps))
+    rho_star_L = denom_L / (S_L - S_M)
+    rho_star_R = denom_R / (S_R - S_M)
+    E_star_L = E_L * inv_rho_L + (S_M - uL)*(S_M + p_L / denom_L)
+    E_star_R = E_R * inv_rho_R + (S_M - uR)*(S_M + p_R / denom_R)
 
     # Star state vectors (needed for flux computation)
     U_star_L = jnp.stack([rho_star_L, rho_star_L*S_M, rho_star_L*E_star_L])
@@ -173,16 +168,13 @@ def hllc_flux_2d(U_L, U_R, axis, gamma):
         denom_R = rho_R * (S_R - uR_n)
 
         # Middle speed (uses cached denominators to avoid recomputation)
-        # Epsilon for autodiff stability
-        eps = 1e-10
+        S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R)
 
-        S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R + eps)
-
-        # Star states (using cached reciprocals) - add epsilon for autodiff
-        rho_star_L = denom_L / (S_L - S_M + eps)
-        rho_star_R = denom_R / (S_R - S_M + eps)
-        E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/(denom_L + eps))
-        E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/(denom_R + eps))
+        # Star states (using cached reciprocals)
+        rho_star_L = denom_L / (S_L - S_M)
+        rho_star_R = denom_R / (S_R - S_M)
+        E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
+        E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
 
         U_star_L = jnp.stack([rho_star_L, rho_star_L*S_M, rho_star_L*uL_t, rho_star_L*E_star_L])
         U_star_R = jnp.stack([rho_star_R, rho_star_R*S_M, rho_star_R*uR_t, rho_star_R*E_star_R])
@@ -218,16 +210,13 @@ def hllc_flux_2d(U_L, U_R, axis, gamma):
         denom_R = rho_R * (S_R - uR_n)
 
         # Middle speed (uses cached denominators to avoid recomputation)
-        # Epsilon for autodiff stability
-        eps = 1e-10
+        S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R)
 
-        S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R + eps)
-
-        # Star states (using cached reciprocals) - add epsilon for autodiff
-        rho_star_L = denom_L / (S_L - S_M + eps)
-        rho_star_R = denom_R / (S_R - S_M + eps)
-        E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/(denom_L + eps))
-        E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/(denom_R + eps))
+        # Star states (using cached reciprocals)
+        rho_star_L = denom_L / (S_L - S_M)
+        rho_star_R = denom_R / (S_R - S_M)
+        E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
+        E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
 
         U_star_L = jnp.stack([rho_star_L, rho_star_L*uL_t, rho_star_L*S_M, rho_star_L*E_star_L])
         U_star_R = jnp.stack([rho_star_R, rho_star_R*uR_t, rho_star_R*S_M, rho_star_R*E_star_R])
@@ -323,16 +312,13 @@ def hllc_flux_3d(U_L, U_R, axis, gamma):
         denom_R = rho_R * (S_R - uR_n)
 
         # Middle speed (uses cached denominators to avoid recomputation)
-        # Epsilon for autodiff stability
-        eps = 1e-10
+        S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R)
 
-        S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R + eps)
-
-        # Star states (using cached reciprocals) - add epsilon for autodiff
-        rho_star_L = denom_L / (S_L - S_M + eps)
-        rho_star_R = denom_R / (S_R - S_M + eps)
-        E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/(denom_L + eps))
-        E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/(denom_R + eps))
+        # Star states (using cached reciprocals)
+        rho_star_L = denom_L / (S_L - S_M)
+        rho_star_R = denom_R / (S_R - S_M)
+        E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
+        E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
 
         # Star state vectors: [rho, rho*vx_new, rho*vy, rho*vz, rho*E]
         U_star_L = jnp.stack([rho_star_L, rho_star_L*S_M, rho_star_L*uL_t1, rho_star_L*uL_t2, rho_star_L*E_star_L])
@@ -370,16 +356,13 @@ def hllc_flux_3d(U_L, U_R, axis, gamma):
         denom_R = rho_R * (S_R - uR_n)
 
         # Middle speed (uses cached denominators to avoid recomputation)
-        # Epsilon for autodiff stability
-        eps = 1e-10
+        S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R)
 
-        S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R + eps)
-
-        # Star states (using cached reciprocals) - add epsilon for autodiff
-        rho_star_L = denom_L / (S_L - S_M + eps)
-        rho_star_R = denom_R / (S_R - S_M + eps)
-        E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/(denom_L + eps))
-        E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/(denom_R + eps))
+        # Star states (using cached reciprocals)
+        rho_star_L = denom_L / (S_L - S_M)
+        rho_star_R = denom_R / (S_R - S_M)
+        E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
+        E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
 
         # Star state vectors: [rho, rho*vx, rho*vy_new, rho*vz, rho*E]
         U_star_L = jnp.stack([rho_star_L, rho_star_L*uL_t1, rho_star_L*S_M, rho_star_L*uL_t2, rho_star_L*E_star_L])
@@ -417,16 +400,13 @@ def hllc_flux_3d(U_L, U_R, axis, gamma):
         denom_R = rho_R * (S_R - uR_n)
 
         # Middle speed (uses cached denominators to avoid recomputation)
-        # Epsilon for autodiff stability
-        eps = 1e-10
+        S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R)
 
-        S_M = (p_R - p_L + denom_L*uL_n - denom_R*uR_n) / (denom_L - denom_R + eps)
-
-        # Star states (using cached reciprocals) - add epsilon for autodiff
-        rho_star_L = denom_L / (S_L - S_M + eps)
-        rho_star_R = denom_R / (S_R - S_M + eps)
-        E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/(denom_L + eps))
-        E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/(denom_R + eps))
+        # Star states (using cached reciprocals)
+        rho_star_L = denom_L / (S_L - S_M)
+        rho_star_R = denom_R / (S_R - S_M)
+        E_star_L = E_L*inv_rho_L + (S_M - uL_n)*(S_M + p_L/denom_L)
+        E_star_R = E_R*inv_rho_R + (S_M - uR_n)*(S_M + p_R/denom_R)
 
         # Star state vectors: [rho, rho*vx, rho*vy, rho*vz_new, rho*E]
         U_star_L = jnp.stack([rho_star_L, rho_star_L*uL_t1, rho_star_L*uL_t2, rho_star_L*S_M, rho_star_L*E_star_L])
