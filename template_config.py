@@ -1,7 +1,7 @@
 # config.py
 from dataclasses import dataclass
 
-@dataclass
+@dataclass(frozen=True)
 class Config:
 
     # -------------------------------------------------------------------------
@@ -9,9 +9,9 @@ class Config:
     # -------------------------------------------------------------------------
     # Available options:
     #   1D:
-    #       "Sod-Shock"
-    #       "Woodward-Colella"
-    #       "Shu-Osher"
+    #       "Sod-Shock" (tested: works)
+    #       "Woodward-Colella" (tested: works)
+    #       "Shu-Osher" (tested: works)
     #       "Soundwave"
     #       "Soundwave-Advected"
     #
@@ -34,7 +34,7 @@ class Config:
     #   3D:
     #       "Sod-Shock-3D"
     #
-    test_problem: str = "Shu-Osher"
+    test_problem: str = "Sod-Shock"
 
     # ---------------- Device ----------------
     
@@ -46,7 +46,7 @@ class Config:
     # ---------------- Domain ----------------
     # 1 = 1D
     # 2 = 2D 
-    # 3 = 3D (not meaningfully implemented yet)
+    # 3 = 3D
     SPATIAL_DIMENSION: int = 1
     # 0 = Periodic
     # 1 = von Neumann 
@@ -56,13 +56,13 @@ class Config:
     Nx: int = 1024
     Ny: int = 1024
     Nz: int = 1024
-    Lx: float = 10
-    Ly: float = 10
-    Lz: float = 10
+    Lx: float = 1.0
+    Ly: float = 1.0
+    Lz: float = 1.0
 
     # ---------------- Physics ----------------
-    #gamma: float = 5.0 / 3.0
-    gamma: float = 1.4
+    gamma: float = 5.0 / 3.0
+    #gamma: float = 1.4
 
     # ---------------- Time Integration ----------------
     CFL: float = 0.8
@@ -70,40 +70,44 @@ class Config:
     # 0 = RK2
     # 1 = Predictor Corrector (Hancock)
     # 2 = RK4
-    TIME_SOLVER: int = 0
+    TIME_SOLVER: int = 2  # RK4 for better accuracy
 
     # ---------------- Riemann Solver ----------------
     # Reconstruction order:
     # 0 = first order Godunov
     # 1 = PLM (second-order MUSCL)
     # 2 = PPM (future, not implemented yet)
-    ORDER: int = 1
+    ORDER: int = 1  # TESTING: First-order (no slope limiters) to isolate issue
 
     # Slope limiter (used only if ORDER == 1)
     # 0 = Minmod
     # 1 = MonCen
     # 2 = VanLeer
-    LIMITER: int = 1
-
-    # Smooth limiters for autodiff (makes limiters differentiable)
-    use_smooth_limiters: bool = False
-    smooth_limiter_sharpness: float = 10.0
+    LIMITER: int = 0
 
     # ---------------- Time control ----------------
     t_start: float = 0.0
-    t_end: float = 1.8
+    t_end: float = 0.245
 
     # Time interval between snapshots (code units)
-    time_bet_snaps: float = 0.005
+    time_bet_snaps: float = 0.000038
 
     # ---------------- Output ----------------
-    output_dir: str = "snapshots_shu"
+    output_dir: str = "snapshots_sod_autodiff"
     base_name: str = "snap"
     PLOT_AFTER_SIM: bool = True
+    output_cadence: int = 1  # Print diagnostics every N steps
+    check_memory: bool = True
 
-    # How often to print progress and validate (in steps)
-    output_cadence: int = 10
+    # ---------------- Autodiff Options ----------------
+    # Enable smooth (differentiable) slope limiters for automatic differentiation
+    # Set to True when using main_autodiff.py or when computing gradients
+    use_smooth_limiters: bool = True  # REQUIRED for autodiff - hard limiters are not differentiable!
 
-    # Print memory usage during run
-    check_memory: bool = False
+    # Controls smoothness of differentiable limiters (used only if use_smooth_limiters=True)
+    # Higher values = closer to original limiters (sharper transitions)
+    # Lower values = smoother gradients (better for optimization)
+    # Typical range: 5.0 (very smooth) to 50.0 (nearly original)
+    # Recommended: 10.0 for smooth test problems (soundwave, advection)
+    smooth_limiter_sharpness: float = 10.0   
 
