@@ -85,6 +85,10 @@ class Config:
     # 2 = VanLeer
     LIMITER: int = 1
 
+    # Smooth limiters for autodiff (makes limiters differentiable)
+    use_smooth_limiters: bool = False
+    smooth_limiter_sharpness: float = 10.0
+
     # ---------------- Time control ----------------
     t_start: float = 0.0
     t_end: float = 1.8
@@ -96,4 +100,10 @@ class Config:
     output_dir: str = "snapshots_shu"
     base_name: str = "snap"
     PLOT_AFTER_SIM: bool = True
+
+    # How often to print progress and validate (in steps)
+    output_cadence: int = 10
+
+    # Print memory usage during run
+    check_memory: bool = False
 
