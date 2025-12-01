@@ -12,6 +12,7 @@ config.py
 job.out*
 job.err*
 snap*
+job_*
 
 # Virtual environment
 venv/
