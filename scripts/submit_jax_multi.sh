@@ -24,7 +24,7 @@ module purge
 module load gcc/13 cuda/12
 
 # Activate JAX environment
-source ~/venv_jax_cuda/bin/activate  # Adjust to your venv name
+source ~/jax-env/bin/activate
 
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
@@ -46,7 +46,10 @@ echo "==================================================================="
 echo "JAX Multi-Node Configuration"
 echo "==================================================================="
 echo "Head node: $HEAD_NODE ($HEAD_NODE_IP)"
+echo "All nodes: ${NODES[@]}"
 echo "Total nodes: ${#NODES[@]}"
+echo "Tasks per node: $SLURM_NTASKS_PER_NODE"
+echo "Total tasks: $SLURM_NTASKS"
 echo "GPUs per node: 4"
 echo "Total GPUs: $((${#NODES[@]} * 4))"
 echo "==================================================================="
@@ -55,7 +58,16 @@ echo "==================================================================="
 JAX_COORDINATOR_PORT=12345
 export JAX_COORDINATOR_ADDRESS="${HEAD_NODE_IP}:${JAX_COORDINATOR_PORT}"
 
+echo "JAX_COORDINATOR_ADDRESS: $JAX_COORDINATOR_ADDRESS"
+echo "==================================================================="
+
+# Verify GPU visibility on each node
+echo "Verifying GPU visibility on each node:"
+srun --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -c 'echo "Node $(hostname): GPUs = $(nvidia-smi --list-gpus | wc -l)"'
+echo "==================================================================="
+
 # Launch - each task sees all 4 local GPUs
+# IMPORTANT: Use srun here so each node gets its own process with correct SLURM_PROCID
 srun python main_multi.py
 
 echo "Simulation completed!"

@@ -21,12 +21,29 @@ jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")  # Cache compil
 # ============================================================================
 # Initialize JAX distributed if running on multiple processes
 # This must be done BEFORE any JAX operations!
-try:
-    jax.distributed.initialize()
-    print(f"✓ JAX distributed initialized: process {jax.process_index()} of {jax.process_count()}")
-except:
+if "JAX_COORDINATOR_ADDRESS" in os.environ or "SLURM_NTASKS" in os.environ:
+    # Multi-node/multi-process mode
+    try:
+        coordinator = os.environ.get("JAX_COORDINATOR_ADDRESS", "")
+        num_processes = int(os.environ.get("SLURM_NTASKS", 1))
+        process_id = int(os.environ.get("SLURM_PROCID", 0))
+
+        print(f"Initializing JAX distributed:")
+        print(f"  Coordinator: {coordinator}")
+        print(f"  Process {process_id} of {num_processes}")
+
+        jax.distributed.initialize(
+            coordinator_address=coordinator if coordinator else None,
+            num_processes=num_processes,
+            process_id=process_id
+        )
+        print(f"✓ JAX distributed initialized: process {jax.process_index()} of {jax.process_count()}")
+    except Exception as e:
+        print(f"⚠ JAX distributed initialization failed: {e}")
+        print("Falling back to single-process mode")
+else:
     # Single process - no initialization needed
-    pass
+    print("Single-process mode (no JAX distributed initialization)")
 
 print("JAX Performance Settings:")
 print(f"  - Precision: {'float64' if jax.config.jax_enable_x64 else 'float32'}")
