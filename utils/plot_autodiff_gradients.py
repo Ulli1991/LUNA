@@ -6,8 +6,30 @@ Creates publication-quality plots showing:
 2. Initial condition with gradient overlay
 3. Comparison of forward and adjoint sensitivities
 """
+import sys
+from pathlib import Path
+import os
+import warnings
+import logging
+
+# Suppress JAX warnings since we're only doing plotting
+os.environ['JAX_PLATFORMS'] = 'cpu'
+os.environ['JAX_ENABLE_X64'] = 'True'
+
+# Suppress JAX logging errors about GPU plugins
+logging.getLogger('jax._src.xla_bridge').setLevel(logging.CRITICAL)
+
+# Add parent directory to path so we can import file_io module
+script_dir = Path(__file__).parent
+parent_dir = script_dir.parent
+sys.path.insert(0, str(parent_dir))
+
 import matplotlib.pyplot as plt
 import numpy as np
+
+# Suppress matplotlib legend warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+
 from file_io.read_autodiff_result import read_autodiff_result
 
 def plot_gradients_1d(filename, output_prefix="autodiff_gradients"):
@@ -34,6 +56,8 @@ def plot_gradients_1d(filename, output_prefix="autodiff_gradients"):
     U0 = data["U0"]
     U_final = data["U_final"]
     grads = data["grads"]
+    fd_grads = data["fd_grads"]
+    fd_sample_indices = data["fd_sample_indices"]
     obs_name = data["observable_name"]
     obs_value = data["observable_value"]
     metadata = data["metadata"]
@@ -58,36 +82,44 @@ def plot_gradients_1d(filename, output_prefix="autodiff_gradients"):
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
 
     # Gradient w.r.t. density
-    axes[0].plot(x, dJ_drho, 'b-', linewidth=1.5)
+    axes[0].plot(x, dJ_drho, 'b-', linewidth=1.5, label='Autodiff')
+    if fd_grads is not None and fd_sample_indices is not None:
+        x_fd = x[fd_sample_indices]
+        axes[0].plot(x_fd, fd_grads[0], 'r--', linewidth=1.5, alpha=0.8, label='Finite Diff')
     axes[0].axhline(0, color='k', linestyle='--', alpha=0.3)
     if obs_x is not None:
-        axes[0].axvline(obs_x, color='r', linestyle='--', alpha=0.5, label=f'Obs. point')
+        axes[0].axvline(obs_x, color='orange', linestyle='--', alpha=0.5, label=f'Obs. point')
     axes[0].set_ylabel(r'$\partial J / \partial \rho_0$', fontsize=12)
     axes[0].grid(alpha=0.3)
     axes[0].legend()
+    axes[0].tick_params(which='both', direction='in', top=True, right=True)
 
     # Gradient w.r.t. momentum
-    axes[1].plot(x, dJ_dmomx, 'g-', linewidth=1.5)
+    axes[1].plot(x, dJ_dmomx, 'g-', linewidth=1.5, label='Autodiff')
+    if fd_grads is not None and fd_sample_indices is not None:
+        x_fd = x[fd_sample_indices]
+        axes[1].plot(x_fd, fd_grads[1], 'r--', linewidth=1.5, alpha=0.8, label='Finite Diff')
     axes[1].axhline(0, color='k', linestyle='--', alpha=0.3)
     if obs_x is not None:
-        axes[1].axvline(obs_x, color='r', linestyle='--', alpha=0.5)
-    axes[1].set_ylabel(r'$\partial J / \partial (\rho u)_0$', fontsize=12)
+        axes[1].axvline(obs_x, color='orange', linestyle='--', alpha=0.5)
+    axes[1].set_ylabel(r'$\partial J / \partial (\rho v)_0$', fontsize=12)
     axes[1].grid(alpha=0.3)
+    axes[1].legend()
+    axes[1].tick_params(which='both', direction='in', top=True, right=True)
 
     # Gradient w.r.t. energy
-    axes[2].plot(x, dJ_dE, 'r-', linewidth=1.5)
+    axes[2].plot(x, dJ_dE, 'r-', linewidth=1.5, label='Autodiff')
+    if fd_grads is not None and fd_sample_indices is not None:
+        x_fd = x[fd_sample_indices]
+        axes[2].plot(x_fd, fd_grads[2], 'b--', linewidth=1.5, alpha=0.8, label='Finite Diff')
     axes[2].axhline(0, color='k', linestyle='--', alpha=0.3)
     if obs_x is not None:
-        axes[2].axvline(obs_x, color='r', linestyle='--', alpha=0.5)
+        axes[2].axvline(obs_x, color='orange', linestyle='--', alpha=0.5)
     axes[2].set_ylabel(r'$\partial J / \partial E_0$', fontsize=12)
     axes[2].set_xlabel('Position x', fontsize=12)
     axes[2].grid(alpha=0.3)
-
-    # Title
-    title = f"Gradients: {obs_name}\n"
-    title += f"Test: {metadata['test_problem']}, J = {obs_value:.6e}"
-    fig.suptitle(title, fontsize=13, fontweight='bold')
-
+    axes[2].legend()
+    axes[2].tick_params(which='both', direction='in', top=True, right=True)
     plt.tight_layout()
     plt.savefig(f"{output_prefix}_stacked.png", dpi=150, bbox_inches='tight')
     print(f"Saved: {output_prefix}_stacked.png")
@@ -100,7 +132,6 @@ def plot_gradients_1d(filename, output_prefix="autodiff_gradients"):
 
     # Top: Initial condition
     ax_top = axes[0]
-    vx0 = momx0 / rho0
 
     # Compute pressure for IC
     ke0 = 0.5 * momx0**2 / rho0
@@ -109,18 +140,16 @@ def plot_gradients_1d(filename, output_prefix="autodiff_gradients"):
 
     ax_top.plot(x, rho0, 'b-', label=r'$\rho_0$', linewidth=1.5)
     ax_top.set_ylabel('Density', fontsize=12, color='b')
-    ax_top.tick_params(axis='y', labelcolor='b')
+    ax_top.tick_params(axis='y', labelcolor='b', which='both', direction='in', top=True, right=True)
     ax_top.grid(alpha=0.3)
 
     ax_twin = ax_top.twinx()
     ax_twin.plot(x, pressure0, 'r-', label=r'$p_0$', linewidth=1.5)
     ax_twin.set_ylabel('Pressure', fontsize=12, color='r')
-    ax_twin.tick_params(axis='y', labelcolor='r')
+    ax_twin.tick_params(axis='y', labelcolor='r', which='both', direction='in', top=True, left=True)
 
     if obs_x is not None:
         ax_top.axvline(obs_x, color='k', linestyle='--', alpha=0.5, linewidth=2)
-
-    ax_top.set_title('Initial Condition', fontsize=12, fontweight='bold')
 
     # Bottom: Gradients (normalized to [0,1] for comparison)
     ax_bottom = axes[1]
@@ -141,9 +170,9 @@ def plot_gradients_1d(filename, output_prefix="autodiff_gradients"):
 
     ax_bottom.set_xlabel('Position x', fontsize=12)
     ax_bottom.set_ylabel('Normalized Gradient', fontsize=12)
-    ax_bottom.set_title('Gradient Sensitivity (Normalized)', fontsize=12, fontweight='bold')
     ax_bottom.legend(fontsize=10)
     ax_bottom.grid(alpha=0.3)
+    ax_bottom.tick_params(which='both', direction='in', top=True, right=True)
 
     plt.tight_layout()
     plt.savefig(f"{output_prefix}_overlay.png", dpi=150, bbox_inches='tight')
@@ -184,9 +213,9 @@ def plot_gradients_1d(filename, output_prefix="autodiff_gradients"):
 
     ax.set_xlabel('Position x', fontsize=12)
     ax.set_ylabel(r'$\|\nabla_U J\|$', fontsize=12)
-    ax.set_title(f'Domain of Influence Analysis\nObservable: {obs_name}', fontsize=13, fontweight='bold')
     ax.legend(fontsize=10)
     ax.grid(alpha=0.3)
+    ax.tick_params(which='both', direction='in', top=True, right=True)
 
     plt.tight_layout()
     plt.savefig(f"{output_prefix}_domain.png", dpi=150, bbox_inches='tight')
@@ -215,17 +244,17 @@ def plot_gradients_1d(filename, output_prefix="autodiff_gradients"):
     axes[0].set_ylabel('Density', fontsize=12)
     axes[0].legend()
     axes[0].grid(alpha=0.3)
-    axes[0].set_title('Evolution: Initial → Final', fontsize=12, fontweight='bold')
+    axes[0].tick_params(which='both', direction='in', top=True, right=True)
 
     # Bottom: Gradient magnitude
     axes[1].fill_between(x, 0, grad_magnitude, alpha=0.5, color='purple')
     if obs_x is not None:
         axes[1].axvline(obs_x, color='r', linestyle='--', alpha=0.5, linewidth=2, label='Observation')
+        axes[1].legend()
     axes[1].set_xlabel('Position x', fontsize=12)
     axes[1].set_ylabel(r'$\|\nabla_U J\|$', fontsize=12)
-    axes[1].set_title('Sensitivity (Gradient Magnitude)', fontsize=12, fontweight='bold')
-    axes[1].legend()
     axes[1].grid(alpha=0.3)
+    axes[1].tick_params(which='both', direction='in', top=True, right=True)
 
     plt.tight_layout()
     plt.savefig(f"{output_prefix}_evolution.png", dpi=150, bbox_inches='tight')
@@ -257,13 +286,12 @@ def plot_gradients_summary(filename):
     # Compute gradient magnitude
     grad_magnitude = np.sqrt(np.sum(grads**2, axis=0))
 
-    plt.figure(figsize=(10, 5))
-    plt.fill_between(x, 0, grad_magnitude, alpha=0.6, color='purple')
-    plt.xlabel('Position x', fontsize=12)
-    plt.ylabel(r'Gradient Magnitude $\|\nabla_U J\|$', fontsize=12)
-    plt.title(f'Sensitivity to Initial Conditions\nTest: {metadata["test_problem"]}, Observable: {obs_name}',
-              fontsize=12, fontweight='bold')
-    plt.grid(alpha=0.3)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.fill_between(x, 0, grad_magnitude, alpha=0.6, color='purple')
+    ax.set_xlabel('Position x', fontsize=12)
+    ax.set_ylabel(r'Gradient Magnitude $\|\nabla_U J\|$', fontsize=12)
+    ax.grid(alpha=0.3)
+    ax.tick_params(which='both', direction='in', top=True, right=True)
     plt.tight_layout()
     plt.savefig('gradient_summary.png', dpi=150, bbox_inches='tight')
     print("Saved: gradient_summary.png")

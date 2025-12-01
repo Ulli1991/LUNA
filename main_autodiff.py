@@ -215,7 +215,7 @@ def finite_difference_gradient(sim_fn, observable_fn, U0, cfg, max_steps, dt_sch
 
     Uses central differences: (f(x+eps) - f(x-eps)) / (2*eps)
 
-    WARNING: This is SLOW - only checks a few components, not full gradient!
+    WARNING: This is SLOW - computes for multiple spatial points across all variables!
 
     Parameters
     ----------
@@ -233,34 +233,52 @@ def finite_difference_gradient(sim_fn, observable_fn, U0, cfg, max_steps, dt_sch
         Timestep schedule to use (same as autodiff)
     epsilon : float
         Finite difference step size
+
+    Returns
+    -------
+    fd_grads : array
+        Finite difference gradients, shape (Nvar, num_samples)
+    sample_indices : array
+        Spatial indices where FD was computed
     """
     print(f"Computing finite difference gradients (epsilon={epsilon})...")
 
-    # Only compute FD for a subset of points to save time
-    # Sample first variable, few spatial points
-    num_samples = min(10, U0.shape[1])  # Sample up to 10 points
-    sample_indices = jnp.linspace(0, U0.shape[1]-1, num_samples, dtype=int)
+    # Compute FD for ALL spatial points across all variables
+    Nvar = U0.shape[0]
+    Nx = U0.shape[1]
+    sample_indices = jnp.arange(Nx)  # ALL points
 
-    fd_grads = []
+    fd_grads = jnp.zeros((Nvar, Nx))
 
-    for i in sample_indices:
-        # Perturb one component
-        U_plus = U0.at[0, i].add(epsilon)
-        U_minus = U0.at[0, i].add(-epsilon)
+    total_evals = Nvar * Nx
+    print(f"Computing {total_evals} finite difference evaluations ({Nvar} vars × {Nx} points)...")
+    print("This will take a while...")
 
-        # Compute observables (extract U_final from tuple)
-        # IMPORTANT: Use the SAME dt_schedule for both perturbations
-        U_final_plus, _ = sim_fn(U_plus, cfg, max_steps, dt_schedule=dt_schedule)
-        U_final_minus, _ = sim_fn(U_minus, cfg, max_steps, dt_schedule=dt_schedule)
+    eval_count = 0
+    for var_idx in range(Nvar):
+        print(f"  Variable {var_idx+1}/{Nvar}...")
+        for spatial_idx in range(Nx):
+            # Perturb one component
+            U_plus = U0.at[var_idx, spatial_idx].add(epsilon)
+            U_minus = U0.at[var_idx, spatial_idx].add(-epsilon)
 
-        obs_plus = observable_fn(U_final_plus, cfg.SPATIAL_DIMENSION)
-        obs_minus = observable_fn(U_final_minus, cfg.SPATIAL_DIMENSION)
+            # Compute observables (extract U_final from tuple)
+            # IMPORTANT: Use the SAME dt_schedule for both perturbations
+            U_final_plus, _ = sim_fn(U_plus, cfg, max_steps, dt_schedule=dt_schedule)
+            U_final_minus, _ = sim_fn(U_minus, cfg, max_steps, dt_schedule=dt_schedule)
 
-        # Central difference
-        fd_grad = (obs_plus - obs_minus) / (2.0 * epsilon)
-        fd_grads.append(float(fd_grad))
+            obs_plus = observable_fn(U_final_plus, cfg.SPATIAL_DIMENSION)
+            obs_minus = observable_fn(U_final_minus, cfg.SPATIAL_DIMENSION)
 
-    return jnp.array(fd_grads), sample_indices
+            # Central difference
+            fd_grad = (obs_plus - obs_minus) / (2.0 * epsilon)
+            fd_grads = fd_grads.at[var_idx, spatial_idx].set(fd_grad)
+
+            eval_count += 1
+            if eval_count % 100 == 0:
+                print(f"    Progress: {eval_count}/{total_evals} ({100*eval_count/total_evals:.1f}%)")
+
+    return fd_grads, sample_indices
 
 # -------------------------
 # Main test function
@@ -458,22 +476,29 @@ RECOMMENDED OBSERVABLE BY PROBLEM:
     )
 
     # Get corresponding autodiff gradients
-    autodiff_samples = grads_autodiff[0, sample_indices]
+    autodiff_samples = grads_autodiff[:, sample_indices]  # Shape: (Nvar, num_samples)
 
     print(f"✓ Finite difference gradients computed")
     print()
 
-    print("Comparison (first variable, sampled points):")
-    print(f"{'Index':<8} {'Autodiff':<15} {'FiniteDiff':<15} {'RelError':<12}")
-    print("-" * 60)
+    # Print comparison for each variable
+    var_names = ['rho', 'momx', 'E'] if cfg.SPATIAL_DIMENSION == 1 else ['rho', 'momx', 'momy', 'E']
+    for var_idx in range(fd_grads.shape[0]):
+        print(f"Comparison for variable {var_names[var_idx]}:")
+        print(f"{'Index':<8} {'Autodiff':<15} {'FiniteDiff':<15} {'RelError':<12}")
+        print("-" * 60)
 
-    for idx, fd_g, ad_g in zip(sample_indices, fd_grads, autodiff_samples):
-        rel_error = abs(ad_g - fd_g) / (abs(fd_g) + 1e-10)
-        print(f"{idx:<8} {float(ad_g):<15.6e} {float(fd_g):<15.6e} {float(rel_error):<12.6e}")
+        # Show first 10 samples for this variable
+        num_to_show = min(10, len(sample_indices))
+        for i in range(num_to_show):
+            idx = sample_indices[i]
+            ad_g = autodiff_samples[var_idx, i]
+            fd_g = fd_grads[var_idx, i]
+            rel_error = abs(ad_g - fd_g) / (abs(fd_g) + 1e-10)
+            print(f"{idx:<8} {float(ad_g):<15.6e} {float(fd_g):<15.6e} {float(rel_error):<12.6e}")
+        print()
 
-    print()
-
-    # Overall statistics
+    # Overall statistics across all variables
     rel_errors = jnp.abs(autodiff_samples - fd_grads) / (jnp.abs(fd_grads) + 1e-10)
     max_rel_error = jnp.max(rel_errors)
     mean_rel_error = jnp.mean(rel_errors)
@@ -526,6 +551,8 @@ RECOMMENDED OBSERVABLE BY PROBLEM:
         U0=U0,
         U_final=U_final,
         grads=grads_autodiff,
+        fd_grads=fd_grads,
+        fd_sample_indices=sample_indices,
         observable_value=obs_value,
         observable_name=observable_name,
         cfg=cfg,

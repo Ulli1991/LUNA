@@ -6,6 +6,7 @@ config.py
 
 # HDF5 output files
 *.hdf5
+*.png
 
 # Log files
 *.log
@@ -13,6 +14,8 @@ job.out*
 job.err*
 snap*
 job_*
+*.swp
+*.swo
 
 # Virtual environment
 venv/

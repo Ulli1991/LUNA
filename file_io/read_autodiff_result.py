@@ -58,10 +58,22 @@ def read_autodiff_result(filename):
         # Read gradient statistics
         grad_stats = dict(f["gradients"].attrs)
 
+        # Read finite difference gradients if they exist
+        if "finite_difference" in f:
+            fd_grads = jnp.array(f["finite_difference/gradients"])
+            fd_sample_indices = jnp.array(f["finite_difference/sample_indices"])
+            fd_stats = dict(f["finite_difference"].attrs)
+        else:
+            fd_grads = None
+            fd_sample_indices = None
+            fd_stats = None
+
     data = {
         "U0": U0,
         "U_final": U_final,
         "grads": grads,
+        "fd_grads": fd_grads,
+        "fd_sample_indices": fd_sample_indices,
         "observable_name": observable_name,
         "observable_value": observable_value,
         "observable_attrs": obs_attrs,
@@ -70,6 +82,7 @@ def read_autodiff_result(filename):
         "z": z,
         "metadata": metadata,
         "gradient_stats": grad_stats,
+        "fd_stats": fd_stats,
     }
 
     return data
