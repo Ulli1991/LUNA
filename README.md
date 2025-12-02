@@ -84,20 +84,6 @@ BOUNDARY = 0  # Periodic
 python main.py
 ```
 
-### Profiling
-
-```bash
-# High-level profiling
-python utils/profile_simulation.py
-
-# Detailed component profiling
-python utils/profile_detailed.py
-
-# HLLC flux benchmark
-python utils/benchmark_hllc.py
-```
-
-See `utils/PROFILING_GUIDE.md` for detailed profiling instructions.
 
 ---
 
@@ -408,50 +394,18 @@ kratos/
 │   ├── write_autodiff_result.py # Autodiff HDF5 output
 │   └── read_autodiff_result.py  # Read gradients
 │
-├── utils/                       # Analysis & profiling
-│   ├── profile_simulation.py   # High-level profiling
-│   ├── profile_detailed.py     # Component profiling
-│   ├── benchmark_hllc.py        # HLLC benchmark
-│   ├── plot_autodiff_gradients.py  # Gradient visualization
-│   ├── PROFILING_GUIDE.md       # Profiling documentation
-│   └── README.md                # Utils documentation
+├── utils/                       # Utilities
+│   ├── logo.py                  # ASCII banner
+│   ├── memory_utils.py          # Memory tracking
+│   ├── plot_1d_fluid_quants.py  # 1D visualization
+│   ├── plot_density2d.py        # 2D visualization
+│   └── plot_autodiff_gradients.py  # Gradient visualization
 │
 └── README.md                    # This file
 ```
 
 ---
 
-## Performance Monitoring
-
-### Profiling Tools
-
-The `utils/` directory contains comprehensive profiling tools:
-
-```bash
-# High-level: where is time spent?
-python utils/profile_simulation.py
-
-# Detailed: component breakdown
-python utils/profile_detailed.py
-
-# HLLC: isolated flux performance
-python utils/benchmark_hllc.py
-```
-
-See `utils/PROFILING_GUIDE.md` and `utils/README.md` for detailed instructions.
-
-### Expected Timings (2048² 2D, RK2, AMD GPU)
-
-| Component | Time (ms) | % Total |
-|-----------|-----------|---------|
-| CFL computation | 0.5 | 2% |
-| Time stepping | 26.5 | 98% |
-| └─ Flux divergence | 25.0 | 92% |
-|    └─ HLLC flux | 24.0 | 89% |
-
-**Bottleneck: HLLC flux computation** (already optimized)
-
----
 
 ## Citation
 
@@ -488,8 +442,7 @@ Contributions welcome! Please:
 
 For questions or issues:
 - Open an issue on GitHub
-- Check documentation in `utils/`, `SCALING_STRATEGY.md`
-- Profile your code with tools in `utils/`
+- Check this documentation
 
 ---
 
