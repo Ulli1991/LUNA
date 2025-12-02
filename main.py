@@ -29,12 +29,12 @@ from time_integration.cfl import compute_dt_and_diagnostics
 from file_io.write_snapshot import write_snapshot
 from hydro.physics_checks import validate_state, validate_from_diagnostics
 from hydro.divergence import flux_divergence
-from utils.logo import print_SPITE_banner 
+from utils.logo import print_KRATOS_banner 
 
 def main():
 
     # --- Print logo ---
-    print_SPITE_banner()
+    print_KRATOS_banner()
 
     # --- Load configuration (pure Python object) ---
     cfg = Config()

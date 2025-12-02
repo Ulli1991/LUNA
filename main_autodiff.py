@@ -20,6 +20,7 @@ from time_integration.integrators import rk2_step, rk4_step, muscl_hancock_step
 from hydro.divergence import flux_divergence
 from time_integration.cfl import compute_dt
 from file_io.write_autodiff_result import write_autodiff_result
+from utils.logo import print_KRATOS_banner
 import time
 
 # -------------------------
@@ -285,6 +286,9 @@ def finite_difference_gradient(sim_fn, observable_fn, U0, cfg, max_steps, dt_sch
 # -------------------------
 
 def main():
+    # --- Print logo ---
+    print_KRATOS_banner()
+
     cfg = Config()
 
     print("="*80)
