@@ -46,19 +46,22 @@ def rotation_slotted_disk(cfg):
     # Density: rho=2 inside slotted disk, rho=1 outside
     rho = jnp.where(slotted, 2.0, 1.0)
 
-    # Velocities: rigid rotation around (0.5, 0.5) with angular velocity ω = 2π
-    # u = 2π(0.5 - y), v = 2π(x - 0.5)
+    # Velocities: rigid rotation around (0.5, 0.5) with angular velocity ω
+    # For one full rotation in time T, we need: T = 2π/ω, so ω = 2π/T
+    # Standard Zalesak disk: one rotation in T = 2π
     rotation_center_x = 0.5
     rotation_center_y = 0.5
-    omega = 2.0 * jnp.pi  # one full rotation per unit time
+    omega = -1.0  # negative for clockwise rotation (viewed from above)
     u = omega * (rotation_center_y - Y)
     v = omega * (X - rotation_center_x)
 
-    # Pressure: must balance centrifugal force in rotating frame
-    # p(r) = p_0 + 0.5 * rho * omega^2 * r^2
+    # Pressure: must balance centrifugal force for equilibrium
+    # For solid body rotation: dp/dr = ρ*ω²*r → p(r) = p_center + 0.5*ρ*ω²*r²
+    # CRITICAL: Must use LOCAL density ρ, not a constant!
+    # The pressure discontinuity at the disk boundary is physically required
     r_squared = (X - rotation_center_x)**2 + (Y - rotation_center_y)**2
-    p_center = 10.0  # base pressure at rotation center
-    p = p_center + 0.5 * rho * omega**2 * r_squared
+    p_center = 10.0  # pressure at rotation center
+    p = p_center + 0.5 * rho * (omega**2) * r_squared
 
     # Total energy
     E = p / (gamma - 1.0) + 0.5 * rho * (u**2 + v**2)
