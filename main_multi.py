@@ -46,7 +46,7 @@ from time_integration.cfl import compute_dt_and_diagnostics
 from file_io.write_snapshot import write_snapshot
 from hydro.physics_checks import validate_state, validate_from_diagnostics
 from hydro.divergence import flux_divergence
-from utils.logo import print_SPITE_banner
+from utils.logo import print_KRATOS_banner
 
 
 # ============================================================================
@@ -114,7 +114,7 @@ def setup_sharding(spatial_dim, devices):
 def main():
 
     # --- Print logo ---
-    print_SPITE_banner()
+    print_KRATOS_banner()
 
     # --- Load configuration (pure Python object) ---
     cfg = Config()
@@ -268,13 +268,11 @@ def main():
 
         # Validate state less frequently to avoid GPU synchronization overhead
         # Checking every step causes GPU to wait for CPU - very slow!
-        # Only validate every 100 steps (or first step) - assumes simulation is stable
         if step % cfg.output_cadence == 0 or step == 1:
             validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=step, time=t)
 
         # Print progress less frequently to avoid GPU synchronization overhead
-        # Printing every step causes GPU to wait for CPU - very slow!
-        if step % cfg.output_cadence == 0 or step == 1:  # Print every 10 steps (or first step)
+        if step % cfg.output_cadence == 0 or step == 1:
             print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
 
         # Print peak memory after first 3 steps (after JIT compilation and warmup)
