@@ -1,4 +1,6 @@
-# JAX-Hydro
+# KRATOS
+
+**A differentiable astrophysical MHD code for turbulence, shocks, ISM, and galaxy evolution**
 
 A high-performance JAX-based hydrodynamics simulation code for solving the Euler equations in 1D, 2D, and 3D with **single-GPU and multi-GPU (MPI) support**.
 
@@ -644,7 +646,7 @@ exchange_halos_mpi_between_nodes(boundary_patches, comm)
 ## File Structure
 
 ```
-jax-hydro/
+kratos/
 ├── main.py                      # Single-GPU driver
 ├── main_multigpu_mpi.py         # Multi-GPU (MPI) driver
 ├── main_autodiff.py             # Autodiff testing (NEW)
@@ -791,11 +793,11 @@ See `utils/PROFILING_GUIDE.md` and `utils/README.md` for detailed instructions.
 If you use this code in your research, please cite:
 
 ```bibtex
-@software{jax_hydro,
+@software{kratos,
   author = {Your Name},
-  title = {JAX-Hydro: High-Performance Hydrodynamics with JAX},
+  title = {KRATOS: A Differentiable Astrophysical MHD Code},
   year = {2025},
-  url = {https://github.com/yourusername/jax-hydro}
+  url = {https://github.com/yourusername/kratos}
 }
 ```
 
