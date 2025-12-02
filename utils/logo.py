@@ -1,26 +1,17 @@
-def print_SPITE_banner():
+def print_KRATOS_banner():
     # Intro line
-    print("Hi there, this is the Simulation Platform for Interstellar, Turbulent & Extragalactic physics, but you can call me:\n")
+    print("Hi there, this is KRATOS:\n")
+    print("A differentiable astrophysical MHD code for turbulence, shocks, ISM, and galaxy evolution\n")
 
     # ASCII letters
-    S = [
-        "  #####",
-        " #     ",
-        "#      ",
-        " ####  ",
-        "      #",
-        "      #",
-        " ##### "
-    ]
-
-    P = [
-        "###### ",
-        "#     #",
-        "#     #",
-        "###### ",
-        "#      ",
-        "#      ",
-        "#      "
+    K = [
+        "#    # ",
+        "#   #  ",
+        "#  #   ",
+        "###    ",
+        "#  #   ",
+        "#   #  ",
+        "#    # "
     ]
 
     R = [
@@ -33,14 +24,14 @@ def print_SPITE_banner():
         "#    # "
     ]
 
-    I = [
+    A = [
+        "   #   ",
+        "  # #  ",
+        " #   # ",
+        "#     #",
         "#######",
-        "   #   ",
-        "   #   ",
-        "   #   ",
-        "   #   ",
-        "   #   ",
-        "#######"
+        "#     #",
+        "#     #"
     ]
 
     T = [
@@ -53,23 +44,33 @@ def print_SPITE_banner():
         "   #   "
     ]
 
-    E = [
-        "#######",
+    O = [
+        " ##### ",
+        "#     #",
+        "#     #",
+        "#     #",
+        "#     #",
+        "#     #",
+        " ##### "
+    ]
+
+    S = [
+        " ##### ",
+        "#     #",
         "#      ",
-        "#      ",
-        "#####  ",
-        "#      ",
-        "#      ",
-        "#######"
+        " ##### ",
+        "      #",
+        "#     #",
+        " ##### "
     ]
 
     # Combine letters row by row
-    for row in range(len(S)):
-        line = S[row] + " " + P[row] + " " + R[row] + " " + I[row] + " " + T[row] + " " + E[row]
+    for row in range(len(K)):
+        line = K[row] + " " + R[row] + " " + A[row] + " " + T[row] + " " + O[row] + " " + S[row]
         print(line)
 
     # Bottom line
-    print("This is version 0.1.\n")
+    print("\nThis is version 0.1.\n")
 
 if __name__ == "__main__":
-    print_SPITE_banner()
+    print_KRATOS_banner()
