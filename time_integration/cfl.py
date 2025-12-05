@@ -1,5 +1,6 @@
 import jax.numpy as jnp
-from jax import jit
+from jax import jit, pmap
+from functools import partial
 
 @jit
 def compute_dt(U, gamma, CFL, t, t_snapshot, dx, dy=None, dz=None):
@@ -157,4 +158,34 @@ def compute_dt_and_diagnostics(U, gamma, CFL, t, t_snapshot, dx, dy=None, dz=Non
     min_p = jnp.min(p)
 
     return dt, min_rho, min_p, has_nan, has_inf
+
+
+def create_compute_local_dt_pmap(gamma, CFL, dx, dy, dz):
+    """
+    Create a pmapped function to compute dt for local subdomains on each GPU.
+
+    Parameters
+    ----------
+    gamma : float
+        Adiabatic index
+    CFL : float
+        CFL number
+    dx, dy, dz : float
+        Grid spacing
+
+    Returns
+    -------
+    compute_local_dt : callable
+        Pmapped function with signature (U_local, t, t_snapshot) -> (dt, min_rho, min_p, has_nan, has_inf)
+        where U_local has shape (n_devices, ...) and t, t_snapshot are arrays of shape (n_devices,)
+    """
+    @partial(pmap, in_axes=(0, 0, 0), axis_name='batch')
+    def compute_local_dt(U_local_single, t, t_snapshot):
+        """Compute dt for local subdomain."""
+        dt_local, min_rho, min_p, has_nan, has_inf = compute_dt_and_diagnostics(
+            U_local_single, gamma, CFL, t, t_snapshot, dx, dy, dz
+        )
+        return dt_local, min_rho, min_p, has_nan, has_inf
+
+    return compute_local_dt
 
