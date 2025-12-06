@@ -29,6 +29,7 @@ from time_integration.cfl import compute_dt_and_diagnostics
 from file_io.write_snapshot import write_snapshot
 from hydro.physics_checks import validate_state, validate_from_diagnostics
 from hydro.divergence import flux_divergence
+from hydro.divergence_primitive import flux_divergence_primitive
 from utils.logo import print_KRATOS_banner 
 
 def main():
@@ -105,15 +106,14 @@ def main():
     print(f"  - Time solver: {['RK2', 'MUSCL-Hancock', 'RK4'][cfg.TIME_SOLVER]}")
 
     # Create specialized flux_divergence with all parameters baked in
-    flux_fn = partial(
-        flux_divergence,
-        gamma=cfg.gamma,
-        order=cfg.ORDER,
-        limiter=cfg.LIMITER,
-        boundary=cfg.BOUNDARY,
-        dx=dx, dy=dy, dz=dz,
-        inv_dx=inv_dx, inv_dy=inv_dy, inv_dz=inv_dz
-    )
+    # Using PRIMITIVE variable reconstruction (Athena++ style)
+    # Note: flux_fn will be called as flux_fn(U, dt), so we create a wrapper
+    def flux_fn(U, dt):
+        return flux_divergence_primitive(
+            U, cfg.gamma, cfg.ORDER, cfg.LIMITER, cfg.BOUNDARY,
+            dx, dy, dz, inv_dx, inv_dy, inv_dz, dt=dt
+        )
+    print("  - Using PRIMITIVE variable reconstruction (Athena++ style)")
     print()
 
     # Select and specialize the time integration method
