@@ -117,7 +117,9 @@ def main():
     inv_dy = 1.0 / dy if dy is not None else None
     inv_dz = 1.0 / dz if dz is not None else None
 
-    print(f"\nGrid spacing: dx={dx:.6f}, dy={dy}, dz={dz}")
+    dy_str = f"{dy:.6f}" if dy is not None else "None"
+    dz_str = f"{dz:.6f}" if dz is not None else "None"
+    print(f"\nGrid spacing: dx={dx:.6f}, dy={dy_str}, dz={dz_str}")
     print()
 
     # ==================================================================

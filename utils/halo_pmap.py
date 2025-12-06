@@ -82,8 +82,9 @@ def pad_with_halo_2d(U_local, boundary, grid_shape):
 
     def get_left_ghost_boundary():
         if boundary == 0:  # Periodic
-            rightmost_in_row = lax.select(px == 0, (px * ny_proc) + (ny_proc - 1), rank)
-            return lax.select(px == 0, all_rights[rightmost_in_row], right_send)
+            # When at left boundary (px==0), wrap to rightmost GPU in same row
+            rightmost_in_row = (nx_proc - 1) * ny_proc + py
+            return all_rights[rightmost_in_row]
         elif boundary == 1:  # Zero-gradient
             return left_send
         else:  # Reflective
@@ -97,8 +98,9 @@ def pad_with_halo_2d(U_local, boundary, grid_shape):
 
     def get_right_ghost_boundary():
         if boundary == 0:  # Periodic
-            leftmost_in_row = lax.select(px == nx_proc - 1, px * ny_proc, rank)
-            return lax.select(px == nx_proc - 1, all_lefts[leftmost_in_row], left_send)
+            # When at right boundary (px==nx_proc-1), wrap to leftmost GPU in same row
+            leftmost_in_row = 0 * ny_proc + py
+            return all_lefts[leftmost_in_row]
         elif boundary == 1:  # Zero-gradient
             return right_send
         else:  # Reflective
@@ -116,8 +118,9 @@ def pad_with_halo_2d(U_local, boundary, grid_shape):
 
     def get_bottom_ghost_boundary():
         if boundary == 0:  # Periodic
-            topmost_in_col = lax.select(py == 0, rank + (ny_proc - 1), rank)
-            return lax.select(py == 0, all_tops[topmost_in_col], top_send)
+            # When at bottom boundary (py==0), wrap to topmost GPU in same column
+            topmost_in_col = px * ny_proc + (ny_proc - 1)
+            return all_tops[topmost_in_col]
         elif boundary == 1:  # Zero-gradient
             return bottom_send
         else:  # Reflective
@@ -131,8 +134,9 @@ def pad_with_halo_2d(U_local, boundary, grid_shape):
 
     def get_top_ghost_boundary():
         if boundary == 0:  # Periodic
-            bottommost_in_col = lax.select(py == ny_proc - 1, rank - py, rank)
-            return lax.select(py == ny_proc - 1, all_bottoms[bottommost_in_col], bottom_send)
+            # When at top boundary (py==ny_proc-1), wrap to bottommost GPU in same column
+            bottommost_in_col = px * ny_proc + 0
+            return all_bottoms[bottommost_in_col]
         elif boundary == 1:  # Zero-gradient
             return top_send
         else:  # Reflective
@@ -144,18 +148,45 @@ def pad_with_halo_2d(U_local, boundary, grid_shape):
     U_x = jnp.concatenate([left_ghost, U_local, right_ghost], axis=1)
 
     # Extend bottom/top ghosts to include corners
-    # Corners: use left/right ghost values at bottom/top positions
-    bottom_extended = jnp.concatenate([
-        left_ghost[:, :, 0:1],
-        bottom_ghost,
-        right_ghost[:, :, 0:1]
-    ], axis=1)
+    # For corners at physical boundaries with zero-gradient BC, use the corner cell of U_local
+    # For all other cases (internal corners, periodic, reflective), use the ghost cell values
 
-    top_extended = jnp.concatenate([
-        left_ghost[:, :, -1:],
-        top_ghost,
+    # Determine if at physical corners
+    at_bottom_left = jnp.logical_and(jnp.logical_not(has_left), jnp.logical_not(has_bottom))
+    at_bottom_right = jnp.logical_and(jnp.logical_not(has_right), jnp.logical_not(has_bottom))
+    at_top_left = jnp.logical_and(jnp.logical_not(has_left), jnp.logical_not(has_top))
+    at_top_right = jnp.logical_and(jnp.logical_not(has_right), jnp.logical_not(has_top))
+
+    # Zero-gradient at physical corners requires special handling
+    use_local_corners = (boundary == 1)  # Only for zero-gradient
+
+    # Corner cells
+    corner_bl = jnp.where(
+        jnp.logical_and(at_bottom_left, use_local_corners),
+        U_local[:, 0:1, 0:1],
+        left_ghost[:, :, 0:1]
+    )
+
+    corner_br = jnp.where(
+        jnp.logical_and(at_bottom_right, use_local_corners),
+        U_local[:, -1:, 0:1],
+        right_ghost[:, :, 0:1]
+    )
+
+    corner_tl = jnp.where(
+        jnp.logical_and(at_top_left, use_local_corners),
+        U_local[:, 0:1, -1:],
+        left_ghost[:, :, -1:]
+    )
+
+    corner_tr = jnp.where(
+        jnp.logical_and(at_top_right, use_local_corners),
+        U_local[:, -1:, -1:],
         right_ghost[:, :, -1:]
-    ], axis=1)
+    )
+
+    bottom_extended = jnp.concatenate([corner_bl, bottom_ghost, corner_br], axis=1)
+    top_extended = jnp.concatenate([corner_tl, top_ghost, corner_tr], axis=1)
 
     # Pad in y-direction
     U_padded = jnp.concatenate([bottom_extended, U_x, top_extended], axis=2)

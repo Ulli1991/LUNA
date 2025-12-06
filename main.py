@@ -97,7 +97,9 @@ def main():
     print("CREATING SPECIALIZED SIMULATION FUNCTIONS")
     print("="*60)
     print("Baking constant parameters into functions:")
-    print(f"  - Grid spacing: dx={dx:.6f}, dy={dy}, dz={dz}")
+    dy_str = f"{dy:.6f}" if dy is not None else "None"
+    dz_str = f"{dz:.6f}" if dz is not None else "None"
+    print(f"  - Grid spacing: dx={dx:.6f}, dy={dy_str}, dz={dz_str}")
     print(f"  - Physics: gamma={cfg.gamma:.3f}")
     print(f"  - Numerics: order={cfg.ORDER}, limiter={cfg.LIMITER}, boundary={cfg.BOUNDARY}")
     print(f"  - Time solver: {['RK2', 'MUSCL-Hancock', 'RK4'][cfg.TIME_SOLVER]}")
