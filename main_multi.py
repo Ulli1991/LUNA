@@ -186,7 +186,16 @@ def main():
     t = cfg.t_start
     step = 0
     start_time = time.time()
+    last_perf_time = start_time  # For computing cell updates/second
     printed_peak_memory = not cfg.check_memory  # Only print if check_memory is True
+
+    # Total number of cells in the GLOBAL grid
+    if cfg.SPATIAL_DIMENSION == 1:
+        total_cells = cfg.Nx
+    elif cfg.SPATIAL_DIMENSION == 2:
+        total_cells = cfg.Nx * cfg.Ny
+    else:  # 3D
+        total_cells = cfg.Nx * cfg.Ny * cfg.Nz
 
     # Create compute_local_dt function outside the loop
     compute_local_dt = create_compute_local_dt_pmap(cfg.gamma, cfg.CFL, dx, dy, dz)
@@ -226,7 +235,21 @@ def main():
         # Validation and progress printing
         if step % cfg.output_cadence == 0 or step == 1:
             validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=step, time=t)
-            print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
+
+            # Compute performance metric: cell updates per second
+            current_time = time.time()
+            elapsed_since_last = current_time - last_perf_time
+            if step == 1:
+                # First step includes JIT compilation overhead
+                print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
+            else:
+                # Compute cell updates/second over the last interval (global cells)
+                steps_since_last = cfg.output_cadence if step > cfg.output_cadence else step - 1
+                cell_updates = total_cells * steps_since_last
+                cells_per_sec = cell_updates / elapsed_since_last
+                mcells_per_sec = cells_per_sec / 1e6  # Convert to millions
+                print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}, perf = {mcells_per_sec:.2f} Mcells/s")
+            last_perf_time = current_time
 
         # Print peak memory after first 3 steps
         if not printed_peak_memory and step == 3:
@@ -263,15 +286,22 @@ def main():
     print(f"✓ Total runtime: {total_time:.2f} seconds")
     print(f"✓ Total steps: {step}")
     print(f"✓ Final time: {t:.5f}")
-    print(f"✓ Time per step: {total_time/step:.4f} seconds")
+
+    # Compute overall performance (excluding first step with JIT overhead)
+    if step > 1:
+        total_cell_updates = total_cells * (step - 1)
+        avg_cells_per_sec = total_cell_updates / total_time
+        avg_mcells_per_sec = avg_cells_per_sec / 1e6  # Convert to millions
+        print(f"✓ Average performance: {avg_mcells_per_sec:.2f} Mcells/s (global grid)")
+        print(f"✓ Time per step: {total_time/(step-1)*1000:.2f} ms (excluding first step)")
     print()
 
     # Estimate speedup vs single GPU
     print(f"Number of devices: {n_devices}")
     print(f"Expected speedup vs 1 GPU: ~{n_devices * 0.85:.1f}x")
-    print(f"\nTo measure actual speedup: run main.py (single GPU) and compare.")
-    print(f"Single GPU would do {cfg.Nx}x{cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else cfg.Nx} cells")
-    print(f"Each of {n_devices} GPUs does {U_locals.shape[2]}x{U_locals.shape[3] if cfg.SPATIAL_DIMENSION >= 2 else U_locals.shape[2]} cells in PARALLEL")
+    print(f"\nTo measure actual speedup: run main.py (single GPU) and compare cells/s.")
+    print(f"Global grid: {cfg.Nx}x{cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else cfg.Nx} = {total_cells} cells")
+    print(f"Each of {n_devices} GPUs processes {U_locals.shape[2]}x{U_locals.shape[3] if cfg.SPATIAL_DIMENSION >= 2 else U_locals.shape[2]} = {total_cells//n_devices} cells in PARALLEL")
     print()
 
     # Print final memory usage

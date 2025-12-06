@@ -103,7 +103,6 @@ def main():
     print(f"  - Physics: gamma={cfg.gamma:.3f}")
     print(f"  - Numerics: order={cfg.ORDER}, limiter={cfg.LIMITER}, boundary={cfg.BOUNDARY}")
     print(f"  - Time solver: {['RK2', 'MUSCL-Hancock', 'RK4'][cfg.TIME_SOLVER]}")
-    print()
 
     # Create specialized flux_divergence with all parameters baked in
     flux_fn = partial(
@@ -115,6 +114,7 @@ def main():
         dx=dx, dy=dy, dz=dz,
         inv_dx=inv_dx, inv_dy=inv_dy, inv_dz=inv_dz
     )
+    print()
 
     # Select and specialize the time integration method
     time_solver_map = {
@@ -151,9 +151,18 @@ def main():
 
     # Start the timer for the total runtime
     start_time = time.time()  # Record the start time of the simulation
+    last_perf_time = start_time  # For computing cell updates/second
 
     # Flag to print memory after first few steps (to measure peak during computation)
     printed_peak_memory = cfg.check_memory
+
+    # Total number of cells in the grid
+    if cfg.SPATIAL_DIMENSION == 1:
+        total_cells = cfg.Nx
+    elif cfg.SPATIAL_DIMENSION == 2:
+        total_cells = cfg.Nx * cfg.Ny
+    else:  # 3D
+        total_cells = cfg.Nx * cfg.Ny * cfg.Nz
 
     # --- Time integration loop ---
     while t < cfg.t_end:
@@ -179,8 +188,21 @@ def main():
 
         # Print progress less frequently to avoid GPU synchronization overhead
         # Printing every step causes GPU to wait for CPU - very slow!
-        if step % cfg.output_cadence == 0 or step == 1:  # Print every 10 steps (or first step)
-            print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
+        if step % cfg.output_cadence == 0 or step == 1:  # Print every output_cadence steps (or first step)
+            # Compute performance metric: cell updates per second
+            current_time = time.time()
+            elapsed_since_last = current_time - last_perf_time
+            if step == 1:
+                # First step includes JIT compilation overhead, just report step info
+                print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
+            else:
+                # Compute cell updates/second over the last interval
+                steps_since_last = cfg.output_cadence if step > cfg.output_cadence else step - 1
+                cell_updates = total_cells * steps_since_last
+                cells_per_sec = cell_updates / elapsed_since_last
+                mcells_per_sec = cells_per_sec / 1e6  # Convert to millions
+                print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}, perf = {mcells_per_sec:.2f} Mcells/s")
+            last_perf_time = current_time
 
         # Print peak memory after first 3 steps (after JIT compilation and warmup)
         if not printed_peak_memory and step == 3:
@@ -214,6 +236,14 @@ def main():
     print(f"✓ Total runtime: {total_time:.2f} seconds")
     print(f"✓ Total steps: {step}")
     print(f"✓ Final time: {t:.5f}")
+
+    # Compute overall performance (excluding first step with JIT overhead)
+    if step > 1:
+        total_cell_updates = total_cells * (step - 1)
+        avg_cells_per_sec = total_cell_updates / total_time
+        avg_mcells_per_sec = avg_cells_per_sec / 1e6  # Convert to millions
+        print(f"✓ Average performance: {avg_mcells_per_sec:.2f} Mcells/s")
+        print(f"✓ Time per step: {total_time/(step-1)*1000:.2f} ms (excluding first step)")
     print()
 
     # Print final memory usage
