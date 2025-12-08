@@ -27,6 +27,9 @@ from ic_generation.ic import initial_conditions
 from time_integration.integrators import rk2_step, rk4_step, muscl_hancock_step
 from time_integration.cfl import compute_dt_and_diagnostics
 from file_io.write_snapshot import write_snapshot
+from file_io.write_checkpoint import write_checkpoint
+from file_io.read_checkpoint import read_checkpoint, find_latest_checkpoint
+from file_io.checkpoint_utils import manage_checkpoints, validate_checkpoint_compatibility
 from hydro.physics_checks import validate_state, validate_from_diagnostics
 from hydro.divergence import flux_divergence_primitive
 from utils.logo import print_KRATOS_banner 
@@ -62,19 +65,49 @@ def main():
                 sys.exit("Error: No GPU available. Cannot proceed with GPU run.")
     print()
 
-    # --- Initialize fields (must be done before computing grid spacing) ---
+    # --- Initialize fields OR restart from checkpoint ---
     # Note: Some problems (e.g., Sod-Shock-3D) may modify cfg.Nx, cfg.Ny, cfg.Nz, cfg.Lx, cfg.Ly, cfg.Lz
     # to ensure proper grid spacing, so we initialize first
     print("="*60)
-    print("INITIAL CONDITIONS")
-    print("="*60)
-    U = initial_conditions(cfg)
 
-    # Validate initial conditions
-    print("Validating initial conditions...")
-    validate_state(U, cfg.gamma, step=0, time=cfg.t_start)
-    print("✓ Initial conditions validated successfully")
-    print()
+    if cfg.restart:
+        print("RESTART FROM CHECKPOINT")
+        print("="*60)
+
+        # Find checkpoint file
+        if cfg.restart_file is not None:
+            checkpoint_file = cfg.restart_file
+        else:
+            checkpoint_file = find_latest_checkpoint(cfg.checkpoint_dir)
+            if checkpoint_file is None:
+                sys.exit(f"ERROR: No checkpoint found in {cfg.checkpoint_dir}")
+
+        # Load checkpoint
+        checkpoint_data = read_checkpoint(checkpoint_file)
+
+        # Validate compatibility
+        validate_checkpoint_compatibility(checkpoint_data, cfg)
+
+        # Extract state
+        U = checkpoint_data["U"]
+        t_start = checkpoint_data["time"]
+        step_start = checkpoint_data["step"]
+
+        print(f"✓ Restarting from t = {t_start:.5f}, step = {step_start}")
+        print()
+
+    else:
+        print("INITIAL CONDITIONS")
+        print("="*60)
+        U = initial_conditions(cfg)
+        t_start = cfg.t_start
+        step_start = 0
+
+        # Validate initial conditions
+        print("Validating initial conditions...")
+        validate_state(U, cfg.gamma, step=0, time=cfg.t_start)
+        print("✓ Initial conditions validated successfully")
+        print()
 
     # Print initial memory usage after all arrays are allocated
     print_memory_usage("After initialization: ")
@@ -144,14 +177,24 @@ def main():
     if snapshot_times[-1] < cfg.t_end:
         snapshot_times = jnp.append(snapshot_times, cfg.t_end)
 
+    # Find the first snapshot index after restart time
     snapshot_idx = 0
+    if cfg.restart:
+        snapshot_idx = jnp.searchsorted(snapshot_times, t_start)
+        if snapshot_idx >= len(snapshot_times):
+            snapshot_idx = len(snapshot_times) - 1
+
+    # --- Checkpoint timing (wall-clock based) ---
+    last_checkpoint_time = None  # Track when we last checkpointed (wall-clock seconds)
 
     # --- Output directory ---
     os.makedirs(cfg.output_dir, exist_ok=True)
+    if cfg.enable_checkpointing:
+        os.makedirs(cfg.checkpoint_dir, exist_ok=True)
 
     # --- Time loop variables ---
-    t = cfg.t_start
-    step = 0
+    t = t_start
+    step = step_start
 
     print("="*60)
     print("SIMULATION START")
@@ -236,6 +279,34 @@ def main():
                 t_snapshot = cfg.t_end  # Once all snapshots are saved, set t_snapshot to the end time
 
             print(f"✓ Snapshot saved successfully\n")
+
+        # Save checkpoint based on wall-clock time
+        if cfg.enable_checkpointing and cfg.checkpoint_wall_time_interval > 0:
+            current_wall_time = time.time()
+
+            # Check if it's time to checkpoint
+            should_checkpoint = False
+            if last_checkpoint_time is None:
+                # First checkpoint - save immediately after first step
+                should_checkpoint = (step > 0)
+            else:
+                # Check if enough wall-clock time has elapsed
+                elapsed_wall_time = current_wall_time - last_checkpoint_time
+                should_checkpoint = (elapsed_wall_time >= cfg.checkpoint_wall_time_interval)
+
+            if should_checkpoint:
+                print(f"\n{'─'*60}")
+                if last_checkpoint_time is not None:
+                    elapsed = current_wall_time - last_checkpoint_time
+                    print(f"💾 Writing checkpoint (wall-time elapsed: {elapsed:.1f}s)")
+                else:
+                    print(f"💾 Writing first checkpoint")
+                print(f"   Simulation: t = {t:.5f}, step = {step}")
+                print(f"{'─'*60}")
+                write_checkpoint(U, cfg, t, step, cfg.checkpoint_dir)
+                manage_checkpoints(cfg.checkpoint_dir, cfg.max_checkpoints)
+                last_checkpoint_time = current_wall_time
+                print()
 
     # End the timer and calculate the total runtime
     end_time = time.time()  # Record the end time of the simulation

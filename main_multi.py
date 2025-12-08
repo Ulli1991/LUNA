@@ -47,6 +47,9 @@ from hydro.physics_checks import validate_state, validate_from_diagnostics
 from utils.logo import print_KRATOS_banner
 from utils.halo_pmap import create_pad_halo
 from file_io.write_snapshot import write_snapshot
+from file_io.write_checkpoint import write_checkpoint
+from file_io.read_checkpoint import read_checkpoint, find_latest_checkpoint
+from file_io.checkpoint_utils import manage_checkpoints, validate_checkpoint_compatibility
 
 
 def main():
@@ -68,19 +71,49 @@ def main():
     grid_shape = compute_decomposition(cfg.Nx, cfg.Ny, n_devices, cfg.SPATIAL_DIMENSION)
     print(f"Process grid: {grid_shape}")
 
-    # Create global initial conditions (only once)
+    # Create global initial conditions OR restart from checkpoint
     print("\n" + "="*60)
-    print("INITIAL CONDITIONS")
-    print("="*60)
-    print("Generating global initial conditions...")
-    U_global = initial_conditions(cfg)
-    print(f"Global shape: {U_global.shape}")
 
-    # Validate initial conditions
-    print("Validating initial conditions...")
-    validate_state(U_global, cfg.gamma, step=0, time=cfg.t_start)
-    print("✓ Initial conditions validated successfully")
-    print()
+    if cfg.restart:
+        print("RESTART FROM CHECKPOINT")
+        print("="*60)
+
+        # Find checkpoint file
+        if cfg.restart_file is not None:
+            checkpoint_file = cfg.restart_file
+        else:
+            checkpoint_file = find_latest_checkpoint(cfg.checkpoint_dir)
+            if checkpoint_file is None:
+                sys.exit(f"ERROR: No checkpoint found in {cfg.checkpoint_dir}")
+
+        # Load checkpoint
+        checkpoint_data = read_checkpoint(checkpoint_file)
+
+        # Validate compatibility
+        validate_checkpoint_compatibility(checkpoint_data, cfg)
+
+        # Extract state
+        U_global = checkpoint_data["U"]
+        t_start = checkpoint_data["time"]
+        step_start = checkpoint_data["step"]
+
+        print(f"✓ Restarting from t = {t_start:.5f}, step = {step_start}")
+        print()
+
+    else:
+        print("INITIAL CONDITIONS")
+        print("="*60)
+        print("Generating global initial conditions...")
+        U_global = initial_conditions(cfg)
+        print(f"Global shape: {U_global.shape}")
+        t_start = cfg.t_start
+        step_start = 0
+
+        # Validate initial conditions
+        print("Validating initial conditions...")
+        validate_state(U_global, cfg.gamma, step=0, time=cfg.t_start)
+        print("✓ Initial conditions validated successfully")
+        print()
 
     # Split into local subdomains
     print("\nCreating local subdomains...")
@@ -177,10 +210,21 @@ def main():
     snapshot_times = jnp.linspace(cfg.t_start, cfg.t_end, n_snapshots)
     if snapshot_times[-1] < cfg.t_end:
         snapshot_times = jnp.append(snapshot_times, cfg.t_end)
+
+    # Find the first snapshot index after restart time
     snapshot_idx = 0
+    if cfg.restart:
+        snapshot_idx = jnp.searchsorted(snapshot_times, t_start)
+        if snapshot_idx >= len(snapshot_times):
+            snapshot_idx = len(snapshot_times) - 1
+
+    # --- Checkpoint timing (wall-clock based) ---
+    last_checkpoint_time = None  # Track when we last checkpointed (wall-clock seconds)
 
     # Output directory
     os.makedirs(cfg.output_dir, exist_ok=True)
+    if cfg.enable_checkpointing:
+        os.makedirs(cfg.checkpoint_dir, exist_ok=True)
 
     # ==================================================================
     # TIME LOOP
@@ -188,13 +232,13 @@ def main():
     print("="*60)
     print("SIMULATION START")
     print("="*60)
-    print(f"Time range: {cfg.t_start:.3f} → {cfg.t_end:.3f}")
+    print(f"Time range: {t_start:.3f} → {cfg.t_end:.3f}")
     print(f"Global grid: {cfg.Nx} x {cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 'N/A'}")
     print(f"Local grid per GPU: {U_locals.shape[2:]} (excluding Nvar dimension)")
     print()
 
-    t = cfg.t_start
-    step = 0
+    t = t_start
+    step = step_start
     start_time = time.time()
     last_perf_time = start_time  # For computing cell updates/second
     printed_peak_memory = not cfg.check_memory  # Only print if check_memory is True
@@ -286,6 +330,40 @@ def main():
                 snapshot_idx = len(snapshot_times) - 1
 
             print(f"✓ Snapshot saved successfully\n")
+
+        # Save checkpoint based on wall-clock time
+        if cfg.enable_checkpointing and cfg.checkpoint_wall_time_interval > 0:
+            current_wall_time = time.time()
+
+            # Check if it's time to checkpoint
+            should_checkpoint = False
+            if last_checkpoint_time is None:
+                # First checkpoint - save immediately after first step
+                should_checkpoint = (step > step_start)
+            else:
+                # Check if enough wall-clock time has elapsed
+                elapsed_wall_time = current_wall_time - last_checkpoint_time
+                should_checkpoint = (elapsed_wall_time >= cfg.checkpoint_wall_time_interval)
+
+            if should_checkpoint:
+                print(f"\n{'─'*60}")
+                if last_checkpoint_time is not None:
+                    elapsed = current_wall_time - last_checkpoint_time
+                    print(f"💾 Writing checkpoint (wall-time elapsed: {elapsed:.1f}s)")
+                else:
+                    print(f"💾 Writing first checkpoint")
+                print(f"   Simulation: t = {t:.5f}, step = {step}")
+                print(f"{'─'*60}")
+
+                # Reconstruct global array for checkpoint
+                U_global = reconstruct_global_array(
+                    U_locals, domain_infos, cfg.Nx, cfg.Ny, cfg.Nz, cfg.SPATIAL_DIMENSION
+                )
+
+                write_checkpoint(U_global, cfg, t, step, cfg.checkpoint_dir)
+                manage_checkpoints(cfg.checkpoint_dir, cfg.max_checkpoints)
+                last_checkpoint_time = current_wall_time
+                print()
 
     end_time = time.time()
     total_time = end_time - start_time
