@@ -39,7 +39,8 @@ from utils.domain_decomp import (compute_decomposition, get_local_domain_info,
 from utils.halo_exchange import pad_with_halo_exchange
 from utils.memory_utils import print_memory_usage
 from ic_generation.ic import initial_conditions
-from time_integration.integrators import (create_rk2_pmap_step, create_rk4_pmap_step)
+from time_integration.integrators import (create_rk2_pmap_step, create_rk4_pmap_step,
+                                          create_muscl_hancock_pmap_step)
 from time_integration.cfl import create_compute_local_dt_pmap
 from hydro.divergence import flux_divergence_from_padded
 from hydro.physics_checks import validate_state, validate_from_diagnostics
@@ -131,12 +132,21 @@ def main():
 
     # Create time stepper
     if cfg.TIME_SOLVER == 0:
+        print("Using RK2 time integration")
         time_step_fn = create_rk2_pmap_step(
             pad_halo, flux_divergence_from_padded,
             cfg.gamma, cfg.ORDER, cfg.LIMITER,
             dx, dy, dz, inv_dx, inv_dy, inv_dz
         )
+    elif cfg.TIME_SOLVER == 1:
+        print("Using MUSCL-Hancock predictor-corrector time integration")
+        time_step_fn = create_muscl_hancock_pmap_step(
+            pad_halo, flux_divergence_from_padded,
+            cfg.gamma, cfg.ORDER, cfg.LIMITER,
+            dx, dy, dz, inv_dx, inv_dy, inv_dz
+        )
     elif cfg.TIME_SOLVER == 2:
+        print("Using RK4 time integration")
         time_step_fn = create_rk4_pmap_step(
             pad_halo, flux_divergence_from_padded,
             cfg.gamma, cfg.ORDER, cfg.LIMITER,

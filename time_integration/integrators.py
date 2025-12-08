@@ -164,3 +164,47 @@ def create_rk4_pmap_step(pad_halo_fn, flux_div_fn, gamma, order, limiter, dx, dy
         return U_local_single + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
     return rk4_step_fn
+
+
+def create_muscl_hancock_pmap_step(pad_halo_fn, flux_div_fn, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz):
+    """
+    Create a pmapped MUSCL-Hancock time stepper for multi-GPU execution.
+
+    MUSCL-Hancock is a predictor-corrector method where the predictor step
+    is built into the flux function itself (using dt for half-timestep evolution).
+
+    Parameters
+    ----------
+    pad_halo_fn : callable
+        Function to pad local subdomain with halo exchange
+    flux_div_fn : callable
+        Flux divergence function that accepts dt parameter
+    gamma : float
+        Adiabatic index
+    order : int
+        Spatial order
+    limiter : int
+        Limiter type
+    dx, dy, dz : float
+        Grid spacing
+    inv_dx, inv_dy, inv_dz : float
+        Inverse grid spacing
+
+    Returns
+    -------
+    pmapped_step : callable
+        Pmapped function with signature (U_local, dt) -> U_local_new
+    """
+    @partial(pmap, in_axes=(0, None), axis_name='batch')
+    def muscl_hancock_step_fn(U_local_single, dt):
+        """One MUSCL-Hancock step with halo exchange between GPUs."""
+        # Pad with halo exchange
+        U_pad = pad_halo_fn(U_local_single)
+
+        # Compute flux divergence with predictor step (dt is passed to flux_div_fn)
+        dU = flux_div_fn(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz, dt)
+
+        # Update state
+        return U_local_single + dt * dU
+
+    return muscl_hancock_step_fn

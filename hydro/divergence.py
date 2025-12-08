@@ -1,511 +1,433 @@
-import jax
+"""
+Flux divergence with PRIMITIVE variable reconstruction.
+
+This is the Athena++ / modern production code approach:
+1. Convert conservative U to primitive W
+2. Pad primitive variables
+3. Reconstruct primitives at interfaces (more physical!)
+4. Convert reconstructed primitives back to conservatives for Riemann solver
+5. Compute fluxes and divergence
+
+Benefits:
+- More robust for strong shocks
+- Avoids unphysical states (negative pressure)
+- Better physical behavior (velocity/pressure are natural variables)
+"""
+
 import jax.numpy as jnp
 from jax import jit, lax
 from functools import partial
 
 from hydro.padding import pad
-from hydro.slopes import compute_slopes_from_padded, slope_limiter, compute_slopes_from_padded_smooth
-from hydro.fluxes import hllc_flux
+from hydro.slopes import compute_slopes_from_padded
+from hydro.fluxes import hllc_flux_primitive
+from hydro.conversions import cons_to_prim
+from hydro.jacobian import (apply_primitive_jacobian_1d,
+                             apply_primitive_jacobian_2d,
+                             apply_primitive_jacobian_3d)
 
-@partial(jit, static_argnums=(2, 3, 4, 11, 12))
-def flux_divergence(U, gamma, order, limiter, boundary, dx, dy, dz, inv_dx, inv_dy, inv_dz,
-                    use_smooth_limiters=False, sharpness=10.0):
+
+@partial(jit, static_argnums=(1, 2, 3, 4, 11))
+def flux_divergence_primitive(U, gamma, order, limiter, boundary, dx, dy, dz,
+                               inv_dx, inv_dy, inv_dz, use_smooth_limiters=False, dt=None):
     """
-    Compute the flux divergence in 1D, 2D, or 3D using first-order or second-order PLM.
+    Compute flux divergence using PRIMITIVE variable reconstruction.
 
-    Optimized to avoid redundant flux computations:
-    - First-order mode: Direct flux computation from padded states
-    - Second-order mode: Reconstruction at ALL interfaces (including boundaries)
+    Flow:
+    U (conservative) → W (primitive) → pad → slopes → reconstruct W →
+    convert to U_L, U_R → HLLC flux → divergence
 
     Parameters
     ----------
-    U: (Nvar, Nx) or (Nvar, Nx, Ny) or (Nvar, Nx, Ny, Nz)
-    boundary: int, 0=periodic, 1=zero-gradient, 2=reflective
-    order: int, 0=first-order Godunov, 1=second-order PLM
-    inv_dx, inv_dy, inv_dz: Precomputed 1/dx, 1/dy, 1/dz (faster than division)
-    use_smooth_limiters: bool (static), if True uses differentiable smooth limiters for autodiff
-    sharpness: float (static), controls smoothness of limiters (higher = closer to original)
+    U : array
+        Conservative state (Nvar, Nx) or (Nvar, Nx, Ny) or (Nvar, Nx, Ny, Nz)
+    gamma : float
+        Adiabatic index
+    order : int (static)
+        0 = first-order, 1 = second-order PLM
+    limiter : int (static)
+        Slope limiter type
+    boundary : int (static)
+        Boundary condition type
+    dx, dy, dz : float
+        Grid spacing
+    inv_dx, inv_dy, inv_dz : float
+        Inverse grid spacing
+    use_smooth_limiters : bool (static)
+        Use smooth limiters for autodiff
+    dt : float or None
+        Timestep (required for MUSCL-Hancock predictor step; if None, no predictor)
 
     Returns
     -------
-    -(dFdx + dFdy + dFdz) with shapes matching U
+    dU/dt : array
+        Conservative update (same shape as U)
     """
-    U_pad = pad(U, boundary)
-    ndim = U.ndim - 1  # number of spatial dimensions
+    ndim = U.ndim - 1
 
-    # -------------------
-    # FIRST-ORDER PATH
-    # -------------------
-    def first_order_divergence(U_pad):
-        """Compute first-order Godunov fluxes directly from padded states."""
+    # STEP 1: Convert conservative to primitive
+    W = cons_to_prim(U, gamma)
+
+    # STEP 2: Pad primitive variables
+    W_pad = pad(W, boundary)
+
+    # STEP 3: First-order vs second-order paths
+    def first_order_divergence(W_pad):
+        """First-order Godunov: no reconstruction, just use cell-centered values."""
         if ndim == 1:
-            U_Lx = U_pad[:, :-1]
-            U_Rx = U_pad[:, 1:]
-            Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx  # Multiplication faster than division
-            return dFdx, None, None
-        elif ndim == 2:
-            U_Lx = U_pad[:, :-1, 1:-1]
-            U_Rx = U_pad[:, 1: , 1:-1]
-            Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) * inv_dx  # Multiplication faster than division
-
-            U_By = U_pad[:, 1:-1, :-1]
-            U_Ty = U_pad[:, 1:-1, 1: ]
-            Fy = hllc_flux(U_By, U_Ty, axis=1, gamma=gamma)
-            dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) * inv_dy  # Multiplication faster than division
-            return dFdx, dFdy, None
-        else:  # 3D
-            # X-direction flux
-            U_Lx = U_pad[:, :-1, 1:-1, 1:-1]
-            U_Rx = U_pad[:, 1: , 1:-1, 1:-1]
-            Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx  # Multiplication faster than division
-
-            # Y-direction flux
-            U_By = U_pad[:, 1:-1, :-1, 1:-1]
-            U_Ty = U_pad[:, 1:-1, 1: , 1:-1]
-            Fy = hllc_flux(U_By, U_Ty, axis=1, gamma=gamma)
-            dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy  # Multiplication faster than division
-
-            # Z-direction flux
-            U_Bz = U_pad[:, 1:-1, 1:-1, :-1]
-            U_Fz = U_pad[:, 1:-1, 1:-1, 1: ]
-            Fz = hllc_flux(U_Bz, U_Fz, axis=2, gamma=gamma)
-            dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz  # Multiplication faster than division
-            return dFdx, dFdy, dFdz
-
-    # -------------------
-    # SECOND-ORDER PATH
-    # -------------------
-    def second_order_divergence(U_pad):
-        """
-        Compute second-order PLM fluxes with reconstruction at ALL interfaces.
-        This eliminates the need for first-order flux computation.
-        Slope limiting ensures stability at boundaries.
-        """
-        # Compute slopes for all real cells (using ghost cells in stencil)
-        # Use regular if since use_smooth_limiters is static (known at compile time)
-        if use_smooth_limiters:
-            dUx, dUy, dUz = compute_slopes_from_padded_smooth(U_pad, limiter, sharpness)
-        else:
-            dUx, dUy, dUz = compute_slopes_from_padded(U_pad, limiter)
-
-        if ndim == 1:
-            # Extract real cells (excluding ghost cells)
-            Qc = U_pad[:, 1:-1]  # Shape: (Nvar, Nx)
-
-            # Cache half-slopes to avoid redundant computation
-            half_dUx = 0.5 * dUx
-
-            # Reconstruct at ALL Nx+1 interfaces (including boundaries)
-            # Left states: extrapolate from left cell
-            UL = jnp.concatenate([
-                U_pad[:, 0:1],                    # Left boundary: use ghost cell value
-                Qc + half_dUx                     # Interior + right boundary: cell center + slope
-            ], axis=1)
-
-            # Right states: extrapolate from right cell
-            UR = jnp.concatenate([
-                Qc - half_dUx,                    # Left boundary + interior: cell center - slope
-                U_pad[:, -1:]                     # Right boundary: use ghost cell value
-            ], axis=1)
-
-            # Compute fluxes at all interfaces
-            Fx = hllc_flux(UL, UR, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx  # Multiplication faster than division
-            return dFdx, None, None
-
-        elif ndim == 2:
-            Qc = U_pad[:, 1:-1, 1:-1]  # Shape: (Nvar, Nx, Ny)
-
-            # Cache half-slopes to avoid redundant computation
-            half_dUx = 0.5 * dUx
-            half_dUy = 0.5 * dUy
-
-            # X-direction reconstruction at ALL Nx+1 interfaces
-            UL_x = jnp.concatenate([
-                U_pad[:, 0:1, 1:-1],              # Left boundary
-                Qc + half_dUx                     # Interior + right boundary
-            ], axis=1)
-            UR_x = jnp.concatenate([
-                Qc - half_dUx,                    # Left boundary + interior
-                U_pad[:, -1:, 1:-1]               # Right boundary
-            ], axis=1)
-            Fx = hllc_flux(UL_x, UR_x, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) * inv_dx  # Multiplication faster than division
-
-            # Y-direction reconstruction at ALL Ny+1 interfaces
-            UL_y = jnp.concatenate([
-                U_pad[:, 1:-1, 0:1],              # Bottom boundary
-                Qc + half_dUy                     # Interior + top boundary
-            ], axis=2)
-            UR_y = jnp.concatenate([
-                Qc - half_dUy,                    # Bottom boundary + interior
-                U_pad[:, 1:-1, -1:]               # Top boundary
-            ], axis=2)
-            Fy = hllc_flux(UL_y, UR_y, axis=1, gamma=gamma)
-            dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) * inv_dy  # Multiplication faster than division
-
-            return dFdx, dFdy, None
-
-        else:  # 3D
-            Qc = U_pad[:, 1:-1, 1:-1, 1:-1]  # Shape: (Nvar, Nx, Ny, Nz)
-
-            # Cache half-slopes to avoid redundant computation
-            half_dUx = 0.5 * dUx
-            half_dUy = 0.5 * dUy
-            half_dUz = 0.5 * dUz
-
-            # X-direction reconstruction
-            UL_x = jnp.concatenate([
-                U_pad[:, 0:1, 1:-1, 1:-1],
-                Qc + half_dUx
-            ], axis=1)
-            UR_x = jnp.concatenate([
-                Qc - half_dUx,
-                U_pad[:, -1:, 1:-1, 1:-1]
-            ], axis=1)
-            Fx = hllc_flux(UL_x, UR_x, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx  # Multiplication faster than division
-
-            # Y-direction reconstruction
-            UL_y = jnp.concatenate([
-                U_pad[:, 1:-1, 0:1, 1:-1],
-                Qc + half_dUy
-            ], axis=2)
-            UR_y = jnp.concatenate([
-                Qc - half_dUy,
-                U_pad[:, 1:-1, -1:, 1:-1]
-            ], axis=2)
-            Fy = hllc_flux(UL_y, UR_y, axis=1, gamma=gamma)
-            dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy  # Multiplication faster than division
-
-            # Z-direction reconstruction
-            UL_z = jnp.concatenate([
-                U_pad[:, 1:-1, 1:-1, 0:1],
-                Qc + half_dUz
-            ], axis=3)
-            UR_z = jnp.concatenate([
-                Qc - half_dUz,
-                U_pad[:, 1:-1, 1:-1, -1:]
-            ], axis=3)
-            Fz = hllc_flux(UL_z, UR_z, axis=2, gamma=gamma)
-            dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz  # Multiplication faster than division
-
-            return dFdx, dFdy, dFdz
-
-    # -------------------
-    # ORDER SELECTION (JIT-safe with lax.cond)
-    # -------------------
-    is_first_order = jnp.array(order == 0)  # 0 = first-order, 1 = PLM
-    dFdx, dFdy, dFdz = lax.cond(
-        is_first_order,
-        first_order_divergence,
-        second_order_divergence,
-        U_pad
-    )
-
-    # Return total divergence
-    if ndim == 1:
-        return -dFdx
-    elif ndim == 2:
-        return -(dFdx + dFdy)
-    else:  # 3D
-        return -(dFdx + dFdy + dFdz)
-
-
-@partial(jit, static_argnums=(2, 3))
-def flux_divergence_from_2ghost(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz):
-    """
-    Compute flux divergence from data with 2 GHOST CELLS per side.
-
-    For MPI mode: This version properly handles 2 ghost cells, enabling correct
-    PLM reconstruction at inter-patch boundaries. With 2 ghost cells, we can
-    compute slopes OF the first ghost cell layer, allowing proper reconstruction
-    at the interface between subdomains.
-
-    U_pad: (Nvar, Nx+4) or (Nvar, Nx+4, Ny+4) or (Nvar, Nx+4, Ny+4, Nz+4)
-           Data with 2 ghost cells per side already filled.
-    Returns: -(dFdx + dFdy + dFdz) with shape (Nvar, Nx) or (Nvar, Nx, Ny) or (Nvar, Nx, Ny, Nz)
-    """
-    ndim = U_pad.ndim - 1  # number of spatial dimensions
-
-    # FIRST-ORDER PATH (same logic, just adjust slicing for 2 ghost cells)
-    def first_order_divergence(U_pad):
-        if ndim == 1:
-            # With 2 ghost cells: indices 0,1 are left ghost, -2,-1 are right ghost
-            # Interior is 2:-2, so Nx+4 - 4 = Nx cells
-            U_Lx = U_pad[:, 1:-2]  # cells 1 to -3 (Nx+1 values)
-            U_Rx = U_pad[:, 2:-1]  # cells 2 to -2 (Nx+1 values)
-            Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
-            # dFdx = F[i+1/2] - F[i-1/2] for interior cells
+            # Extract primitives at interfaces (no reconstruction)
+            W_L = W_pad[:, :-1]
+            W_R = W_pad[:, 1:]
+            # Compute flux directly from primitives (no conversion needed!)
+            Fx = hllc_flux_primitive(W_L, W_R, axis=0, gamma=gamma)
             dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx
             return dFdx, None, None
+
         elif ndim == 2:
-            U_Lx = U_pad[:, 1:-2, 2:-2]
-            U_Rx = U_pad[:, 2:-1, 2:-2]
-            Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
+            # X-direction
+            W_L_x = W_pad[:, :-1, 1:-1]
+            W_R_x = W_pad[:, 1:, 1:-1]
+            Fx = hllc_flux_primitive(W_L_x, W_R_x, axis=0, gamma=gamma)
             dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) * inv_dx
 
-            U_By = U_pad[:, 2:-2, 1:-2]
-            U_Ty = U_pad[:, 2:-2, 2:-1]
-            Fy = hllc_flux(U_By, U_Ty, axis=1, gamma=gamma)
+            # Y-direction
+            W_L_y = W_pad[:, 1:-1, :-1]
+            W_R_y = W_pad[:, 1:-1, 1:]
+            Fy = hllc_flux_primitive(W_L_y, W_R_y, axis=1, gamma=gamma)
             dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) * inv_dy
+
             return dFdx, dFdy, None
+
         else:  # 3D
-            U_Lx = U_pad[:, 1:-2, 2:-2, 2:-2]
-            U_Rx = U_pad[:, 2:-1, 2:-2, 2:-2]
-            Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
+            # X-direction
+            W_L_x = W_pad[:, :-1, 1:-1, 1:-1]
+            W_R_x = W_pad[:, 1:, 1:-1, 1:-1]
+            Fx = hllc_flux_primitive(W_L_x, W_R_x, axis=0, gamma=gamma)
             dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx
 
-            U_By = U_pad[:, 2:-2, 1:-2, 2:-2]
-            U_Ty = U_pad[:, 2:-2, 2:-1, 2:-2]
-            Fy = hllc_flux(U_By, U_Ty, axis=1, gamma=gamma)
+            # Y-direction
+            W_L_y = W_pad[:, 1:-1, :-1, 1:-1]
+            W_R_y = W_pad[:, 1:-1, 1:, 1:-1]
+            Fy = hllc_flux_primitive(W_L_y, W_R_y, axis=1, gamma=gamma)
             dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy
 
-            U_Bz = U_pad[:, 2:-2, 2:-2, 1:-2]
-            U_Fz = U_pad[:, 2:-2, 2:-2, 2:-1]
-            Fz = hllc_flux(U_Bz, U_Fz, axis=2, gamma=gamma)
+            # Z-direction
+            W_L_z = W_pad[:, 1:-1, 1:-1, :-1]
+            W_R_z = W_pad[:, 1:-1, 1:-1, 1:]
+            Fz = hllc_flux_primitive(W_L_z, W_R_z, axis=2, gamma=gamma)
             dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz
 
             return dFdx, dFdy, dFdz
 
-    # SECOND-ORDER PATH
-    def second_order_divergence(U_pad):
-        # With 2 ghost cells, we can compute slopes for ghost cell layer 1
-        # This enables proper reconstruction at the MPI boundary interface
+    def second_order_divergence(W_pad):
+        """Second-order PLM: reconstruct PRIMITIVES at interfaces."""
+        # Compute slopes of PRIMITIVE variables at t^n
+        dWx, dWy, dWz = compute_slopes_from_padded(W_pad, limiter)
 
         if ndim == 1:
-            # Compute slopes for cells 1 to -2 (interior + 1 ghost layer each side)
-            # Shape: Nx+2 cells (Nx interior + 1 ghost on each side)
-            Qc_ext = U_pad[:, 1:-1]  # Extended: includes 1 ghost on each side
-            dx_L = Qc_ext - U_pad[:, :-2]
-            dx_R = U_pad[:, 2:] - Qc_ext
-            dUx_ext = slope_limiter(dx_L, dx_R, limiter)
+            Wc = W_pad[:, 1:-1]
 
-            half_dUx = 0.5 * dUx_ext
+            # MUSCL-Hancock predictor step (if dt provided)
+            if dt is not None:
+                # W^(n+1/2) = W^n - (dt/2) * A_x * ∂W/∂x
+                # where ∂W/∂x ≈ dWx * inv_dx
+                dWx_scaled = dWx * inv_dx
+                A_dW = apply_primitive_jacobian_1d(Wc, dWx_scaled, gamma)
+                W_half = Wc - 0.5 * dt * A_dW
+            else:
+                # No predictor (standard PLM)
+                W_half = Wc
 
-            # Reconstruct at Nx+1 interfaces (for Nx interior cells)
-            # UL at interface i+1/2 = cell i + half_slope
-            # UR at interface i+1/2 = cell i+1 - half_slope
-            # For interior cells (indices 2:-2 in U_pad, or 1:-1 in Qc_ext):
-            #   Need fluxes at interfaces 0.5 to Nx+0.5 (Nx+1 interfaces)
-            UL = Qc_ext[:, :-1] + half_dUx[:, :-1]  # Nx+1 left states
-            UR = Qc_ext[:, 1:] - half_dUx[:, 1:]    # Nx+1 right states
-            Fx = hllc_flux(UL, UR, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx  # Nx values for interior
+            half_dWx = 0.5 * dWx
+
+            # Reconstruct primitives at interfaces using predicted state
+            WL = jnp.concatenate([W_pad[:, 0:1], W_half + half_dWx], axis=1)
+            WR = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:]], axis=1)
+
+            # Compute fluxes directly from primitives (no conversion needed!)
+            Fx = hllc_flux_primitive(WL, WR, axis=0, gamma=gamma)
+            dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx
             return dFdx, None, None
 
         elif ndim == 2:
-            # Extended cells: interior + 1 ghost layer on each side
-            Qc_ext = U_pad[:, 1:-1, 1:-1]  # Shape: (Nvar, Nx+2, Ny+2)
+            Wc = W_pad[:, 1:-1, 1:-1]
 
-            # X-direction slopes
-            dx_L = Qc_ext - U_pad[:, :-2, 1:-1]
-            dx_R = U_pad[:, 2:, 1:-1] - Qc_ext
-            dUx_ext = slope_limiter(dx_L, dx_R, limiter)
+            # MUSCL-Hancock predictor step (if dt provided)
+            if dt is not None:
+                # W^(n+1/2) = W^n - (dt/2) * (A_x * ∂W/∂x + A_y * ∂W/∂y)
+                # where ∂W/∂x ≈ dWx * inv_dx and ∂W/∂y ≈ dWy * inv_dy
+                # The Jacobian function needs slopes with proper scaling
+                dWx_scaled = dWx * inv_dx
+                dWy_scaled = dWy * inv_dy
+                A_dW = apply_primitive_jacobian_2d(Wc, dWx_scaled, dWy_scaled, gamma)
+                W_half = Wc - 0.5 * dt * A_dW
+            else:
+                # No predictor (standard PLM)
+                W_half = Wc
 
-            # Y-direction slopes
-            dy_D = Qc_ext - U_pad[:, 1:-1, :-2]
-            dy_U = U_pad[:, 1:-1, 2:] - Qc_ext
-            dUy_ext = slope_limiter(dy_D, dy_U, limiter)
+            half_dWx = 0.5 * dWx
+            half_dWy = 0.5 * dWy
 
-            half_dUx = 0.5 * dUx_ext
-            half_dUy = 0.5 * dUy_ext
+            # X-direction reconstruction of primitives using predicted state
+            WL_x = jnp.concatenate([W_pad[:, 0:1, 1:-1], W_half + half_dWx], axis=1)
+            WR_x = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:, 1:-1]], axis=1)
 
-            # X-fluxes: need y to be in interior range (1:-1 of Qc_ext = 2:-2 of U_pad)
-            UL_x = Qc_ext[:, :-1, 1:-1] + half_dUx[:, :-1, 1:-1]
-            UR_x = Qc_ext[:, 1:, 1:-1] - half_dUx[:, 1:, 1:-1]
-            Fx = hllc_flux(UL_x, UR_x, axis=0, gamma=gamma)
+            # Compute X fluxes directly from primitives
+            Fx = hllc_flux_primitive(WL_x, WR_x, axis=0, gamma=gamma)
             dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) * inv_dx
 
-            # Y-fluxes
-            UL_y = Qc_ext[:, 1:-1, :-1] + half_dUy[:, 1:-1, :-1]
-            UR_y = Qc_ext[:, 1:-1, 1:] - half_dUy[:, 1:-1, 1:]
-            Fy = hllc_flux(UL_y, UR_y, axis=1, gamma=gamma)
+            # Y-direction reconstruction of primitives using predicted state
+            WL_y = jnp.concatenate([W_pad[:, 1:-1, 0:1], W_half + half_dWy], axis=2)
+            WR_y = jnp.concatenate([W_half - half_dWy, W_pad[:, 1:-1, -1:]], axis=2)
+
+            # Compute Y fluxes directly from primitives
+            Fy = hllc_flux_primitive(WL_y, WR_y, axis=1, gamma=gamma)
             dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) * inv_dy
 
             return dFdx, dFdy, None
 
         else:  # 3D
-            # Extended cells: interior + 1 ghost layer on each side
-            Qc_ext = U_pad[:, 1:-1, 1:-1, 1:-1]  # Shape: (Nvar, Nx+2, Ny+2, Nz+2)
+            Wc = W_pad[:, 1:-1, 1:-1, 1:-1]
 
-            # X-direction slopes
-            dx_L = Qc_ext - U_pad[:, :-2, 1:-1, 1:-1]
-            dx_R = U_pad[:, 2:, 1:-1, 1:-1] - Qc_ext
-            dUx_ext = slope_limiter(dx_L, dx_R, limiter)
+            # MUSCL-Hancock predictor step (if dt provided)
+            if dt is not None:
+                # W^(n+1/2) = W^n - (dt/2) * (A_x * ∂W/∂x + A_y * ∂W/∂y + A_z * ∂W/∂z)
+                dWx_scaled = dWx * inv_dx
+                dWy_scaled = dWy * inv_dy
+                dWz_scaled = dWz * inv_dz
+                A_dW = apply_primitive_jacobian_3d(Wc, dWx_scaled, dWy_scaled, dWz_scaled, gamma)
+                W_half = Wc - 0.5 * dt * A_dW
+            else:
+                # No predictor (standard PLM)
+                W_half = Wc
 
-            # Y-direction slopes
-            dy_D = Qc_ext - U_pad[:, 1:-1, :-2, 1:-1]
-            dy_U = U_pad[:, 1:-1, 2:, 1:-1] - Qc_ext
-            dUy_ext = slope_limiter(dy_D, dy_U, limiter)
+            half_dWx = 0.5 * dWx
+            half_dWy = 0.5 * dWy
+            half_dWz = 0.5 * dWz
 
-            # Z-direction slopes
-            dz_B = Qc_ext - U_pad[:, 1:-1, 1:-1, :-2]
-            dz_F = U_pad[:, 1:-1, 1:-1, 2:] - Qc_ext
-            dUz_ext = slope_limiter(dz_B, dz_F, limiter)
-
-            half_dUx = 0.5 * dUx_ext
-            half_dUy = 0.5 * dUy_ext
-            half_dUz = 0.5 * dUz_ext
-
-            # X-fluxes: need y,z to be in interior range
-            UL_x = Qc_ext[:, :-1, 1:-1, 1:-1] + half_dUx[:, :-1, 1:-1, 1:-1]
-            UR_x = Qc_ext[:, 1:, 1:-1, 1:-1] - half_dUx[:, 1:, 1:-1, 1:-1]
-            Fx = hllc_flux(UL_x, UR_x, axis=0, gamma=gamma)
+            # X-direction reconstruction using predicted state
+            WL_x = jnp.concatenate([W_pad[:, 0:1, 1:-1, 1:-1], W_half + half_dWx], axis=1)
+            WR_x = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:, 1:-1, 1:-1]], axis=1)
+            Fx = hllc_flux_primitive(WL_x, WR_x, axis=0, gamma=gamma)
             dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx
 
-            # Y-fluxes
-            UL_y = Qc_ext[:, 1:-1, :-1, 1:-1] + half_dUy[:, 1:-1, :-1, 1:-1]
-            UR_y = Qc_ext[:, 1:-1, 1:, 1:-1] - half_dUy[:, 1:-1, 1:, 1:-1]
-            Fy = hllc_flux(UL_y, UR_y, axis=1, gamma=gamma)
+            # Y-direction reconstruction using predicted state
+            WL_y = jnp.concatenate([W_pad[:, 1:-1, 0:1, 1:-1], W_half + half_dWy], axis=2)
+            WR_y = jnp.concatenate([W_half - half_dWy, W_pad[:, 1:-1, -1:, 1:-1]], axis=2)
+            Fy = hllc_flux_primitive(WL_y, WR_y, axis=1, gamma=gamma)
             dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy
 
-            # Z-fluxes
-            UL_z = Qc_ext[:, 1:-1, 1:-1, :-1] + half_dUz[:, 1:-1, 1:-1, :-1]
-            UR_z = Qc_ext[:, 1:-1, 1:-1, 1:] - half_dUz[:, 1:-1, 1:-1, 1:]
-            Fz = hllc_flux(UL_z, UR_z, axis=2, gamma=gamma)
+            # Z-direction reconstruction using predicted state
+            WL_z = jnp.concatenate([W_pad[:, 1:-1, 1:-1, 0:1], W_half + half_dWz], axis=3)
+            WR_z = jnp.concatenate([W_half - half_dWz, W_pad[:, 1:-1, 1:-1, -1:]], axis=3)
+            Fz = hllc_flux_primitive(WL_z, WR_z, axis=2, gamma=gamma)
             dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz
 
             return dFdx, dFdy, dFdz
 
-    # ORDER SELECTION
+    # Select order
     is_first_order = jnp.array(order == 0)
     dFdx, dFdy, dFdz = lax.cond(
         is_first_order,
         first_order_divergence,
         second_order_divergence,
-        U_pad
+        W_pad
     )
 
-    # Return total divergence
+    # Return divergence
     if ndim == 1:
         return -dFdx
     elif ndim == 2:
         return -(dFdx + dFdy)
-    else:  # 3D
+    else:
         return -(dFdx + dFdy + dFdz)
 
 
-@partial(jit, static_argnums=(2, 3))
-def flux_divergence_from_padded(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz):
+@partial(jit, static_argnums=(1, 2, 3))
+def flux_divergence_from_padded(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz, dt=None):
     """
-    Compute flux divergence from ALREADY PADDED data.
+    Compute flux divergence from ALREADY PADDED conservative data using PRIMITIVE reconstruction.
 
-    For MPI mode: ghost cells are pre-filled by halo exchange and boundary conditions.
-    This skips the pad() call entirely.
+    For multi-GPU pmap mode: ghost cells are pre-filled by halo exchange.
+    This skips the pad() call and works directly with the padded conservative state.
 
-    U_pad: (Nvar, Nx+2) or (Nvar, Nx+2, Ny+2) or (Nvar, Nx+2, Ny+2, Nz+2)
-           Data with 1 ghost cell per side already filled.
-    Returns: -(dFdx + dFdy + dFdz) with shape (Nvar, Nx) or (Nvar, Nx, Ny) or (Nvar, Nx, Ny, Nz)
+    Flow:
+    1. Convert padded conservative U_pad to primitive W_pad
+    2. Compute slopes of primitives
+    3. (Optional) Apply MUSCL-Hancock predictor if dt provided
+    4. Reconstruct primitives at interfaces
+    5. Compute HLLC fluxes from primitives
+    6. Return divergence
+
+    Parameters
+    ----------
+    U_pad : array
+        ALREADY PADDED conservative state with 1 ghost cell per side
+        Shape: (Nvar, Nx+2) or (Nvar, Nx+2, Ny+2) or (Nvar, Nx+2, Ny+2, Nz+2)
+    gamma : float
+        Adiabatic index
+    order : int (static)
+        0 = first-order, 1 = second-order PLM
+    limiter : int (static)
+        Slope limiter type
+    dx, dy, dz : float
+        Grid spacing
+    inv_dx, inv_dy, inv_dz : float
+        Inverse grid spacing
+    dt : float or None
+        Timestep for MUSCL-Hancock predictor. If None, no predictor (standard PLM)
+
+    Returns
+    -------
+    dU/dt : array
+        Conservative update with shape (Nvar, Nx) or (Nvar, Nx, Ny) or (Nvar, Nx, Ny, Nz)
+
+    Notes
+    -----
+    - Pass dt=None for RK2/RK4 (they handle time externally)
+    - Pass dt=<value> for MUSCL-Hancock predictor step
     """
-    ndim = U_pad.ndim - 1  # number of spatial dimensions
+    ndim = U_pad.ndim - 1
 
-    # FIRST-ORDER PATH
-    def first_order_divergence(U_pad):
+    # Convert PADDED conservatives to primitives
+    W_pad = cons_to_prim(U_pad, gamma)
+
+    # First-order path
+    def first_order_divergence(W_pad):
         if ndim == 1:
-            U_Lx = U_pad[:, :-1]
-            U_Rx = U_pad[:, 1:]
-            Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx
-            return dFdx, None, None
-        elif ndim == 2:
-            U_Lx = U_pad[:, :-1, 1:-1]
-            U_Rx = U_pad[:, 1: , 1:-1]
-            Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) * inv_dx
-
-            U_By = U_pad[:, 1:-1, :-1]
-            U_Ty = U_pad[:, 1:-1, 1: ]
-            Fy = hllc_flux(U_By, U_Ty, axis=1, gamma=gamma)
-            dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) * inv_dy
-            return dFdx, dFdy, None
-        else:  # 3D
-            U_Lx = U_pad[:, :-1, 1:-1, 1:-1]
-            U_Rx = U_pad[:, 1: , 1:-1, 1:-1]
-            Fx = hllc_flux(U_Lx, U_Rx, axis=0, gamma=gamma)
-            dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx
-
-            U_By = U_pad[:, 1:-1, :-1, 1:-1]
-            U_Ty = U_pad[:, 1:-1, 1: , 1:-1]
-            Fy = hllc_flux(U_By, U_Ty, axis=1, gamma=gamma)
-            dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy
-
-            U_Bz = U_pad[:, 1:-1, 1:-1, :-1]
-            U_Fz = U_pad[:, 1:-1, 1:-1, 1: ]
-            Fz = hllc_flux(U_Bz, U_Fz, axis=2, gamma=gamma)
-            dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz
-            return dFdx, dFdy, dFdz
-
-    # SECOND-ORDER PATH
-    def second_order_divergence(U_pad):
-        dUx, dUy, dUz = compute_slopes_from_padded(U_pad, limiter)
-
-        if ndim == 1:
-            Qc = U_pad[:, 1:-1]
-            half_dUx = 0.5 * dUx
-            UL = jnp.concatenate([U_pad[:, 0:1], Qc + half_dUx], axis=1)
-            UR = jnp.concatenate([Qc - half_dUx, U_pad[:, -1:]], axis=1)
-            Fx = hllc_flux(UL, UR, axis=0, gamma=gamma)
+            W_L = W_pad[:, :-1]
+            W_R = W_pad[:, 1:]
+            Fx = hllc_flux_primitive(W_L, W_R, axis=0, gamma=gamma)
             dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx
             return dFdx, None, None
 
         elif ndim == 2:
-            Qc = U_pad[:, 1:-1, 1:-1]
-            half_dUx = 0.5 * dUx
-            half_dUy = 0.5 * dUy
-
-            UL_x = jnp.concatenate([U_pad[:, 0:1, 1:-1], Qc + half_dUx], axis=1)
-            UR_x = jnp.concatenate([Qc - half_dUx, U_pad[:, -1:, 1:-1]], axis=1)
-            Fx = hllc_flux(UL_x, UR_x, axis=0, gamma=gamma)
+            W_L_x = W_pad[:, :-1, 1:-1]
+            W_R_x = W_pad[:, 1:, 1:-1]
+            Fx = hllc_flux_primitive(W_L_x, W_R_x, axis=0, gamma=gamma)
             dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) * inv_dx
 
-            UL_y = jnp.concatenate([U_pad[:, 1:-1, 0:1], Qc + half_dUy], axis=2)
-            UR_y = jnp.concatenate([Qc - half_dUy, U_pad[:, 1:-1, -1:]], axis=2)
-            Fy = hllc_flux(UL_y, UR_y, axis=1, gamma=gamma)
+            W_L_y = W_pad[:, 1:-1, :-1]
+            W_R_y = W_pad[:, 1:-1, 1:]
+            Fy = hllc_flux_primitive(W_L_y, W_R_y, axis=1, gamma=gamma)
             dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) * inv_dy
 
             return dFdx, dFdy, None
 
         else:  # 3D
-            Qc = U_pad[:, 1:-1, 1:-1, 1:-1]
-            half_dUx = 0.5 * dUx
-            half_dUy = 0.5 * dUy
-            half_dUz = 0.5 * dUz
-
-            UL_x = jnp.concatenate([U_pad[:, 0:1, 1:-1, 1:-1], Qc + half_dUx], axis=1)
-            UR_x = jnp.concatenate([Qc - half_dUx, U_pad[:, -1:, 1:-1, 1:-1]], axis=1)
-            Fx = hllc_flux(UL_x, UR_x, axis=0, gamma=gamma)
+            W_L_x = W_pad[:, :-1, 1:-1, 1:-1]
+            W_R_x = W_pad[:, 1:, 1:-1, 1:-1]
+            Fx = hllc_flux_primitive(W_L_x, W_R_x, axis=0, gamma=gamma)
             dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx
 
-            UL_y = jnp.concatenate([U_pad[:, 1:-1, 0:1, 1:-1], Qc + half_dUy], axis=2)
-            UR_y = jnp.concatenate([Qc - half_dUy, U_pad[:, 1:-1, -1:, 1:-1]], axis=2)
-            Fy = hllc_flux(UL_y, UR_y, axis=1, gamma=gamma)
+            W_L_y = W_pad[:, 1:-1, :-1, 1:-1]
+            W_R_y = W_pad[:, 1:-1, 1:, 1:-1]
+            Fy = hllc_flux_primitive(W_L_y, W_R_y, axis=1, gamma=gamma)
             dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy
 
-            UL_z = jnp.concatenate([U_pad[:, 1:-1, 1:-1, 0:1], Qc + half_dUz], axis=3)
-            UR_z = jnp.concatenate([Qc - half_dUz, U_pad[:, 1:-1, 1:-1, -1:]], axis=3)
-            Fz = hllc_flux(UL_z, UR_z, axis=2, gamma=gamma)
+            W_L_z = W_pad[:, 1:-1, 1:-1, :-1]
+            W_R_z = W_pad[:, 1:-1, 1:-1, 1:]
+            Fz = hllc_flux_primitive(W_L_z, W_R_z, axis=2, gamma=gamma)
             dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz
 
             return dFdx, dFdy, dFdz
 
-    # ORDER SELECTION
+    # Second-order path (optional predictor if dt provided)
+    def second_order_divergence(W_pad):
+        dWx, dWy, dWz = compute_slopes_from_padded(W_pad, limiter)
+
+        if ndim == 1:
+            Wc = W_pad[:, 1:-1]
+
+            # MUSCL-Hancock predictor step (if dt provided)
+            if dt is not None:
+                dWx_scaled = dWx * inv_dx
+                A_dW = apply_primitive_jacobian_1d(Wc, dWx_scaled, gamma)
+                W_half = Wc - 0.5 * dt * A_dW
+            else:
+                W_half = Wc
+
+            half_dWx = 0.5 * dWx
+            WL = jnp.concatenate([W_pad[:, 0:1], W_half + half_dWx], axis=1)
+            WR = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:]], axis=1)
+            Fx = hllc_flux_primitive(WL, WR, axis=0, gamma=gamma)
+            dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx
+            return dFdx, None, None
+
+        elif ndim == 2:
+            Wc = W_pad[:, 1:-1, 1:-1]
+
+            # MUSCL-Hancock predictor step (if dt provided)
+            if dt is not None:
+                dWx_scaled = dWx * inv_dx
+                dWy_scaled = dWy * inv_dy
+                A_dW = apply_primitive_jacobian_2d(Wc, dWx_scaled, dWy_scaled, gamma)
+                W_half = Wc - 0.5 * dt * A_dW
+            else:
+                W_half = Wc
+
+            half_dWx = 0.5 * dWx
+            half_dWy = 0.5 * dWy
+
+            WL_x = jnp.concatenate([W_pad[:, 0:1, 1:-1], W_half + half_dWx], axis=1)
+            WR_x = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:, 1:-1]], axis=1)
+            Fx = hllc_flux_primitive(WL_x, WR_x, axis=0, gamma=gamma)
+            dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) * inv_dx
+
+            WL_y = jnp.concatenate([W_pad[:, 1:-1, 0:1], W_half + half_dWy], axis=2)
+            WR_y = jnp.concatenate([W_half - half_dWy, W_pad[:, 1:-1, -1:]], axis=2)
+            Fy = hllc_flux_primitive(WL_y, WR_y, axis=1, gamma=gamma)
+            dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) * inv_dy
+
+            return dFdx, dFdy, None
+
+        else:  # 3D
+            Wc = W_pad[:, 1:-1, 1:-1, 1:-1]
+
+            # MUSCL-Hancock predictor step (if dt provided)
+            if dt is not None:
+                dWx_scaled = dWx * inv_dx
+                dWy_scaled = dWy * inv_dy
+                dWz_scaled = dWz * inv_dz
+                A_dW = apply_primitive_jacobian_3d(Wc, dWx_scaled, dWy_scaled, dWz_scaled, gamma)
+                W_half = Wc - 0.5 * dt * A_dW
+            else:
+                W_half = Wc
+
+            half_dWx = 0.5 * dWx
+            half_dWy = 0.5 * dWy
+            half_dWz = 0.5 * dWz
+
+            WL_x = jnp.concatenate([W_pad[:, 0:1, 1:-1, 1:-1], W_half + half_dWx], axis=1)
+            WR_x = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:, 1:-1, 1:-1]], axis=1)
+            Fx = hllc_flux_primitive(WL_x, WR_x, axis=0, gamma=gamma)
+            dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx
+
+            WL_y = jnp.concatenate([W_pad[:, 1:-1, 0:1, 1:-1], W_half + half_dWy], axis=2)
+            WR_y = jnp.concatenate([W_half - half_dWy, W_pad[:, 1:-1, -1:, 1:-1]], axis=2)
+            Fy = hllc_flux_primitive(WL_y, WR_y, axis=1, gamma=gamma)
+            dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy
+
+            WL_z = jnp.concatenate([W_pad[:, 1:-1, 1:-1, 0:1], W_half + half_dWz], axis=3)
+            WR_z = jnp.concatenate([W_half - half_dWz, W_pad[:, 1:-1, 1:-1, -1:]], axis=3)
+            Fz = hllc_flux_primitive(WL_z, WR_z, axis=2, gamma=gamma)
+            dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz
+
+            return dFdx, dFdy, dFdz
+
+    # Select order
     is_first_order = jnp.array(order == 0)
     dFdx, dFdy, dFdz = lax.cond(
         is_first_order,
         first_order_divergence,
         second_order_divergence,
-        U_pad
+        W_pad
     )
 
-    # Return total divergence
+    # Return divergence
     if ndim == 1:
         return -dFdx
     elif ndim == 2:
         return -(dFdx + dFdy)
-    else:  # 3D
+    else:
         return -(dFdx + dFdy + dFdz)
-
