@@ -52,7 +52,7 @@ from file_io.write_snapshot import write_snapshot
 def main():
     print_KRATOS_banner()
 
-    cfg = Config()
+    cfg = config()
 
     # Check device count
     n_devices = len(jax.local_devices())
