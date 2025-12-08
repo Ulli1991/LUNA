@@ -104,13 +104,9 @@ def main():
     print(f"  - Numerics: order={cfg.ORDER}, limiter={cfg.LIMITER}, boundary={cfg.BOUNDARY}")
     print(f"  - Time solver: {['RK2', 'MUSCL-Hancock', 'RK4'][cfg.TIME_SOLVER]}")
 
-    # Create specialized flux_divergence with all parameters baked in
-    # Using PRIMITIVE variable reconstruction (Athena++ style)
     # Note: flux_fn signature is flux_fn(U, dt)
     # - For MUSCL-Hancock (TIME_SOLVER=1): Pass dt to enable predictor step
     # - For RK2/RK4 (TIME_SOLVER=0,2): Pass dt=None (no predictor, RK handles time)
-    print("  - Using PRIMITIVE variable reconstruction (Athena++ style)")
-
     if cfg.TIME_SOLVER == 1:  # MUSCL-Hancock
         print("  - MUSCL-Hancock: Predictor step enabled (dt passed to flux function)")
         def flux_fn(U, dt):
