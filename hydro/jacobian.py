@@ -34,9 +34,8 @@ def apply_primitive_jacobian_1d(W, dW, gamma):
     rho, vx, P = W
     drho, dvx, dP = dW
 
-    # Sound speed
-    c = jnp.sqrt(gamma * P / rho)
-    c2 = c * c
+    # Sound speed squared (only c² is needed in Jacobian)
+    c2 = gamma * P / rho
 
     # A_x * dW for primitive variables
     # A_x = [vx   ρ    0  ]
@@ -77,9 +76,8 @@ def apply_primitive_jacobian_2d(W, dWx, dWy, gamma):
     drho_dx, dvx_dx, dvy_dx, dP_dx = dWx
     drho_dy, dvx_dy, dvy_dy, dP_dy = dWy
 
-    # Sound speed
-    c = jnp.sqrt(gamma * P / rho)
-    c2 = c * c
+    # Sound speed squared (only c² is needed in Jacobian)
+    c2 = gamma * P / rho
     inv_rho = 1.0 / rho
 
     # A_x * dWx where A_x = [vx   ρ    0    0  ]
@@ -136,9 +134,8 @@ def apply_primitive_jacobian_3d(W, dWx, dWy, dWz, gamma):
     drho_dy, dvx_dy, dvy_dy, dvz_dy, dP_dy = dWy
     drho_dz, dvx_dz, dvy_dz, dvz_dz, dP_dz = dWz
 
-    # Sound speed
-    c = jnp.sqrt(gamma * P / rho)
-    c2 = c * c
+    # Sound speed squared (only c² is needed in Jacobian)
+    c2 = gamma * P / rho
     inv_rho = 1.0 / rho
 
     # X-direction contribution
