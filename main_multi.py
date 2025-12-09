@@ -55,7 +55,7 @@ from file_io.checkpoint_utils import manage_checkpoints, validate_checkpoint_com
 def main():
     print_KRATOS_banner()
 
-    cfg = config()
+    cfg = Config()
 
     # Check device count
     n_devices = len(jax.local_devices())
