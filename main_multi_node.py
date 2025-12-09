@@ -1,30 +1,6 @@
-"""
-Multi-node, multi-GPU hydro simulation using JAX sharding for distributed parallelism.
-
-This version supports TRUE multi-node scaling by:
-1. Using jax.distributed for multi-node communication
-2. Each process sees exactly 1 GPU (1 process per GPU)
-3. Each device holds only its local subdomain
-4. Halo exchange via JAX collective operations
-5. Works across multiple nodes with high-speed interconnect
-
-Expected speedup: Near-linear scaling across nodes (e.g., 2 nodes × 4 GPUs = ~7.5x vs single GPU)
-
-Usage:
-    # Multi-node with SLURM (1 GPU per process pattern):
-    srun -N 2 --ntasks-per-node=4 --gpus-per-node=4 python main_multi_node.py
-
-    # This creates 8 processes total (4 per node), each seeing 1 GPU
-"""
 import os
 import sys
 import time
-
-# JAX distributed with 1 GPU per process:
-# - SLURM assigns 1 task per GPU with --ntasks-per-node=4 --gpus-per-node=4
-# - Each process sees exactly 1 GPU
-# - SLURM automatically sets CUDA_VISIBLE_DEVICES for each task
-# - JAX will create 8 total devices: one per process
 
 print("="*60)
 print("MULTI-NODE SHARDING MODE (1 GPU per process)")
@@ -37,14 +13,6 @@ from jax.experimental import mesh_utils
 from jax.experimental import multihost_utils
 from jax import shard_map
 
-# Initialize JAX distributed
-# This must be done before any JAX operations (but after imports)
-# Automatically detects SLURM/MPI environment variables
-#
-# IMPORTANT: JAX distributed with multi-GPU per process:
-# - Each process should see multiple local GPUs
-# - coordinator_address should be set via JAX_COORDINATOR_ADDRESS env var
-# - process ID and count are auto-detected from SLURM
 try:
     # Let JAX auto-detect everything from SLURM environment
     # It will use SLURM_PROCID and SLURM_NTASKS
@@ -206,7 +174,7 @@ def main():
         print()
 
     # ==================================================================
-    # CREATE AUTOMATIC SHARDING (like jax-euler-benchmarks reference)
+    # CREATE AUTOMATIC SHARDING (credit: Philip Mocz)
     # ==================================================================
 
     # Create NamedSharding for automatic sharding
@@ -232,9 +200,6 @@ def main():
     @jax.jit
     def time_step_fn(U, dt):
         """Single time step using MUSCL-Hancock with automatic sharding."""
-        # Apply sharding constraint to ensure proper distribution
-        U = jax.lax.with_sharding_constraint(U, sharding)
-
         # Halo exchange - JAX auto-handles communication
         U_padded = pad_with_halo_auto(U, cfg.BOUNDARY, cfg.SPATIAL_DIMENSION)
 
@@ -243,9 +208,6 @@ def main():
             U_padded, cfg.gamma, cfg.ORDER, cfg.LIMITER,
             dx, dy, dz, inv_dx, inv_dy, inv_dz
         )
-
-        # Apply sharding to result
-        dUdt = jax.lax.with_sharding_constraint(dUdt, sharding)
 
         # Time integration
         U_new = U + dt * dUdt
@@ -258,25 +220,28 @@ def main():
 
     # Distributed dt computation using automatic sharding
     # JAX automatically handles the global minimum across sharded arrays
-    @jax.jit
-    def compute_dt_diagnostics_auto(U, t_val, t_snapshot_val):
-        """Compute dt and diagnostics with automatic sharding (like reference)."""
-        # Apply sharding constraint
-        U = jax.lax.with_sharding_constraint(U, sharding)
-
-        # Call the existing function - works on sharded array automatically
-        dt_local, min_rho_local, min_p_local, has_nan_local, has_inf_local = compute_dt_and_diagnostics(
-            U, cfg.gamma, cfg.CFL, t_val, t_snapshot_val, dx, dy, dz
-        )
-
-        # JAX automatically handles global reductions on sharded arrays
-        dt = jnp.min(dt_local)
-        min_rho = jnp.min(min_rho_local)
-        min_p = jnp.min(min_p_local)
-        has_nan = jnp.any(has_nan_local)
-        has_inf = jnp.any(has_inf_local)
-
-        return dt, min_rho, min_p, has_nan, has_inf
+    if cfg.enable_diagnostics:
+        @jax.jit
+        def compute_dt_auto(U, t_val, t_snapshot_val):
+            """Compute dt and diagnostics with automatic sharding."""
+            dt_local, min_rho_local, min_p_local, has_nan_local, has_inf_local = compute_dt_and_diagnostics(
+                U, cfg.gamma, cfg.CFL, t_val, t_snapshot_val, dx, dy, dz
+            )
+            dt = jnp.min(dt_local)
+            min_rho = jnp.min(min_rho_local)
+            min_p = jnp.min(min_p_local)
+            has_nan = jnp.any(has_nan_local)
+            has_inf = jnp.any(has_inf_local)
+            return dt, min_rho, min_p, has_nan, has_inf
+    else:
+        # Fast path: dt only, no diagnostics
+        from time_integration.cfl import compute_dt
+        @jax.jit
+        def compute_dt_auto(U, t_val, t_snapshot_val):
+            """Compute dt only (no diagnostics) - maximum performance."""
+            dt_local = compute_dt(U, cfg.gamma, cfg.CFL, t_val, t_snapshot_val, dx, dy, dz)
+            dt = jnp.min(dt_local)
+            return dt, 0.0, 0.0, False, False  # Dummy values for diagnostics
 
     # ==================================================================
     # WARMUP COMPILATION
@@ -352,7 +317,7 @@ def main():
     while t < cfg.t_end:
         # Compute dt using automatic sharding (JAX handles collectives)
         t_snapshot_local = snapshot_times[snapshot_idx]
-        dt, min_rho, min_p, has_nan, has_inf = compute_dt_diagnostics_auto(
+        dt, min_rho, min_p, has_nan, has_inf = compute_dt_auto(
             U_sharded, t, t_snapshot_local
         )
 
@@ -370,7 +335,8 @@ def main():
         # Validation and progress (only on process 0)
         if jax.process_index() == 0:
             if step % cfg.output_cadence == 0 or step == 1:
-                validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=step, time=t)
+                if cfg.enable_diagnostics:
+                    validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=step, time=t)
 
                 current_time = time.time()
                 elapsed_since_last = current_time - last_perf_time
@@ -491,7 +457,6 @@ def main():
         print("="*60)
         print("Good Bye and Good Day!")
         print("="*60)
-
 
 if __name__ == "__main__":
     main()

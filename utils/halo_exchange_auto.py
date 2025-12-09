@@ -41,6 +41,7 @@ def pad_with_halo_auto(U, boundary, spatial_dimension):
 def pad_with_halo_1d_auto(U, boundary):
     """
     Pad 1D array with halo exchange using automatic sharding.
+    Optimized to use jnp.pad for efficiency.
 
     Parameters
     ----------
@@ -55,26 +56,24 @@ def pad_with_halo_1d_auto(U, boundary):
         Array with ghost cells
     """
     if boundary == 0:  # Periodic
-        # Use roll - JAX automatically handles cross-device communication
-        left_ghost = U[:, -1:]
-        right_ghost = U[:, 0:1]
-    else:  # Non-periodic (zero-gradient or reflective)
-        # Copy edge values
-        left_ghost = U[:, 0:1]
-        right_ghost = U[:, -1:]
+        U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode='wrap')
 
-        if boundary == 2:  # Reflective - negate x-momentum
-            left_ghost = left_ghost.at[1].set(-left_ghost[1])
-            right_ghost = right_ghost.at[1].set(-right_ghost[1])
+    elif boundary == 1:  # Zero-gradient
+        U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode='edge')
 
-    # Concatenate - JAX handles this across sharded arrays
-    U_padded = jnp.concatenate([left_ghost, U, right_ghost], axis=1)
+    else:  # Reflective
+        U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode='edge')
+        # Negate x-momentum at boundaries
+        U_padded = U_padded.at[1, 0].set(-U_padded[1, 0])
+        U_padded = U_padded.at[1, -1].set(-U_padded[1, -1])
+
     return U_padded
 
 
 def pad_with_halo_2d_auto(U, boundary):
     """
     Pad 2D array with halo exchange using automatic sharding.
+    Optimized to use jnp.pad for efficiency.
 
     Parameters
     ----------
@@ -88,39 +87,26 @@ def pad_with_halo_2d_auto(U, boundary):
     U_padded : array (Nvar, Nx+2, Ny+2)
         Array with ghost cells
     """
-    if boundary == 0:  # Periodic
-        # Use slicing - JAX automatically handles cross-device communication
-        left_ghost = U[:, -1:, :]
-        right_ghost = U[:, 0:1, :]
-        bottom_ghost = U[:, :, -1:]
-        top_ghost = U[:, :, 0:1]
-    else:  # Non-periodic
-        # Copy edge values
-        left_ghost = U[:, 0:1, :]
-        right_ghost = U[:, -1:, :]
-        bottom_ghost = U[:, :, 0:1]
-        top_ghost = U[:, :, -1:]
+    if boundary == 0:  # Periodic - use wrap mode
+        # jnp.pad with 'wrap' mode - single operation, JAX handles cross-device
+        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1)), mode='wrap')
 
-        if boundary == 2:  # Reflective - negate momentum
-            left_ghost = left_ghost.at[1].set(-left_ghost[1])
-            right_ghost = right_ghost.at[1].set(-right_ghost[1])
-            bottom_ghost = bottom_ghost.at[2].set(-bottom_ghost[2])
-            top_ghost = top_ghost.at[2].set(-top_ghost[2])
+    elif boundary == 1:  # Zero-gradient - use edge mode
+        # jnp.pad with 'edge' mode - copies edge values
+        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1)), mode='edge')
 
-    # Pad in x-direction first
-    U_x = jnp.concatenate([left_ghost, U, right_ghost], axis=1)
+    else:  # Reflective - use edge then negate momentum
+        # First pad with edge mode
+        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1)), mode='edge')
 
-    # Get corners from the x-padded array
-    corner_bl = U_x[:, 0:1, 0:1]
-    corner_br = U_x[:, -1:, 0:1]
-    corner_tl = U_x[:, 0:1, -1:]
-    corner_tr = U_x[:, -1:, -1:]
-
-    # Extend top/bottom with corners
-    bottom_extended = jnp.concatenate([corner_bl, bottom_ghost, corner_br], axis=1)
-    top_extended = jnp.concatenate([corner_tl, top_ghost, corner_tr], axis=1)
-
-    # Pad in y-direction
-    U_padded = jnp.concatenate([bottom_extended, U_x, top_extended], axis=2)
+        # Negate momentum at boundaries
+        # Left edge (x-momentum)
+        U_padded = U_padded.at[1, 0, :].set(-U_padded[1, 0, :])
+        # Right edge (x-momentum)
+        U_padded = U_padded.at[1, -1, :].set(-U_padded[1, -1, :])
+        # Bottom edge (y-momentum)
+        U_padded = U_padded.at[2, :, 0].set(-U_padded[2, :, 0])
+        # Top edge (y-momentum)
+        U_padded = U_padded.at[2, :, -1].set(-U_padded[2, :, -1])
 
     return U_padded
