@@ -206,72 +206,77 @@ def main():
         print()
 
     # ==================================================================
-    # CREATE SHARDED COMPUTATION FUNCTIONS
+    # CREATE AUTOMATIC SHARDING (like jax-euler-benchmarks reference)
     # ==================================================================
 
-    # Set mesh axes
+    # Create NamedSharding for automatic sharding
     if cfg.SPATIAL_DIMENSION == 1:
-        mesh_axes = ('x',)
+        sharding = NamedSharding(mesh, P(None, 'x'))
     elif cfg.SPATIAL_DIMENSION == 2:
-        mesh_axes = ('x', 'y')
+        sharding = NamedSharding(mesh, P(None, 'x', 'y'))
     else:
         raise NotImplementedError("3D not yet implemented")
 
-    # Define flux computation on local subdomain
-    def compute_local_flux(U_local, dt_val):
-        """Compute flux divergence on local subdomain with halo exchange."""
-        # Exchange halos to get ghost cells
-        if cfg.SPATIAL_DIMENSION == 1:
-            U_padded = pad_with_halo_1d_sharded(U_local, cfg.BOUNDARY)
-        else:  # 2D
-            U_padded = pad_with_halo_2d_sharded(U_local, cfg.BOUNDARY)
+    # Apply sharding constraint to initial array
+    U_sharded = jax.lax.with_sharding_constraint(U_sharded, sharding)
 
-        # Compute flux divergence using the padded array
+    if jax.process_index() == 0:
+        print(f"Using automatic sharding with NamedSharding")
+        print(f"Sharding spec: {sharding.spec}")
+
+    # Import halo exchange that works with automatic sharding
+    from utils.halo_exchange_auto import pad_with_halo_auto
+
+    # Create single JIT-compiled time step function (like reference)
+    # This replaces the shard_map approach
+    @jax.jit
+    def time_step_fn(U, dt):
+        """Single time step using MUSCL-Hancock with automatic sharding."""
+        # Apply sharding constraint to ensure proper distribution
+        U = jax.lax.with_sharding_constraint(U, sharding)
+
+        # Halo exchange - JAX auto-handles communication
+        U_padded = pad_with_halo_auto(U, cfg.BOUNDARY, cfg.SPATIAL_DIMENSION)
+
+        # Compute flux divergence
         dUdt = flux_divergence_from_padded(
             U_padded, cfg.gamma, cfg.ORDER, cfg.LIMITER,
             dx, dy, dz, inv_dx, inv_dy, inv_dz
         )
-        return dUdt
 
-    # Create sharded flux function using shard_map
-    if cfg.SPATIAL_DIMENSION == 1:
-        in_specs = P(None, 'x')
-        out_specs = P(None, 'x')
-    else:  # 2D
-        in_specs = P(None, 'x', 'y')
-        out_specs = P(None, 'x', 'y')
+        # Apply sharding to result
+        dUdt = jax.lax.with_sharding_constraint(dUdt, sharding)
 
-    compute_flux_sharded = shard_map(
-        compute_local_flux,
-        mesh=mesh,
-        in_specs=(in_specs, P()),
-        out_specs=out_specs
-    )
+        # Time integration
+        U_new = U + dt * dUdt
 
-    # Select and create time stepping function
-    time_step_fn, integrator_name = select_time_stepper(cfg.TIME_SOLVER, compute_flux_sharded)
+        return U_new
+
+    integrator_name = "MUSCL-Hancock (automatic sharding)"
     if jax.process_index() == 0:
         print(f"Using {integrator_name} time integration")
 
-    # Distributed dt computation function
-    # Following the pattern from jax-euler-benchmarks:
-    # Return sharded arrays and use jnp.min/jnp.any for automatic collectives
-    def compute_local_dt_diagnostics(U_local, t_val, t_snapshot_val):
-        """Compute dt and diagnostics on local subdomain - returns LOCAL values."""
-        dt_local, min_rho_local, min_p_local, has_nan_local, has_inf_local = compute_dt_and_diagnostics(
-            U_local, cfg.gamma, cfg.CFL, t_val, t_snapshot_val, dx, dy, dz
-        )
-        return dt_local, min_rho_local, min_p_local, has_nan_local, has_inf_local
+    # Distributed dt computation using automatic sharding
+    # JAX automatically handles the global minimum across sharded arrays
+    @jax.jit
+    def compute_dt_diagnostics_auto(U, t_val, t_snapshot_val):
+        """Compute dt and diagnostics with automatic sharding (like reference)."""
+        # Apply sharding constraint
+        U = jax.lax.with_sharding_constraint(U, sharding)
 
-    # Create sharded dt computation function - returns per-device scalars
-    # Use P() for scalars and disable replication check (values differ per device)
-    compute_dt_local = shard_map(
-        compute_local_dt_diagnostics,
-        mesh=mesh,
-        in_specs=(in_specs, P(), P()),
-        out_specs=(P(), P(), P(), P(), P()),
-        check_vma=False  # VMA = "Values Must Agree" - disable since scalars vary per device
-    )
+        # Call the existing function - works on sharded array automatically
+        dt_local, min_rho_local, min_p_local, has_nan_local, has_inf_local = compute_dt_and_diagnostics(
+            U, cfg.gamma, cfg.CFL, t_val, t_snapshot_val, dx, dy, dz
+        )
+
+        # JAX automatically handles global reductions on sharded arrays
+        dt = jnp.min(dt_local)
+        min_rho = jnp.min(min_rho_local)
+        min_p = jnp.min(min_p_local)
+        has_nan = jnp.any(has_nan_local)
+        has_inf = jnp.any(has_inf_local)
+
+        return dt, min_rho, min_p, has_nan, has_inf
 
     # ==================================================================
     # WARMUP COMPILATION
@@ -345,19 +350,11 @@ def main():
 
     # Main time loop
     while t < cfg.t_end:
-        # Compute local dt values on each device
+        # Compute dt using automatic sharding (JAX handles collectives)
         t_snapshot_local = snapshot_times[snapshot_idx]
-        dt_local, min_rho_local, min_p_local, has_nan_local, has_inf_local = compute_dt_local(
+        dt, min_rho, min_p, has_nan, has_inf = compute_dt_diagnostics_auto(
             U_sharded, t, t_snapshot_local
         )
-
-        # Use JAX automatic collectives (like jax-euler-benchmarks reference)
-        # These are much faster than explicit lax.pmin/psum loops
-        dt = jnp.min(dt_local)
-        min_rho = jnp.min(min_rho_local)
-        min_p = jnp.min(min_p_local)
-        has_nan = jnp.any(has_nan_local)
-        has_inf = jnp.any(has_inf_local)
 
         # Ensure dt doesn't exceed t_end
         if t + dt > cfg.t_end:
