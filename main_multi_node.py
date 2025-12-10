@@ -58,7 +58,6 @@ from time_integration.cfl import compute_dt_and_diagnostics
 from utils.distributed import create_device_mesh, shard_array_to_devices, gather_array_from_devices
 from time_integration.sharded_integrators import select_time_stepper
 
-
 def main():
     # Only print from process 0 to avoid cluttered output
     if jax.process_index() == 0:
@@ -123,36 +122,66 @@ def main():
         if jax.process_index() == 0:
             print("INITIAL CONDITIONS")
             print("="*60)
-            print("Generating global initial conditions...")
-
-        # All processes generate initial conditions
-        # JAX sharding requires all processes to have the global array
-        U_global = initial_conditions(cfg)
-
-        if jax.process_index() == 0:
-            print(f"Global shape: {U_global.shape}")
 
         t_start = cfg.t_start
         step_start = 0
 
-        # Validate initial conditions (only on process 0 for output)
-        # Skip validation for very large arrays to avoid OOM during compilation
-        if jax.process_index() == 0:
-            if cfg.Nx <= 8192 and (cfg.SPATIAL_DIMENSION == 1 or cfg.Ny <= 8192):
+        # For large problems, use local IC generation to avoid OOM
+        use_local_generation = (cfg.Nx > 2048 or (cfg.SPATIAL_DIMENSION >= 2 and cfg.Ny > 2048))
+
+        if use_local_generation:
+            if jax.process_index() == 0:
+                print("Using local IC generation for large problem (Nx={}, Ny={})".format(
+                    cfg.Nx, cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 'N/A'))
+                print("Each process generates only its local portion...")
+
+            # Compute which slice this process should generate
+            from utils.distributed import compute_local_slice, create_sharded_array_from_local
+            x_slice, y_slice = compute_local_slice(
+                cfg.Nx, cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 1,
+                mesh, jax.process_index()
+            )
+
+            # Generate only local portion
+            # Currently only KH supports local generation
+            if cfg.test_problem == "Kelvin-Helmholtz":
+                from ic_generation.kh import kelvin_helmholtz
+                U_local = kelvin_helmholtz(cfg, x_slice=x_slice, y_slice=y_slice)
+            else:
+                raise NotImplementedError(
+                    f"Local IC generation not yet implemented for {cfg.test_problem}. "
+                    "Only Kelvin-Helmholtz supports large distributed initialization."
+                )
+
+            if jax.process_index() == 0:
+                print(f"Local shape per process: (4, {x_slice[1]-x_slice[0]}, {y_slice[1]-y_slice[0]})")
+
+            # Create sharded array from local pieces
+            global_shape = (4, cfg.Nx, cfg.Ny) if cfg.SPATIAL_DIMENSION == 2 else (4, cfg.Nx)
+            U_sharded = create_sharded_array_from_local(U_local, global_shape, mesh, cfg.SPATIAL_DIMENSION)
+
+            if jax.process_index() == 0:
+                print("✓ Sharded array created from local pieces (no validation for large arrays)")
+                print()
+
+        else:
+            # Small problems: use traditional approach (all processes generate full array)
+            if jax.process_index() == 0:
+                print("Generating global initial conditions...")
+
+            U_global = initial_conditions(cfg)
+
+            if jax.process_index() == 0:
+                print(f"Global shape: {U_global.shape}")
                 print("Validating initial conditions...")
                 validate_state(U_global, cfg.gamma, step=0, time=cfg.t_start)
                 print("✓ Initial conditions validated successfully")
-            else:
-                print("Skipping validation for large array (Nx={}, Ny={}) to save memory".format(
-                    cfg.Nx, cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 'N/A'))
-            print()
+                print()
+                print("Sharding global array to all devices...")
 
-    # Shard the global array to all devices
-    # Each process will only keep its local portion after sharding
-    if jax.process_index() == 0:
-        print("Sharding global array to all devices...")
-
-    U_sharded = shard_array_to_devices(U_global, mesh, cfg.SPATIAL_DIMENSION)
+            # Shard the global array to all devices
+            from utils.distributed import shard_array_to_devices
+            U_sharded = shard_array_to_devices(U_global, mesh, cfg.SPATIAL_DIMENSION)
 
     if jax.process_index() == 0:
         print(f"✓ Array sharded across {n_devices} devices")
