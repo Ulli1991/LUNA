@@ -1,60 +1,173 @@
 import os
+import re
 
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 
+
+def load_sharded_snapshot(output_dir, base_pattern, snapshot_idx):
+    """
+    Load a sharded snapshot and combine all shards into a single array.
+
+    Parameters
+    ----------
+    output_dir : str
+        Directory containing snapshot files
+    base_pattern : str
+        Base pattern for snapshot files (e.g., "snap")
+    snapshot_idx : int
+        Snapshot index
+
+    Returns
+    -------
+    data : dict
+        Dictionary with combined arrays and attributes
+    """
+    # Check if snapshots are in subdirectories (distributed case)
+    snapshot_subdir = os.path.join(output_dir, f"snapdir_{snapshot_idx:03d}")
+    if os.path.isdir(snapshot_subdir):
+        search_dir = snapshot_subdir
+    else:
+        search_dir = output_dir
+
+    # Find all shards for this snapshot
+    pattern = f"{base_pattern}_{snapshot_idx:03d}.*.hdf5"
+    shard_files = sorted(
+        [f for f in os.listdir(search_dir)
+         if re.match(f"{base_pattern}_{snapshot_idx:03d}\\.\\d+\\.hdf5", f)]
+    )
+
+    if not shard_files:
+        # Try loading non-sharded file (in output_dir, not in subdirectory)
+        single_file = f"{base_pattern}_{snapshot_idx:03d}.hdf5"
+        if os.path.exists(os.path.join(output_dir, single_file)):
+            with h5py.File(os.path.join(output_dir, single_file), "r") as f:
+                cells = f["cells"]
+                return {
+                    "density": np.array(cells["density"]),
+                    "x_positions": np.array(cells["x_positions"]),
+                    "y_positions": np.array(cells["y_positions"]),
+                    "time": cells.attrs["time"],
+                    "Lx": cells.attrs["Lx"],
+                    "Ly": cells.attrs["Ly"],
+                }
+        else:
+            raise FileNotFoundError(f"No files found for snapshot {snapshot_idx}")
+
+    # Load first shard to get metadata
+    first_shard = os.path.join(search_dir, shard_files[0])
+    with h5py.File(first_shard, "r") as f:
+        cells = f["cells"]
+        time = cells.attrs["time"]
+        Lx = cells.attrs["Lx"]
+        Ly = cells.attrs["Ly"]
+        Nx_global = cells.attrs.get("Nx_global", None)
+        Ny_global = cells.attrs.get("Ny_global", None)
+
+    # Load all shards and determine global shape
+    shards = []
+    for shard_file in shard_files:
+        fpath = os.path.join(search_dir, shard_file)
+        with h5py.File(fpath, "r") as f:
+            cells = f["cells"]
+            shard_data = {
+                "density": np.array(cells["density"]),
+                "x_start": cells.attrs.get("x_start", 0),
+                "y_start": cells.attrs.get("y_start", 0),
+            }
+            # Position arrays are optional (not needed for distributed snapshots)
+            # We compute them from the global domain attributes instead
+            shards.append(shard_data)
+
+    # Determine global grid size from shards
+    if Nx_global is None or Ny_global is None:
+        # Infer from shard positions and sizes
+        max_x_end = max(s["x_start"] + s["density"].shape[0] for s in shards)
+        max_y_end = max(s["y_start"] + s["density"].shape[1] for s in shards)
+        Nx_global = max_x_end
+        Ny_global = max_y_end
+
+    # Reconstruct global arrays
+    rho_global = np.zeros((Nx_global, Ny_global))
+    x_global = np.linspace(0, Lx, Nx_global, endpoint=False)
+    y_global = np.linspace(0, Ly, Ny_global, endpoint=False)
+
+    # Place each shard in the global array
+    for shard in shards:
+        x_start = shard["x_start"]
+        y_start = shard["y_start"]
+        rho_shard = shard["density"]
+        x_end = x_start + rho_shard.shape[0]
+        y_end = y_start + rho_shard.shape[1]
+        rho_global[x_start:x_end, y_start:y_end] = rho_shard
+
+    return {
+        "density": rho_global,
+        "x_positions": x_global,
+        "y_positions": y_global,
+        "time": time,
+        "Lx": Lx,
+        "Ly": Ly,
+    }
+
+
 def plot_density2d(output_dir, base_name):
     """
     Load all HDF5 snapshots and produce density plots for 2D fields.
+    Handles both single files and sharded multi-process outputs.
     Uses the density range from the last snapshot for consistent color scaling.
     """
-    # Find all snapshot files
-    files = sorted(
-        [f for f in os.listdir(output_dir) if f.startswith(base_name) and f.endswith(".hdf5")]
-    )
+    # Find all unique snapshot indices
+    snapshot_indices = set()
 
-    if not files:
+    # Check for distributed snapshots in subdirectories
+    for item in os.listdir(output_dir):
+        item_path = os.path.join(output_dir, item)
+        if os.path.isdir(item_path) and item.startswith("snapdir_"):
+            # Extract snapshot index from directory name
+            match = re.match(r"snapdir_(\d+)", item)
+            if match:
+                snapshot_indices.add(int(match.group(1)))
+
+    # Also check for non-distributed snapshots in main directory
+    all_files = [f for f in os.listdir(output_dir) if f.startswith(base_name) and f.endswith(".hdf5")]
+    for fname in all_files:
+        # Match snap_XXX.hdf5 or snap_XXX.Y.hdf5
+        match = re.match(f"{base_name}_(\\d+)(?:\\.\\d+)?\\.hdf5", fname)
+        if match:
+            snapshot_indices.add(int(match.group(1)))
+
+    if not snapshot_indices:
         print("No HDF5 snapshots found!")
         return
+
+    snapshot_indices = sorted(snapshot_indices)
 
     # Initialize min/max density values
     min_density = float('inf')
     max_density = float('-inf')
 
-    # First, check the last snapshot for the dynamic colorbar limits
-    last_fpath = os.path.join(output_dir, files[-1])
-
     png_dir = os.path.join(output_dir, "png")
     os.makedirs(png_dir, exist_ok=True)
 
-    with h5py.File(last_fpath, "r") as f:
-        cells = f["cells"]
+    # First, check the last snapshot for the dynamic colorbar limits
+    last_idx = snapshot_indices[-1]
+    last_data = load_sharded_snapshot(output_dir, base_name, last_idx)
+    min_density = np.min(last_data["density"])
+    max_density = np.max(last_data["density"])
 
-        # Fields
-        rho = np.array(cells["density"])  # (Nx, Ny)
-        t = cells.attrs["time"]
-        Lx = cells.attrs["Lx"]
-        Ly = cells.attrs["Ly"]
+    # Now, iterate through all snapshots and plot
+    for snap_idx in snapshot_indices:
+        # Load snapshot (handles both sharded and non-sharded)
+        data = load_sharded_snapshot(output_dir, base_name, snap_idx)
 
-        # Update the min/max values from the last snapshot
-        min_density = np.min(rho)
-        max_density = np.max(rho)
-
-    # Now, iterate through all snapshot files and plot
-    for fname in files:
-        fpath = os.path.join(output_dir, fname)
-
-        with h5py.File(fpath, "r") as f:
-            cells = f["cells"]
-
-            # Fields
-            rho = np.array(cells["density"])  # (Nx, Ny)
-            x = np.array(cells["x_positions"])  # (Nx,)
-            y = np.array(cells["y_positions"])  # (Ny,)
-            t = cells.attrs["time"]
-            Lx = cells.attrs["Lx"]
-            Ly = cells.attrs["Ly"]
+        rho = data["density"]
+        x = data["x_positions"]
+        y = data["y_positions"]
+        t = data["time"]
+        Lx = data["Lx"]
+        Ly = data["Ly"]
 
         # ---- Plot figure ----
         fig, ax = plt.subplots(figsize=(6, 5), dpi=300)
@@ -78,11 +191,11 @@ def plot_density2d(output_dir, base_name):
         # Add colorbar with label "Density"
         cbar = plt.colorbar(im, ax=ax, label="Density")
 
-        # Save PNG next to the HDF5 file
-        png_name = fname.replace(".hdf5", ".png")
+        # Save PNG to png directory
+        png_name = f"{base_name}_{snap_idx:03d}.png"
         plt.savefig(os.path.join(png_dir, png_name), dpi=300)
         plt.close(fig)
 
-        print(f"Saved density plot for {fname}")
+        print(f"Saved density plot for snapshot {snap_idx:03d}")
 
 
