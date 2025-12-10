@@ -1,4 +1,5 @@
 # ic.py
+import jax.numpy as jnp
 from .sod import sod_shock
 from .woodward_colella import woodward_colella
 from .shu_osher import shu_osher
