@@ -136,10 +136,15 @@ def main():
         step_start = 0
 
         # Validate initial conditions (only on process 0 for output)
+        # Skip validation for very large arrays to avoid OOM during compilation
         if jax.process_index() == 0:
-            print("Validating initial conditions...")
-            validate_state(U_global, cfg.gamma, step=0, time=cfg.t_start)
-            print("✓ Initial conditions validated successfully")
+            if cfg.Nx <= 8192 and (cfg.SPATIAL_DIMENSION == 1 or cfg.Ny <= 8192):
+                print("Validating initial conditions...")
+                validate_state(U_global, cfg.gamma, step=0, time=cfg.t_start)
+                print("✓ Initial conditions validated successfully")
+            else:
+                print("Skipping validation for large array (Nx={}, Ny={}) to save memory".format(
+                    cfg.Nx, cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 'N/A'))
             print()
 
     # Shard the global array to all devices
@@ -303,7 +308,6 @@ def main():
     step = step_start
     start_time = time.time()
     last_perf_time = start_time  # For computing cell updates/second
-    printed_peak_memory = not cfg.check_memory  # Only print if check_memory is True
 
     # Total number of cells in the GLOBAL grid
     if cfg.SPATIAL_DIMENSION == 1:
@@ -321,13 +325,12 @@ def main():
             U_sharded, t, t_snapshot_local
         )
 
-        # Ensure dt doesn't exceed t_end
-        if t + dt > cfg.t_end:
+        # Ensure dt doesn't exceed t_end (only check when close to end)
+        if cfg.t_end - t < 10 * dt and t + dt > cfg.t_end:
             dt = cfg.t_end - t
 
         # Time step (runs on all devices in parallel!)
         U_sharded = time_step_fn(U_sharded, dt)
-        U_sharded = jax.block_until_ready(U_sharded)
 
         t += dt
         step += 1
@@ -340,19 +343,27 @@ def main():
 
                 current_time = time.time()
                 elapsed_since_last = current_time - last_perf_time
+
+                # Get memory usage
+                from utils.memory_utils import get_memory_usage
+                per_device_mem, total_mem = get_memory_usage()
+                if total_mem is not None and len(per_device_mem) > 1:
+                    per_dev_str = "/".join([f"{m:.2f}" for m in per_device_mem])
+                    mem_str = f", mem = {total_mem:.2f} GB ({len(per_device_mem)} GPUs: {per_dev_str})"
+                elif total_mem is not None:
+                    mem_str = f", mem = {total_mem:.2f} GB"
+                else:
+                    mem_str = ""
+
                 if step == 1:
-                    print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}")
+                    print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}{mem_str}")
                 else:
                     steps_since_last = cfg.output_cadence if step > cfg.output_cadence else step - 1
                     cell_updates = total_cells * steps_since_last
                     cells_per_sec = cell_updates / elapsed_since_last
                     mcells_per_sec = cells_per_sec / 1e6
-                    print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}, perf = {mcells_per_sec:.2f} Mcells/s")
+                    print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}, perf = {mcells_per_sec:.2f} Mcells/s{mem_str}")
                 last_perf_time = current_time
-
-            if not printed_peak_memory and step == 3:
-                print_memory_usage("After 3 steps (peak during computation): ")
-                printed_peak_memory = True
 
         # Save snapshot (all processes participate)
         if t >= snapshot_times[snapshot_idx]:
