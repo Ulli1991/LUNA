@@ -112,11 +112,22 @@ def load_sharded_snapshot(output_dir, base_pattern, snapshot_idx):
     }
 
 
-def plot_density2d(output_dir, base_name):
+def plot_density2d(output_dir, base_name, process_id=0, num_processes=1):
     """
     Load all HDF5 snapshots and produce density plots for 2D fields.
     Handles both single files and sharded multi-process outputs.
     Uses the density range from the last snapshot for consistent color scaling.
+
+    Parameters
+    ----------
+    output_dir : str
+        Directory containing snapshot files
+    base_name : str
+        Base name for snapshot files
+    process_id : int
+        ID of the current process (for parallel plotting)
+    num_processes : int
+        Total number of processes (for parallel plotting)
     """
     # Find all unique snapshot indices
     snapshot_indices = set()
@@ -144,21 +155,32 @@ def plot_density2d(output_dir, base_name):
 
     snapshot_indices = sorted(snapshot_indices)
 
+    # Filter snapshots for this process (for parallel plotting)
+    my_snapshot_indices = [idx for i, idx in enumerate(snapshot_indices) if i % num_processes == process_id]
+
+    if not my_snapshot_indices:
+        if process_id == 0:
+            print(f"Process {process_id}: No snapshots to plot")
+        return
+
     # Initialize min/max density values
     min_density = float('inf')
     max_density = float('-inf')
 
     png_dir = os.path.join(output_dir, "png")
-    os.makedirs(png_dir, exist_ok=True)
+    # Only create directory from process 0 to avoid race condition
+    if process_id == 0:
+        os.makedirs(png_dir, exist_ok=True)
 
     # First, check the last snapshot for the dynamic colorbar limits
+    # All processes use the same last snapshot for consistent coloring
     last_idx = snapshot_indices[-1]
     last_data = load_sharded_snapshot(output_dir, base_name, last_idx)
     min_density = np.min(last_data["density"])
     max_density = np.max(last_data["density"])
 
-    # Now, iterate through all snapshots and plot
-    for snap_idx in snapshot_indices:
+    # Now, iterate through snapshots assigned to this process
+    for snap_idx in my_snapshot_indices:
         # Load snapshot (handles both sharded and non-sharded)
         data = load_sharded_snapshot(output_dir, base_name, snap_idx)
 
@@ -196,6 +218,9 @@ def plot_density2d(output_dir, base_name):
         plt.savefig(os.path.join(png_dir, png_name), dpi=300)
         plt.close(fig)
 
-        print(f"Saved density plot for snapshot {snap_idx:03d}")
+        if num_processes > 1:
+            print(f"Process {process_id}: Saved density plot for snapshot {snap_idx:03d}")
+        else:
+            print(f"Saved density plot for snapshot {snap_idx:03d}")
 
 
