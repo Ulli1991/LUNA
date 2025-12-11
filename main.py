@@ -40,7 +40,7 @@ def main():
     print_KRATOS_banner()
 
     # --- Load configuration (pure Python object) ---
-    cfg = config()
+    cfg = Config()
 
     print("="*60)
     print("DEVICE INITIALIZATION")
