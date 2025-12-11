@@ -237,10 +237,11 @@ def main():
         # Halo exchange - JAX auto-handles communication
         U_padded = pad_with_halo_auto(U, cfg.BOUNDARY, cfg.SPATIAL_DIMENSION)
 
-        # Compute flux divergence
+        # Compute flux divergence with MUSCL-Hancock predictor step
+        # IMPORTANT: Must pass dt to enable the predictor step!
         dUdt = flux_divergence_from_padded(
             U_padded, cfg.gamma, cfg.ORDER, cfg.LIMITER,
-            dx, dy, dz, inv_dx, inv_dy, inv_dz
+            dx, dy, dz, inv_dx, inv_dy, inv_dz, dt
         )
 
         # Time integration
@@ -477,23 +478,35 @@ def main():
         print_memory_usage("Final memory usage: ")
         print()
 
-        # Plotting phase
-        if cfg.PLOT_AFTER_SIM:
+    # Plotting phase - ALL processes participate for parallel plotting!
+    if cfg.PLOT_AFTER_SIM:
+        if jax.process_index() == 0:
             print("="*60)
-            print("GENERATING PLOTS")
+            print("GENERATING PLOTS (PARALLEL)")
             print("="*60)
-            if cfg.SPATIAL_DIMENSION == 1 or cfg.SPATIAL_DIMENSION == 3:
+
+        if cfg.SPATIAL_DIMENSION == 1 or cfg.SPATIAL_DIMENSION == 3:
+            if jax.process_index() == 0:
                 print("Generating 1D fluid quantity plots...")
                 from utils.plot_1d_fluid_quants import plot_1d_fluid_quantities
                 plot_1d_fluid_quantities(cfg.output_dir, cfg.base_name)
                 print("✓ Plots generated successfully")
-            elif cfg.SPATIAL_DIMENSION == 2:
-                print("Generating density plots from all HDF5 snapshots...")
-                from utils.plot_density2d import plot_density2d
-                plot_density2d(cfg.output_dir, cfg.base_name)
-                print("✓ Plots generated successfully")
+        elif cfg.SPATIAL_DIMENSION == 2:
+            if jax.process_index() == 0:
+                print(f"All {jax.process_count()} processes generating density plots in parallel...")
+            from utils.plot_density2d import plot_density2d
+            plot_density2d(cfg.output_dir, cfg.base_name,
+                          process_id=jax.process_index(),
+                          num_processes=jax.process_count())
+
+        # Synchronize all processes after plotting completes
+        multihost_utils.sync_global_devices("plotting_complete")
+
+        if jax.process_index() == 0:
+            print("✓ All plots generated successfully")
             print()
 
+    if jax.process_index() == 0:
         print("="*60)
         print("Good Bye and Good Day!")
         print("="*60)
