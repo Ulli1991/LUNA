@@ -189,3 +189,57 @@ def create_compute_local_dt_pmap(gamma, CFL, dx, dy, dz):
 
     return compute_local_dt
 
+
+def create_compute_dt_sharded(gamma, CFL, dx, dy, dz, enable_diagnostics=True):
+    """
+    Create a JIT-compiled function to compute dt for sharded arrays with automatic sharding.
+
+    With automatic sharding, JAX handles the communication automatically, so we just
+    compute on the sharded array and do global reductions (min/any).
+
+    Parameters
+    ----------
+    gamma : float
+        Adiabatic index
+    CFL : float
+        CFL number
+    dx, dy, dz : float
+        Grid spacing
+    enable_diagnostics : bool
+        If True, compute full diagnostics (min_rho, min_p, NaN/Inf checks)
+        If False, only compute dt for maximum performance
+
+    Returns
+    -------
+    compute_dt_fn : callable
+        JIT-compiled function with signature (U, t, t_snapshot) -> (dt, min_rho, min_p, has_nan, has_inf)
+        For sharded arrays, this automatically handles global reductions across all devices
+    """
+    if enable_diagnostics:
+        @jit
+        def compute_dt_sharded(U, t_val, t_snapshot_val):
+            """Compute dt and diagnostics with automatic sharding."""
+            # Compute on sharded array (JAX handles communication automatically)
+            dt_local, min_rho_local, min_p_local, has_nan_local, has_inf_local = \
+                compute_dt_and_diagnostics(U, gamma, CFL, t_val, t_snapshot_val, dx, dy, dz)
+
+            # Global reductions across all shards
+            dt = jnp.min(dt_local)
+            min_rho = jnp.min(min_rho_local)
+            min_p = jnp.min(min_p_local)
+            has_nan = jnp.any(has_nan_local)
+            has_inf = jnp.any(has_inf_local)
+
+            return dt, min_rho, min_p, has_nan, has_inf
+    else:
+        # Fast path: dt only, no diagnostics (10-20% speedup)
+        @jit
+        def compute_dt_sharded(U, t_val, t_snapshot_val):
+            """Compute dt only (no diagnostics) - maximum performance."""
+            dt_local = compute_dt(U, gamma, CFL, t_val, t_snapshot_val, dx, dy, dz)
+            dt = jnp.min(dt_local)
+            # Return dummy values for diagnostics for consistent interface
+            return dt, 0.0, 0.0, False, False
+
+    return compute_dt_sharded
+

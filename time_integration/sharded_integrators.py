@@ -1,146 +1,171 @@
 """
-Time integration schemes for sharded arrays using shard_map.
+Time integration schemes for sharded arrays with automatic sharding.
 
 These factory functions create time stepping functions that work with
-sharded arrays distributed across multiple devices.
+sharded arrays distributed across multiple devices, similar to the pmap
+version in integrators.py but for automatic sharding.
 """
 import jax
 
 
-def create_rk2_stepper(compute_flux_sharded):
+def create_rk2_sharded_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
+                             dx, dy, dz, inv_dx, inv_dy, inv_dz, boundary, spatial_dim):
     """
-    Create RK2 time stepping function for sharded arrays.
+    Create an RK2 time stepper for sharded arrays with automatic sharding.
+
+    RK2 handles time integration externally, so the flux function does NOT
+    receive dt (no MUSCL-Hancock predictor step).
 
     Parameters
     ----------
-    compute_flux_sharded : callable
-        Sharded flux function with signature (U, dt) -> dU/dt
+    pad_halo_fn : callable
+        Halo exchange function with signature (U, boundary, spatial_dim) -> U_padded
+    flux_div_fn : callable
+        Flux divergence function (flux_divergence_from_padded)
+    gamma : float
+        Adiabatic index
+    order : int
+        Spatial order (0 or 1)
+    limiter : int
+        Limiter type
+    dx, dy, dz : float
+        Grid spacing
+    inv_dx, inv_dy, inv_dz : float
+        Inverse grid spacing
+    boundary : int
+        Boundary condition type (captured in closure)
+    spatial_dim : int
+        Spatial dimension (captured in closure)
 
     Returns
     -------
-    time_step_rk2 : callable
+    time_step_fn : callable
         RK2 time stepping function with signature (U, dt) -> U_new
     """
     @jax.jit
     def time_step_rk2(U, dt):
         """RK2 time step with sharded arrays."""
         # Stage 1
-        k1 = compute_flux_sharded(U, dt)
-        U_temp = U + 0.5 * dt * k1
+        U_pad = pad_halo_fn(U, boundary, spatial_dim)
+        dU1 = flux_div_fn(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz)
+        U1 = U + dt * dU1
 
         # Stage 2
-        k2 = compute_flux_sharded(U_temp, dt)
-        U_new = U + dt * k2
+        U1_pad = pad_halo_fn(U1, boundary, spatial_dim)
+        dU2 = flux_div_fn(U1_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz)
 
-        return U_new
+        return U + 0.5 * dt * (dU1 + dU2)
 
     return time_step_rk2
 
 
-def create_muscl_hancock_stepper(compute_flux_sharded):
+def create_muscl_hancock_sharded_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
+                                       dx, dy, dz, inv_dx, inv_dy, inv_dz, boundary, spatial_dim):
     """
-    Create MUSCL-Hancock time stepping function for sharded arrays.
+    Create a MUSCL-Hancock time stepper for sharded arrays with automatic sharding.
 
-    The predictor step is built into the flux function when dt is provided.
+    MUSCL-Hancock is a predictor-corrector method where the predictor step
+    is built into the flux function itself (using dt for half-timestep evolution).
 
     Parameters
     ----------
-    compute_flux_sharded : callable
-        Sharded flux function with signature (U, dt) -> dU/dt
-        Must include predictor step when dt is provided
+    pad_halo_fn : callable
+        Halo exchange function with signature (U, boundary, spatial_dim) -> U_padded
+    flux_div_fn : callable
+        Flux divergence function (flux_divergence_from_padded) that accepts dt parameter
+    gamma : float
+        Adiabatic index
+    order : int
+        Spatial order (0 or 1)
+    limiter : int
+        Limiter type
+    dx, dy, dz : float
+        Grid spacing
+    inv_dx, inv_dy, inv_dz : float
+        Inverse grid spacing
+    boundary : int
+        Boundary condition type (captured in closure)
+    spatial_dim : int
+        Spatial dimension (captured in closure)
 
     Returns
     -------
-    time_step_muscl_hancock : callable
+    time_step_fn : callable
         MUSCL-Hancock time stepping function with signature (U, dt) -> U_new
     """
     @jax.jit
     def time_step_muscl_hancock(U, dt):
-        """
-        MUSCL-Hancock predictor-corrector time step with sharded arrays.
+        """MUSCL-Hancock predictor-corrector time step with sharded arrays."""
+        # Pad with halo exchange
+        U_pad = pad_halo_fn(U, boundary, spatial_dim)
 
-        The predictor step is built into the flux function when dt is provided.
-        """
-        dUdt = compute_flux_sharded(U, dt)
-        U_new = U + dt * dUdt
-        return U_new
+        # Compute flux divergence with predictor step (dt is passed!)
+        dU = flux_div_fn(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz, dt)
+
+        # Update state
+        return U + dt * dU
 
     return time_step_muscl_hancock
 
 
-def create_rk4_stepper(compute_flux_sharded):
+def create_rk4_sharded_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
+                             dx, dy, dz, inv_dx, inv_dy, inv_dz, boundary, spatial_dim):
     """
-    Create RK4 time stepping function for sharded arrays.
+    Create an RK4 time stepper for sharded arrays with automatic sharding.
+
+    RK4 handles time integration externally, so the flux function does NOT
+    receive dt (no MUSCL-Hancock predictor step).
 
     Parameters
     ----------
-    compute_flux_sharded : callable
-        Sharded flux function with signature (U, dt) -> dU/dt
+    pad_halo_fn : callable
+        Halo exchange function with signature (U, boundary, spatial_dim) -> U_padded
+    flux_div_fn : callable
+        Flux divergence function (flux_divergence_from_padded)
+    gamma : float
+        Adiabatic index
+    order : int
+        Spatial order (0 or 1)
+    limiter : int
+        Limiter type
+    dx, dy, dz : float
+        Grid spacing
+    inv_dx, inv_dy, inv_dz : float
+        Inverse grid spacing
+    boundary : int
+        Boundary condition type (captured in closure)
+    spatial_dim : int
+        Spatial dimension (captured in closure)
 
     Returns
     -------
-    time_step_rk4 : callable
+    time_step_fn : callable
         RK4 time stepping function with signature (U, dt) -> U_new
     """
     @jax.jit
     def time_step_rk4(U, dt):
         """RK4 time step with sharded arrays."""
         # Stage 1
-        k1 = compute_flux_sharded(U, dt)
+        U_pad = pad_halo_fn(U, boundary, spatial_dim)
+        k1 = flux_div_fn(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz)
 
         # Stage 2
         U1 = U + 0.5 * dt * k1
-        k2 = compute_flux_sharded(U1, dt)
+        U1_pad = pad_halo_fn(U1, boundary, spatial_dim)
+        k2 = flux_div_fn(U1_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz)
 
         # Stage 3
         U2 = U + 0.5 * dt * k2
-        k3 = compute_flux_sharded(U2, dt)
+        U2_pad = pad_halo_fn(U2, boundary, spatial_dim)
+        k3 = flux_div_fn(U2_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz)
 
         # Stage 4
         U3 = U + dt * k3
-        k4 = compute_flux_sharded(U3, dt)
+        U3_pad = pad_halo_fn(U3, boundary, spatial_dim)
+        k4 = flux_div_fn(U3_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz)
 
-        # Combine stages
-        U_new = U + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
-        return U_new
+        return U + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
     return time_step_rk4
 
 
-def select_time_stepper(time_solver, compute_flux_sharded):
-    """
-    Select and create the appropriate time stepping function.
-
-    Parameters
-    ----------
-    time_solver : int
-        Time solver index:
-        0 = RK2
-        1 = MUSCL-Hancock (Predictor-Corrector)
-        2 = RK4
-    compute_flux_sharded : callable
-        Sharded flux function with signature (U, dt) -> dU/dt
-
-    Returns
-    -------
-    time_step_fn : callable
-        Selected time stepping function with signature (U, dt) -> U_new
-    name : str
-        Name of the selected time integrator
-    """
-    if time_solver == 0:
-        time_step_fn = create_rk2_stepper(compute_flux_sharded)
-        name = "RK2"
-    elif time_solver == 1:
-        time_step_fn = create_muscl_hancock_stepper(compute_flux_sharded)
-        name = "MUSCL-Hancock (Predictor-Corrector)"
-    elif time_solver == 2:
-        time_step_fn = create_rk4_stepper(compute_flux_sharded)
-        name = "RK4"
-    else:
-        raise ValueError(
-            f"Invalid TIME_SOLVER={time_solver}. "
-            "Must be 0 (RK2), 1 (MUSCL-Hancock), or 2 (RK4)."
-        )
-
-    return time_step_fn, name
