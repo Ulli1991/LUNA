@@ -42,7 +42,7 @@ def create_rk2_sharded_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
     time_step_fn : callable
         RK2 time stepping function with signature (U, dt) -> U_new
     """
-    @jax.jit
+    @jax.jit(donate_argnums=(0,))
     def time_step_rk2(U, dt):
         """RK2 time step with sharded arrays."""
         # Stage 1
@@ -93,7 +93,7 @@ def create_muscl_hancock_sharded_step(pad_halo_fn, flux_div_fn, gamma, order, li
     time_step_fn : callable
         MUSCL-Hancock time stepping function with signature (U, dt) -> U_new
     """
-    @jax.jit
+    @jax.jit(donate_argnums=(0,))
     def time_step_muscl_hancock(U, dt):
         """MUSCL-Hancock predictor-corrector time step with sharded arrays."""
         # Pad with halo exchange
@@ -142,7 +142,7 @@ def create_rk4_sharded_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
     time_step_fn : callable
         RK4 time stepping function with signature (U, dt) -> U_new
     """
-    @jax.jit
+    @jax.jit(donate_argnums=(0,))
     def time_step_rk4(U, dt):
         """RK4 time step with sharded arrays."""
         # Stage 1
