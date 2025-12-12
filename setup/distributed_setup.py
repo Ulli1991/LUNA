@@ -103,10 +103,19 @@ def create_distributed_mesh(cfg) -> Tuple[Mesh, Tuple[int, ...]]:
         print(f"DOMAIN DECOMPOSITION ({n_devices} devices)")
         print("="*60)
 
-    mesh, grid_shape = create_device_mesh(n_devices, cfg.SPATIAL_DIMENSION)
+    mesh, grid_shape = create_device_mesh(
+        n_devices,
+        cfg.SPATIAL_DIMENSION,
+        decomposition=cfg.DECOMPOSITION,
+        Nx=cfg.Nx,
+        Ny=cfg.Ny
+    )
 
     if is_main_process:
+        print(f"Decomposition strategy: {cfg.DECOMPOSITION}")
         print(f"Process grid: {grid_shape}")
+        decomp_type = "slab (1D)" if grid_shape[-1] == 1 else "block (2D/3D)"
+        print(f"Actual decomposition: {decomp_type}")
         print()
 
     return mesh, grid_shape

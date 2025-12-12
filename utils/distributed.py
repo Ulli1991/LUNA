@@ -62,16 +62,23 @@ def compute_local_slice(Nx, Ny, mesh, process_index):
         raise NotImplementedError("3D not yet implemented")
 
 
-def create_device_mesh(n_devices, spatial_dimension):
+def create_device_mesh(n_devices, spatial_dimension, decomposition="auto", Nx=None, Ny=None):
     """
-    Create optimal device mesh for the given number of devices.
+    Create device mesh for the given number of devices with configurable decomposition.
 
     Parameters
     ----------
     n_devices : int
         Total number of devices
     spatial_dimension : int
-        1 or 2
+        1, 2, or 3
+    decomposition : str, optional
+        Decomposition strategy: "auto", "slab", or "block"
+        - "auto": Choose automatically based on heuristics
+        - "slab": 1D decomposition (minimizes messages)
+        - "block": 2D/3D decomposition (minimizes surface area)
+    Nx, Ny : int, optional
+        Grid dimensions (used for auto heuristic)
 
     Returns
     -------
@@ -80,24 +87,99 @@ def create_device_mesh(n_devices, spatial_dimension):
     grid_shape : tuple
         Process grid shape
     """
+    # Auto-select decomposition strategy based on problem size and GPU count
+    if decomposition == "auto":
+        if spatial_dimension == 1:
+            decomposition = "slab"  # Only option for 1D
+        elif spatial_dimension == 2:
+            # Heuristic: Use slab for small-medium GPU counts, block for large
+            # Also consider problem size: use slab if N/P > 512 per dimension
+            if n_devices <= 16:
+                # Small GPU count: slab is better (minimizes latency)
+                decomposition = "slab"
+            elif n_devices >= 64:
+                # Large GPU count: must use block decomposition
+                decomposition = "block"
+            elif Nx is not None and Ny is not None:
+                # Medium GPU count: check if slab keeps enough cells per GPU
+                cells_per_gpu_slab = (Nx // n_devices) * Ny
+                cells_per_gpu_block = (Nx // int(jnp.sqrt(n_devices))) * (Ny // int(jnp.sqrt(n_devices)))
+                # Use slab if it gives > 1M cells per GPU or > 512 cells per dimension
+                if (Nx // n_devices) >= 512 or cells_per_gpu_slab >= 1_000_000:
+                    decomposition = "slab"
+                else:
+                    decomposition = "block"
+            else:
+                # Default to slab for medium counts
+                decomposition = "slab"
+        else:  # 3D
+            # For 3D: prefer slab or 2D decomposition unless GPU count is very large
+            if n_devices <= 16:
+                decomposition = "slab"  # 1D pencil
+            else:
+                decomposition = "block"  # 2D or 3D
+
+    # Create mesh based on selected strategy
     if spatial_dimension == 1:
-        # 1D decomposition along x
+        # 1D problem: only 1D decomposition possible
         devices = mesh_utils.create_device_mesh((n_devices,))
         mesh = Mesh(devices, ('x',))
         grid_shape = (n_devices,)
-    elif spatial_dimension == 2:
-        # 2D decomposition
-        # Find factors of n_devices that are close to square
-        nx_proc = int(jnp.sqrt(n_devices))
-        while n_devices % nx_proc != 0:
-            nx_proc -= 1
-        ny_proc = n_devices // nx_proc
 
-        devices = mesh_utils.create_device_mesh((nx_proc, ny_proc))
-        mesh = Mesh(devices, ('x', 'y'))
-        grid_shape = (nx_proc, ny_proc)
+    elif spatial_dimension == 2:
+        if decomposition == "slab":
+            # 1D slab decomposition: all devices along one axis
+            # This minimizes communication messages (2 neighbors per GPU)
+            devices = mesh_utils.create_device_mesh((n_devices, 1))
+            mesh = Mesh(devices, ('x', 'y'))
+            grid_shape = (n_devices, 1)
+        else:  # "block"
+            # 2D block decomposition: spread devices in 2D grid
+            # This minimizes surface-to-volume ratio for large problems
+            nx_proc = int(jnp.sqrt(n_devices))
+            while n_devices % nx_proc != 0:
+                nx_proc -= 1
+            ny_proc = n_devices // nx_proc
+
+            devices = mesh_utils.create_device_mesh((nx_proc, ny_proc))
+            mesh = Mesh(devices, ('x', 'y'))
+            grid_shape = (nx_proc, ny_proc)
+
+    elif spatial_dimension == 3:
+        if decomposition == "slab":
+            # 1D pencil decomposition for 3D
+            devices = mesh_utils.create_device_mesh((n_devices, 1, 1))
+            mesh = Mesh(devices, ('x', 'y', 'z'))
+            grid_shape = (n_devices, 1, 1)
+        else:  # "block"
+            # 2D slab or 3D block decomposition
+            # For moderate P, use 2D (nx × ny × 1)
+            # For large P, use 3D (nx × ny × nz)
+            if n_devices < 64:
+                # 2D slab decomposition (better than 3D block for moderate P)
+                nx_proc = int(jnp.sqrt(n_devices))
+                while n_devices % nx_proc != 0:
+                    nx_proc -= 1
+                ny_proc = n_devices // nx_proc
+                devices = mesh_utils.create_device_mesh((nx_proc, ny_proc, 1))
+                mesh = Mesh(devices, ('x', 'y', 'z'))
+                grid_shape = (nx_proc, ny_proc, 1)
+            else:
+                # 3D block decomposition (only for very large P)
+                nz_proc = int(n_devices ** (1/3))
+                while n_devices % (nz_proc * nz_proc * nz_proc) != 0 and nz_proc > 1:
+                    nz_proc -= 1
+                remaining = n_devices // nz_proc
+                nx_proc = int(jnp.sqrt(remaining))
+                while remaining % nx_proc != 0:
+                    nx_proc -= 1
+                ny_proc = remaining // nx_proc
+
+                devices = mesh_utils.create_device_mesh((nx_proc, ny_proc, nz_proc))
+                mesh = Mesh(devices, ('x', 'y', 'z'))
+                grid_shape = (nx_proc, ny_proc, nz_proc)
     else:
-        raise NotImplementedError("3D not yet implemented")
+        raise NotImplementedError(f"Spatial dimension {spatial_dimension} not implemented")
 
     return mesh, grid_shape
 
