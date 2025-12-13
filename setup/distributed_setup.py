@@ -304,12 +304,17 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
     if is_main_process:
         print(f"Using automatic sharding with NamedSharding")
         print(f"Sharding spec: {sharding.spec}")
+        print(f"Halo exchange: jnp.roll (standard JAX approach)")
+
+    # Use standard JAX halo exchange
+    def pad_halo_fn(U, boundary, spatial_dim):
+        return pad_with_halo_auto(U, boundary, spatial_dim)
 
     # Select time integrator
     if cfg.TIME_SOLVER == 0:
         # RK2
         time_step_fn = create_rk2_sharded_step(
-            pad_with_halo_auto, flux_divergence_from_padded,
+            pad_halo_fn, flux_divergence_from_padded,
             cfg.gamma, cfg.ORDER, cfg.LIMITER,
             grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
             cfg.BOUNDARY, cfg.SPATIAL_DIMENSION
@@ -318,7 +323,7 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
     elif cfg.TIME_SOLVER == 1:
         # MUSCL-Hancock
         time_step_fn = create_muscl_hancock_sharded_step(
-            pad_with_halo_auto, flux_divergence_from_padded,
+            pad_halo_fn, flux_divergence_from_padded,
             cfg.gamma, cfg.ORDER, cfg.LIMITER,
             grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
             cfg.BOUNDARY, cfg.SPATIAL_DIMENSION
@@ -327,7 +332,7 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
     elif cfg.TIME_SOLVER == 2:
         # RK4
         time_step_fn = create_rk4_sharded_step(
-            pad_with_halo_auto, flux_divergence_from_padded,
+            pad_halo_fn, flux_divergence_from_padded,
             cfg.gamma, cfg.ORDER, cfg.LIMITER,
             grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
             cfg.BOUNDARY, cfg.SPATIAL_DIMENSION
