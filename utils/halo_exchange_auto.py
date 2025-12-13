@@ -41,7 +41,7 @@ def pad_with_halo_auto(U, boundary, spatial_dimension):
 def pad_with_halo_1d_auto(U, boundary):
     """
     Pad 1D array with halo exchange using automatic sharding.
-    Optimized to use jnp.pad for efficiency.
+    Uses jnp.roll() for periodic boundaries (slightly more efficient).
 
     Parameters
     ----------
@@ -55,8 +55,11 @@ def pad_with_halo_1d_auto(U, boundary):
     U_padded : array (Nvar, Nx+2)
         Array with ghost cells
     """
-    if boundary == 0:  # Periodic
-        U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode='wrap')
+    if boundary == 0:  # Periodic - use roll
+        # Get left and right neighbors via roll
+        left_col = jnp.roll(U, 1, axis=1)[:, -1:]
+        right_col = jnp.roll(U, -1, axis=1)[:, 0:1]
+        U_padded = jnp.concatenate([left_col, U, right_col], axis=1)
 
     elif boundary == 1:  # Zero-gradient
         U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode='edge')
@@ -73,7 +76,7 @@ def pad_with_halo_1d_auto(U, boundary):
 def pad_with_halo_2d_auto(U, boundary):
     """
     Pad 2D array with halo exchange using automatic sharding.
-    Optimized to use jnp.pad for efficiency.
+    Uses jnp.roll() for periodic boundaries (slightly more efficient).
 
     Parameters
     ----------
@@ -87,9 +90,16 @@ def pad_with_halo_2d_auto(U, boundary):
     U_padded : array (Nvar, Nx+2, Ny+2)
         Array with ghost cells
     """
-    if boundary == 0:  # Periodic - use wrap mode
-        # jnp.pad with 'wrap' mode - single operation, JAX handles cross-device
-        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1)), mode='wrap')
+    if boundary == 0:  # Periodic - use roll
+        # X-direction: get left and right neighbors via roll
+        left_col = jnp.roll(U, 1, axis=1)[:, -1:, :]
+        right_col = jnp.roll(U, -1, axis=1)[:, 0:1, :]
+        U_x_padded = jnp.concatenate([left_col, U, right_col], axis=1)
+
+        # Y-direction: get top and bottom neighbors via roll
+        top_row = jnp.roll(U_x_padded, 1, axis=2)[:, :, -1:]
+        bottom_row = jnp.roll(U_x_padded, -1, axis=2)[:, :, 0:1]
+        U_padded = jnp.concatenate([top_row, U_x_padded, bottom_row], axis=2)
 
     elif boundary == 1:  # Zero-gradient - use edge mode
         # jnp.pad with 'edge' mode - copies edge values
