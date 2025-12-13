@@ -1,26 +1,26 @@
-# config.py
+# template_config.py
 from dataclasses import dataclass
+from functools import cached_property
+import numpy as np
 
-@dataclass(frozen=True)
-class config:
+@dataclass
+class Config:
 
     # -------------------------------------------------------------------------
     # Test problem selection
     # -------------------------------------------------------------------------
     # Available options:
     #   1D:
-    #       "Sod-Shock" (tested: works)
-    #       "Woodward-Colella" (tested: works)
-    #       "Shu-Osher" (tested: works)
+    #       "Sod-Shock"
+    #       "Woodward-Colella"
+    #       "Shu-Osher"
     #       "Soundwave"
     #       "Soundwave-Advected"
     #
-    #   Einfeldt (2D - effectively 1D):
-    #       "Einfeldt-Strong"       (1-2-0-3)
-    #       "Einfeldt-Shear"        (1-1-0-5)
-    #       "Einfeldt-Transverse"   (1-1-2-5)
-    #       NOTE: These are 2D tests with variation only in x-direction.
-    #             Set SPATIAL_DIMENSION=2, Ny=1, and Ly to a small value (e.g., 0.01)
+    #   Einfeldt (1D):
+    #       "Einfeldt-Strong"
+    #       "Einfeldt-Shear"
+    #       "Einfeldt-Transverse"
     #
     #   2D Advection:
     #       "Square-Advected"
@@ -37,21 +37,32 @@ class config:
     test_problem: str = "Sod-Shock"
 
     # ---------------- Device ----------------
-    
+
     # 0 = CPU
     # 1 = GPU
     # 2 = TPU
-    DEVICE: int = 1 
+    DEVICE: int = 1
 
     # ---------------- Domain ----------------
     # 1 = 1D
-    # 2 = 2D 
-    # 3 = 3D
+    # 2 = 2D
+    # 3 = 3D (not meaningfully implemented yet)
     SPATIAL_DIMENSION: int = 1
     # 0 = Periodic
-    # 1 = von Neumann 
+    # 1 = von Neumann
     # 2 = Reflective
-    BOUNDARY: int = 1 
+    BOUNDARY: int = 1
+
+    # Domain decomposition strategy (for multi-GPU parallelization)
+    # "auto"   = Automatically choose based on problem size and GPU count (recommended)
+    # "slab"   = 1D decomposition (pencil/slab) - minimizes communication messages
+    # "block"  = 2D/3D decomposition (block) - minimizes surface area
+    #
+    # Guidelines:
+    #   - "slab" is typically faster for P ≤ 32 GPUs (lower latency overhead)
+    #   - "block" is better for P > 32 or very large N (> 32768)
+    #   - "auto" uses heuristics to choose the best strategy
+    DECOMPOSITION: str = "auto"
 
     Nx: int = 1024
     Ny: int = 1024
@@ -70,14 +81,14 @@ class config:
     # 0 = RK2
     # 1 = Predictor Corrector (Hancock)
     # 2 = RK4
-    TIME_SOLVER: int = 2  # RK4 for better accuracy
+    TIME_SOLVER: int = 2
 
     # ---------------- Riemann Solver ----------------
     # Reconstruction order:
     # 0 = first order Godunov
     # 1 = PLM (second-order MUSCL)
     # 2 = PPM (future, not implemented yet)
-    ORDER: int = 1  # TESTING: First-order (no slope limiters) to isolate issue
+    ORDER: int = 1
 
     # Slope limiter (used only if ORDER == 1)
     # 0 = Minmod
@@ -85,29 +96,70 @@ class config:
     # 2 = VanLeer
     LIMITER: int = 0
 
+    # Smooth limiters for autodiff (makes limiters differentiable)
+    use_smooth_limiters: bool = False
+    smooth_limiter_sharpness: float = 10.0
+
     # ---------------- Time control ----------------
     t_start: float = 0.0
     t_end: float = 0.245
 
     # Time interval between snapshots (code units)
-    time_bet_snaps: float = 0.000038
+    time_bet_snaps: float = 0.01
 
     # ---------------- Output ----------------
-    output_dir: str = "snapshots_sod_autodiff"
+    output_dir: str = "snapshots"
     base_name: str = "snap"
     PLOT_AFTER_SIM: bool = True
-    output_cadence: int = 1  # Print diagnostics every N steps
+
+    # How often to print progress and validate (in steps)
+    output_cadence: int = 10
+
+    # Print memory usage during run
     check_memory: bool = True
 
-    # ---------------- Autodiff Options ----------------
-    # Enable smooth (differentiable) slope limiters for automatic differentiation
-    # Set to True when using main_autodiff.py or when computing gradients
-    use_smooth_limiters: bool = True  # REQUIRED for autodiff - hard limiters are not differentiable!
+    # Enable physics diagnostics (min_rho, min_p, NaN/Inf checks)
+    # Disable for maximum performance (10-20% speedup)
+    enable_diagnostics: bool = True
 
-    # Controls smoothness of differentiable limiters (used only if use_smooth_limiters=True)
-    # Higher values = closer to original limiters (sharper transitions)
-    # Lower values = smoother gradients (better for optimization)
-    # Typical range: 5.0 (very smooth) to 50.0 (nearly original)
-    # Recommended: 10.0 for smooth test problems (soundwave, advection)
-    smooth_limiter_sharpness: float = 10.0   
+    # Production mode: disables ALL performance-killing features
+    # - Disables validation checks in time loop
+    # - Disables verbose progress printing
+    # - Disables memory checks
+    # - Minimizes CPU-GPU synchronization
+    production_mode: bool = False
 
+    # ---------------- Restart / Checkpoint ----------------
+    # Enable restart from checkpoint
+    restart: bool = False
+
+    # Checkpoint file to restart from (if None, finds latest checkpoint)
+    restart_file: str = None
+
+    # Directory for checkpoint files
+    checkpoint_dir: str = "checkpoints"
+
+    # Enable automatic checkpointing during simulation
+    enable_checkpointing: bool = False
+
+    # Wall-clock time interval between checkpoints (seconds)
+    # Set to 0 to disable periodic checkpointing
+    # Example: 3600 = checkpoint every hour, 7200 = every 2 hours
+    checkpoint_wall_time_interval: float = 7200.0
+
+    # Maximum number of checkpoints to keep (0 = keep all)
+    max_checkpoints: int = 5
+
+    # -------------------------------------------------------------------------
+    # Computed properties (lightweight, timing-related)
+    # -------------------------------------------------------------------------
+
+    @cached_property
+    def snapshot_times(self) -> np.ndarray:
+        """Pre-computed snapshot times (using numpy, not JAX, to avoid GPU allocation)."""
+        return np.arange(self.t_start, self.t_end + self.time_bet_snaps/2, self.time_bet_snaps)
+
+    @cached_property
+    def use_predictor(self) -> bool:
+        """Whether to use predictor step (MUSCL-Hancock only)."""
+        return self.TIME_SOLVER == 1
