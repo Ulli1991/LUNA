@@ -39,13 +39,13 @@ def main():
     # === Create grid parameters (immutable, pre-computed constants) ===
     grid = GridParams.from_config(cfg)
 
-    # === Create solver (time integrator and dt computation) ===
-    time_step_fn, compute_dt_fn, integrator_name, sharding = create_solver_distributed(cfg, grid, mesh)
+    # === Create solver (time integrator with integrated dt computation) ===
+    time_step_fn, integrator_name, sharding = create_solver_distributed(cfg, grid, mesh)
 
     # === Run simulation ===
     U_sharded, t_final, step_final, start_time = run_simulation_distributed(
         U_sharded, t_start, step_start, cfg, grid,
-        time_step_fn, compute_dt_fn, sharding
+        time_step_fn, sharding
     )
 
     # === Finalize (statistics, plotting, cleanup) ===

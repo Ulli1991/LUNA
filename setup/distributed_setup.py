@@ -266,9 +266,9 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
     return U_sharded, t_start, step_start
 
 
-def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callable, Callable, str, NamedSharding]:
+def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callable, str, NamedSharding]:
     """
-    Create time stepping function and dt computation for distributed execution.
+    Create time stepping function with integrated dt computation for distributed execution.
 
     Parameters
     ----------
@@ -282,9 +282,8 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
     Returns
     -------
     time_step_fn : Callable
-        Time stepping function: (U, dt) -> U
-    compute_dt_fn : Callable
-        Timestep computation function
+        Combined time stepping function: (U, t, t_snapshot, t_end) -> (U_new, dt)
+        Computes dt and performs time step in ONE function call (performance optimization)
     integrator_name : str
         Name of the integrator (e.g., "RK2", "MUSCL-Hancock", "RK4")
     sharding : NamedSharding
@@ -321,14 +320,14 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
         )
         integrator_name = "RK2"
     elif cfg.TIME_SOLVER == 1:
-        # MUSCL-Hancock
+        # MUSCL-Hancock (now combines dt computation + time step in ONE call)
         time_step_fn = create_muscl_hancock_sharded_step(
             pad_halo_fn, flux_divergence_from_padded,
             cfg.gamma, cfg.ORDER, cfg.LIMITER,
             grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION
+            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
         )
-        integrator_name = "MUSCL-Hancock predictor-corrector"
+        integrator_name = "MUSCL-Hancock predictor-corrector (combined dt+step)"
     elif cfg.TIME_SOLVER == 2:
         # RK4
         time_step_fn = create_rk4_sharded_step(
@@ -345,11 +344,7 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
 
     if is_main_process:
         print(f"Using {integrator_name} time integration")
+        print(f"Note: dt computation now integrated into time_step (1 call per timestep)")
 
-    # Create dt computation function
-    compute_dt_fn = create_compute_dt_sharded(
-        cfg.gamma, cfg.CFL, grid.dx, grid.dy, grid.dz,
-        enable_diagnostics=cfg.enable_diagnostics
-    )
-
-    return time_step_fn, compute_dt_fn, integrator_name, sharding
+    # No longer need separate compute_dt_fn - it's integrated into time_step_fn
+    return time_step_fn, integrator_name, sharding

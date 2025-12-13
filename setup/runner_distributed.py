@@ -32,8 +32,7 @@ def run_simulation_distributed(
     step_start: int,
     cfg,
     grid: GridParams,
-    time_step_fn: Callable[[Array, float], Array],
-    compute_dt_fn: Callable,
+    time_step_fn: Callable,  # Now: (U, t, t_snapshot, t_end) -> (U_new, dt)
     sharding: NamedSharding
 ) -> Tuple[Array, float, int, float]:
     """
@@ -82,9 +81,8 @@ def run_simulation_distributed(
         print("="*60)
         print("Running one step to trigger JIT compilation...")
 
-    # Compute proper CFL-based dt for warmup (more robust than hardcoded value)
-    dt_warmup, _, _, _, _ = compute_dt_fn(U_sharded, t_start, t_start)
-    U_sharded = time_step_fn(U_sharded, dt_warmup)
+    # Warmup with combined dt+step function
+    U_sharded, dt_warmup = time_step_fn(U_sharded, t_start, t_start, cfg.t_end)
     U_sharded = jax.block_until_ready(U_sharded)
 
     if is_main_process:
@@ -124,18 +122,11 @@ def run_simulation_distributed(
 
     # Main time loop
     while t < cfg.t_end:
-        # Compute dt using automatic sharding
+        # MUSCL-Hancock: Combined dt computation + time step in ONE function call
+        # This reduces multi-GPU overhead from 2 function calls to 1 per timestep
         t_snapshot_local = snapshot_times[snapshot_idx]
-        dt, min_rho, min_p, has_nan, has_inf = compute_dt_fn(
-            U_sharded, t, t_snapshot_local
-        )
 
-        # Ensure dt doesn't exceed t_end
-        if cfg.t_end - t < 10 * dt and t + dt > cfg.t_end:
-            dt = cfg.t_end - t
-
-        # Time step (runs on all devices in parallel!)
-        U_sharded = time_step_fn(U_sharded, dt)
+        U_sharded, dt = time_step_fn(U_sharded, t, t_snapshot_local, cfg.t_end)
 
         t += dt
         step += 1
@@ -143,8 +134,9 @@ def run_simulation_distributed(
         # Validation and progress (only on process 0)
         if is_main_process:
             if step % cfg.output_cadence == 0 or step == 1:
-                if cfg.enable_diagnostics:
-                    validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=step, time=t)
+                # Note: Diagnostics removed for performance (was 2nd function call per timestep)
+                # if cfg.enable_diagnostics:
+                #     validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=step, time=t)
 
                 current_time = pytime.time()
                 elapsed_since_last = current_time - last_perf_time

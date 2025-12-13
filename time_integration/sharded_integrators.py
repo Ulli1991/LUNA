@@ -60,9 +60,11 @@ def create_rk2_sharded_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
 
 
 def create_muscl_hancock_sharded_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
-                                       dx, dy, dz, inv_dx, inv_dy, inv_dz, boundary, spatial_dim):
+                                       dx, dy, dz, inv_dx, inv_dy, inv_dz, boundary, spatial_dim, CFL):
     """
     Create a MUSCL-Hancock time stepper for sharded arrays with automatic sharding.
+
+    NOW COMBINES dt computation and time step into ONE function to reduce overhead.
 
     MUSCL-Hancock is a predictor-corrector method where the predictor step
     is built into the flux function itself (using dt for half-timestep evolution).
@@ -87,15 +89,48 @@ def create_muscl_hancock_sharded_step(pad_halo_fn, flux_div_fn, gamma, order, li
         Boundary condition type (captured in closure)
     spatial_dim : int
         Spatial dimension (captured in closure)
+    CFL : float
+        CFL number for dt computation
 
     Returns
     -------
     time_step_fn : callable
-        MUSCL-Hancock time stepping function with signature (U, dt) -> U_new
+        MUSCL-Hancock time stepping function with signature (U, t, t_snapshot) -> (U_new, dt)
     """
+    from hydro.conversions import cons_to_prim
+
     @jax.jit(donate_argnums=(0,))
-    def time_step_muscl_hancock(U, dt):
-        """MUSCL-Hancock predictor-corrector time step with sharded arrays."""
+    def time_step_muscl_hancock(U, t, t_snapshot, t_end):
+        """MUSCL-Hancock step with dt computation - ONE function call per timestep."""
+        # Compute dt (inline to avoid separate function call)
+        W = cons_to_prim(U, gamma)
+        rho = W[0]
+        if spatial_dim == 1:
+            vx = W[1]
+            P = W[2]
+            cs = jax.numpy.sqrt(gamma * P / rho)
+            max_speed = jax.numpy.abs(vx) + cs
+            dt_local = CFL * dx / max_speed
+        elif spatial_dim == 2:
+            vx = W[1]
+            vy = W[2]
+            P = W[3]
+            cs = jax.numpy.sqrt(gamma * P / rho)
+            max_speed_x = jax.numpy.abs(vx) + cs
+            max_speed_y = jax.numpy.abs(vy) + cs
+            dt_local = CFL * jax.numpy.minimum(dx / max_speed_x, dy / max_speed_y)
+        else:
+            raise NotImplementedError("3D not yet implemented")
+
+        dt = jax.numpy.min(dt_local)
+
+        # Adjust dt if needed to hit t_end exactly
+        dt = jax.numpy.where(
+            (t_end - t < 10 * dt) & (t + dt > t_end),
+            t_end - t,
+            dt
+        )
+
         # Pad with halo exchange
         U_pad = pad_halo_fn(U, boundary, spatial_dim)
 
@@ -103,7 +138,7 @@ def create_muscl_hancock_sharded_step(pad_halo_fn, flux_div_fn, gamma, order, li
         dU = flux_div_fn(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz, dt)
 
         # Update state
-        return U + dt * dU
+        return U + dt * dU, dt
 
     return time_step_muscl_hancock
 
