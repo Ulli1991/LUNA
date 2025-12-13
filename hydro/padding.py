@@ -3,7 +3,6 @@ from jax import lax
 import jax
 from functools import partial
 
-@partial(jax.jit, static_argnums=(1,))
 def pad(U, boundary):
     """
     OPTIMIZED general dimension-agnostic padding with selectable boundary conditions.

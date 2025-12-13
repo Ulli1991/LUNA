@@ -14,7 +14,6 @@ import jax.numpy as jnp
 from functools import partial
 
 
-@partial(jax.jit, static_argnums=(2, 3))
 def hllc_flux_primitive_2d(W_L, W_R, axis, gamma):
     """
     HLLC Riemann solver for 2D Euler equations using PRIMITIVE variables.
@@ -160,7 +159,6 @@ def hllc_flux_primitive_2d(W_L, W_R, axis, gamma):
     return flux
 
 
-@partial(jax.jit, static_argnums=(2, 3))
 def hllc_flux_primitive_1d(W_L, W_R, axis, gamma):
     """
     HLLC Riemann solver for 1D Euler using PRIMITIVE variables.

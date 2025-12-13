@@ -10,7 +10,6 @@ from jax import jit
 from functools import partial
 
 
-@partial(jit, static_argnums=(2,))
 def apply_primitive_jacobian_1d(W, dW, gamma):
     """
     Compute A_x * dW for 1D Euler equations in primitive variables.
@@ -49,7 +48,6 @@ def apply_primitive_jacobian_1d(W, dW, gamma):
     return jnp.stack([result_rho, result_vx, result_P])
 
 
-@partial(jit, static_argnums=(3,))
 def apply_primitive_jacobian_2d(W, dWx, dWy, gamma):
     """
     Compute A_x * dWx + A_y * dWy for 2D Euler equations in primitive variables.
@@ -109,7 +107,6 @@ def apply_primitive_jacobian_2d(W, dWx, dWy, gamma):
     return jnp.stack([result_rho, result_vx, result_vy, result_P])
 
 
-@partial(jit, static_argnums=(4,))
 def apply_primitive_jacobian_3d(W, dWx, dWy, dWz, gamma):
     """
     Compute A_x * dWx + A_y * dWy + A_z * dWz for 3D Euler equations.

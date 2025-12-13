@@ -3,11 +3,9 @@ from jax import jit, lax
 from functools import partial
 
 # ------------------- Slope limiters -------------------
-@jit
 def minmod(a, b):
     return jnp.where(a * b > 0, jnp.sign(a) * jnp.minimum(jnp.abs(a), jnp.abs(b)), 0.0)
 
-@jit
 def minmod3(a, b, c):
     s = jnp.sign(a)
     return jnp.where((a*b > 0) & (a*c > 0),
@@ -15,16 +13,13 @@ def minmod3(a, b, c):
                                      jnp.minimum(jnp.abs(b), jnp.abs(c))),
                      0.0)
 
-@jit
 def moncen(dl, dr):
     return minmod3(2*dl, 2*dr, 0.5*(dl+dr))
 
-@jit
 def vanleer(dl, dr):
     return jnp.where(dl*dr > 0, 2*dl*dr/(dl+dr), 0.0)
 
 # ------------------- Slope selection -------------------
-@partial(jit, static_argnums=(2,))
 def slope_limiter(dl, dr, limiter):
     """
     Apply slope limiter based on limiter type.
@@ -40,7 +35,6 @@ def slope_limiter(dl, dr, limiter):
 # ------------------- Compute slopes -------------------
 from hydro.padding import pad
 
-@partial(jit, static_argnums=(1,))
 def compute_slopes_from_padded(U_pad, limiter):
     """
     Compute slopes from an already-padded array.
@@ -92,7 +86,6 @@ def compute_slopes_from_padded(U_pad, limiter):
 
     return dUx, dUy, dUz
 
-@partial(jit, static_argnums=(1, 2))
 def compute_slopes(U, limiter, boundary):
     """
     Compute slopes in 1D, 2D, or 3D depending on U shape.
@@ -117,7 +110,6 @@ def compute_slopes(U, limiter, boundary):
 #   - For smooth test problems (soundwave, advection), sharpness=10 works well
 # ===============================================================================
 
-@jit
 def smooth_sign(x, sharpness=10.0):
     """
     Smooth approximation of sign function using tanh.
@@ -128,7 +120,6 @@ def smooth_sign(x, sharpness=10.0):
     """
     return jnp.tanh(sharpness * x)
 
-@jit
 def smooth_min(a, b, sharpness=10.0):
     """
     Smooth approximation of minimum using LogSumExp trick.
@@ -139,7 +130,6 @@ def smooth_min(a, b, sharpness=10.0):
     k = sharpness
     return -(jnp.logaddexp(-k*a, -k*b)) / k
 
-@jit
 def smooth_heaviside(x, sharpness=10.0):
     """
     Smooth approximation of Heaviside step function.
@@ -149,7 +139,6 @@ def smooth_heaviside(x, sharpness=10.0):
     """
     return 0.5 * (1.0 + jnp.tanh(sharpness * x))
 
-@partial(jit, static_argnums=(2,))
 def minmod_smooth(a, b, sharpness=10.0):
     """
     Differentiable approximation of minmod limiter.
@@ -169,7 +158,6 @@ def minmod_smooth(a, b, sharpness=10.0):
     # Combine: if same sign, return sign(a) * min(|a|, |b|), else 0
     return same_sign * s * min_abs
 
-@partial(jit, static_argnums=(3,))
 def minmod3_smooth(a, b, c, sharpness=10.0):
     """
     Differentiable approximation of 3-argument minmod limiter.
@@ -188,14 +176,12 @@ def minmod3_smooth(a, b, c, sharpness=10.0):
 
     return all_same_sign * s * min_abc
 
-@partial(jit, static_argnums=(2,))
 def moncen_smooth(dl, dr, sharpness=10.0):
     """
     Differentiable approximation of Monotonized Central limiter.
     """
     return minmod3_smooth(2*dl, 2*dr, 0.5*(dl+dr), sharpness)
 
-@partial(jit, static_argnums=(2,))
 def vanleer_smooth(dl, dr, sharpness=10.0):
     """
     Differentiable approximation of van Leer limiter.
@@ -208,7 +194,6 @@ def vanleer_smooth(dl, dr, sharpness=10.0):
     return same_sign * 2*dl*dr / (dl + dr + eps)
 
 # ------------------- Smooth slope selection (for autodiff) -------------------
-@partial(jit, static_argnums=(2, 3))
 def slope_limiter_smooth(dl, dr, limiter, sharpness=10.0):
     """
     Apply SMOOTH slope limiter based on limiter type.
@@ -233,7 +218,6 @@ def slope_limiter_smooth(dl, dr, limiter, sharpness=10.0):
     return lax.switch(limiter, [apply_minmod_smooth, apply_moncen_smooth, apply_vanleer_smooth], None)
 
 # ------------------- Compute slopes with smooth limiters (for autodiff) -------------------
-@partial(jit, static_argnums=(1, 2))
 def compute_slopes_from_padded_smooth(U_pad, limiter, sharpness=10.0):
     """
     Compute slopes from an already-padded array using SMOOTH limiters.
@@ -283,7 +267,6 @@ def compute_slopes_from_padded_smooth(U_pad, limiter, sharpness=10.0):
 
     return dUx, dUy, dUz
 
-@partial(jit, static_argnums=(1, 2, 3))
 def compute_slopes_smooth(U, limiter, boundary, sharpness=10.0):
     """
     Compute slopes in 1D, 2D, or 3D using SMOOTH limiters.

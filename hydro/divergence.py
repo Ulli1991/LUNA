@@ -27,7 +27,6 @@ from hydro.jacobian import (apply_primitive_jacobian_1d,
                              apply_primitive_jacobian_3d)
 
 
-@partial(jit, static_argnums=(1, 2, 3, 4, 11))
 def flux_divergence_primitive(U, gamma, order, limiter, boundary, dx, dy, dz,
                                inv_dx, inv_dy, inv_dz, use_smooth_limiters=False, dt=None):
     """

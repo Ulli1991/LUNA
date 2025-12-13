@@ -8,7 +8,6 @@ import jax.numpy as jnp
 from jax import jit
 
 
-@jit
 def compute_physics_diagnostics(U, gamma):
     """
     Compute physics diagnostics on GPU (JIT-compiled).
