@@ -32,6 +32,12 @@ from time_integration.sharded_integrators import (
     create_muscl_hancock_sharded_step,
     create_rk4_sharded_step
 )
+from time_integration.sharded_integrators_modular import (
+    create_muscl_hancock_modular_step
+)
+from time_integration.sharded_integrators_reference_style import (
+    create_muscl_hancock_reference_style
+)
 from time_integration.cfl import create_compute_dt_sharded
 from utils.halo_exchange_auto import pad_with_halo_auto
 from hydro.divergence import flux_divergence_from_padded
@@ -320,14 +326,33 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
         )
         integrator_name = "RK2"
     elif cfg.TIME_SOLVER == 1:
-        # MUSCL-Hancock (now combines dt computation + time step in ONE call)
-        time_step_fn = create_muscl_hancock_sharded_step(
-            pad_halo_fn, flux_divergence_from_padded,
-            cfg.gamma, cfg.ORDER, cfg.LIMITER,
-            grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
-        )
-        integrator_name = "MUSCL-Hancock predictor-corrector (combined dt+step)"
+        # MUSCL-Hancock - choose JIT strategy
+        if cfg.JIT_STRATEGY == "reference":
+            # Match reference code: main function NOT @jax.jit, many small @jax.jit helpers
+            time_step_fn = create_muscl_hancock_reference_style(
+                cfg.gamma, cfg.ORDER, cfg.LIMITER,
+                grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
+                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
+            )
+            integrator_name = "MUSCL-Hancock (REFERENCE STYLE: many small @jax.jit)"
+        elif cfg.JIT_STRATEGY == "modular":
+            # Few large @jax.jit functions
+            time_step_fn = create_muscl_hancock_modular_step(
+                pad_halo_fn, flux_divergence_from_padded,
+                cfg.gamma, cfg.ORDER, cfg.LIMITER,
+                grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
+                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
+            )
+            integrator_name = "MUSCL-Hancock (MODULAR: few large @jax.jit)"
+        else:  # "monolithic"
+            # One big @jax.jit function (original)
+            time_step_fn = create_muscl_hancock_sharded_step(
+                pad_halo_fn, flux_divergence_from_padded,
+                cfg.gamma, cfg.ORDER, cfg.LIMITER,
+                grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
+                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
+            )
+            integrator_name = "MUSCL-Hancock (MONOLITHIC: one big @jax.jit)"
     elif cfg.TIME_SOLVER == 2:
         # RK4
         time_step_fn = create_rk4_sharded_step(

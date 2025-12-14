@@ -124,7 +124,9 @@ def run_simulation_distributed(
     while t < cfg.t_end:
         # MUSCL-Hancock: Combined dt computation + time step in ONE function call
         # This reduces multi-GPU overhead from 2 function calls to 1 per timestep
-        t_snapshot_local = snapshot_times[snapshot_idx]
+
+        # Get next snapshot time (use infinity if all snapshots written)
+        t_snapshot_local = snapshot_times[snapshot_idx] if snapshot_idx < num_snapshots else float('inf')
 
         U_sharded, dt = time_step_fn(U_sharded, t, t_snapshot_local, cfg.t_end)
 
@@ -162,7 +164,8 @@ def run_simulation_distributed(
                 last_perf_time = current_time
 
         # Save snapshot (all processes participate)
-        if t >= snapshot_times[snapshot_idx]:
+        # Only check if we haven't written all snapshots yet
+        if snapshot_idx < num_snapshots and t >= snapshot_times[snapshot_idx]:
             if is_main_process:
                 print(f"\n{'─'*60}")
                 print(f"💾 Saving snapshot #{snapshot_idx} at t = {t:.5f}")
@@ -178,8 +181,6 @@ def run_simulation_distributed(
 
             # Update snapshot index
             snapshot_idx += 1
-            if snapshot_idx >= num_snapshots:
-                snapshot_idx = num_snapshots - 1
 
             if is_main_process:
                 print(f"✓ All shards saved successfully\n")
