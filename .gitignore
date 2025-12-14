@@ -16,6 +16,10 @@ snap*
 job_*
 *.swp
 *.swo
+*out*
+*err*
+*.nsys-rep
+*.sqlite
 
 # Virtual environment
 venv/
