@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-def rotation_slotted_disk(cfg):
+def rotation_slotted_disk(cfg, x_slice=None, y_slice=None):
     """
     Rotating slotted disk test problem (2D).
 
@@ -12,19 +12,36 @@ def rotation_slotted_disk(cfg):
     ----------
     cfg : Config
         Configuration object containing Nx, Ny, Lx, Ly, gamma
+    x_slice : tuple (x_start, x_end), optional
+        Generate only this x-range for distributed initialization
+    y_slice : tuple (y_start, y_end), optional
+        Generate only this y-range for distributed initialization
 
     Returns
     -------
     U : jax.numpy.ndarray
-        Conservative variables [rho, rho*ux, rho*uy, E] with shape (4, Nx, Ny)
+        Conservative variables [rho, rho*ux, rho*uy, E] with shape (4, Nx_local, Ny_local)
     """
     Nx, Ny, Lx, Ly = cfg.Nx, cfg.Ny, cfg.Lx, cfg.Ly
     gamma = cfg.gamma
 
-    # Grid coordinates - normalized to [0,1] domain
-    x = jnp.linspace(0, 1, Nx, endpoint=False)
-    y = jnp.linspace(0, 1, Ny, endpoint=False)
-    X, Y = jnp.meshgrid(x, y, indexing='ij')
+    # Determine local ranges
+    if x_slice is not None:
+        x_start, x_end = x_slice
+    else:
+        x_start, x_end = 0, Nx
+
+    if y_slice is not None:
+        y_start, y_end = y_slice
+    else:
+        y_start, y_end = 0, Ny
+
+    # Create coordinate arrays for local slice only (normalized to [0,1] domain)
+    x_full = jnp.linspace(0, 1, Nx, endpoint=False)
+    y_full = jnp.linspace(0, 1, Ny, endpoint=False)
+    x_local = x_full[x_start:x_end]
+    y_local = y_full[y_start:y_end]
+    X, Y = jnp.meshgrid(x_local, y_local, indexing='ij')
 
     # Zalesak disk: solid circle centered at (0.5, 0.75) with radius 0.15
     disk_center_x = 0.5
