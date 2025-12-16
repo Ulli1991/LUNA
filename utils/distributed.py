@@ -10,7 +10,7 @@ from jax.experimental import mesh_utils
 from jax.experimental.multihost_utils import process_allgather
 
 
-def compute_local_slice(Nx, Ny, mesh, process_index):
+def compute_local_slice(Nx, Ny, mesh, process_index, Nz=1):
     """
     Compute which slice of the global array this process should generate.
 
@@ -22,11 +22,15 @@ def compute_local_slice(Nx, Ny, mesh, process_index):
         JAX mesh object
     process_index : int
         Current process index
+    Nz : int, optional
+        Z dimension (default 1 for 1D/2D problems)
 
     Returns
     -------
     x_slice, y_slice : tuple of (start, end)
-        Slice indices for this process
+        Slice indices for this process (for 1D/2D)
+    x_slice, y_slice, z_slice : tuple of (start, end)
+        Slice indices for this process (for 3D)
     """
     # Get grid shape as integers from mesh
     # mesh.shape is a dict with axis names, mesh.devices.shape gives actual dimensions
@@ -38,7 +42,7 @@ def compute_local_slice(Nx, Ny, mesh, process_index):
         x_per_proc = Nx // nx_proc
         x_start = process_index * x_per_proc
         x_end = (process_index + 1) * x_per_proc if process_index < nx_proc - 1 else Nx
-        return (x_start, x_end), (0, Ny)
+        return (x_start, x_end), (0, Ny), (0, Nz)
 
     elif len(grid_shape) == 2:  # 2D decomposition
         nx_proc, ny_proc = grid_shape
@@ -56,10 +60,31 @@ def compute_local_slice(Nx, Ny, mesh, process_index):
         y_start = proc_y * y_per_proc
         y_end = (proc_y + 1) * y_per_proc if proc_y < ny_proc - 1 else Ny
 
-        return (x_start, x_end), (y_start, y_end)
+        return (x_start, x_end), (y_start, y_end), (0, Nz)
 
-    else:
-        raise NotImplementedError("3D not yet implemented")
+    else:  # 3D decomposition
+        nx_proc, ny_proc, nz_proc = grid_shape
+        # Convert linear process_index to 3D grid coordinates
+        proc_x = process_index // (ny_proc * nz_proc)
+        proc_y = (process_index % (ny_proc * nz_proc)) // nz_proc
+        proc_z = process_index % nz_proc
+
+        # Determine x-slice
+        x_per_proc = Nx // nx_proc
+        x_start = proc_x * x_per_proc
+        x_end = (proc_x + 1) * x_per_proc if proc_x < nx_proc - 1 else Nx
+
+        # Determine y-slice
+        y_per_proc = Ny // ny_proc
+        y_start = proc_y * y_per_proc
+        y_end = (proc_y + 1) * y_per_proc if proc_y < ny_proc - 1 else Ny
+
+        # Determine z-slice
+        z_per_proc = Nz // nz_proc
+        z_start = proc_z * z_per_proc
+        z_end = (proc_z + 1) * z_per_proc if proc_z < nz_proc - 1 else Nz
+
+        return (x_start, x_end), (y_start, y_end), (z_start, z_end)
 
 
 def create_device_mesh(n_devices, spatial_dimension, decomposition="auto", Nx=None, Ny=None):
