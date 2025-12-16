@@ -203,24 +203,35 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
                 print("Each process generates only its local portion (memory efficient)")
 
             # Compute which slice this process should generate
-            x_slice, y_slice = compute_local_slice(
-                cfg.Nx, cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 1,
-                mesh, process_id
-            )
+            if cfg.SPATIAL_DIMENSION == 3:
+                x_slice, y_slice, z_slice = compute_local_slice(
+                    cfg.Nx, cfg.Ny, mesh, process_id, cfg.Nz
+                )
+            else:
+                x_slice, y_slice, z_slice = compute_local_slice(
+                    cfg.Nx, cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 1,
+                    mesh, process_id
+                )
 
-            # Generate only local portion (currently only KH is implemented)
+            # Generate only local portion
             if cfg.test_problem == "Kelvin-Helmholtz":
                 from ic_generation.kh import kelvin_helmholtz
                 U_local = kelvin_helmholtz(cfg, x_slice=x_slice, y_slice=y_slice)
+            elif cfg.test_problem == "Sod-Shock":
+                from ic_generation.sod import sod_shock
+                U_local = sod_shock(cfg, x_slice=x_slice)
+            elif cfg.test_problem == "Sod-Shock-3D":
+                from ic_generation.sod3d import sod_shock_3d
+                U_local = sod_shock_3d(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)
             else:
                 if is_main_process:
                     print(f"\n{'='*60}")
                     print(f"ERROR: Local IC generation not implemented for '{cfg.test_problem}'")
                     print(f"{'='*60}")
                     print(f"Multi-process mode requires local IC generation.")
-                    print(f"Currently supported: Kelvin-Helmholtz")
+                    print(f"Currently supported: Kelvin-Helmholtz, Sod-Shock, Sod-Shock-3D")
                     print(f"\nOptions:")
-                    print(f"  1. Use test_problem='Kelvin-Helmholtz'")
+                    print(f"  1. Use one of the supported test problems")
                     print(f"  2. Run in single-process mode (1 GPU)")
                     print(f"  3. Implement local generation for {cfg.test_problem}")
                     print(f"{'='*60}\n")
@@ -303,8 +314,8 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
         sharding = NamedSharding(mesh, P(None, 'x'))
     elif cfg.SPATIAL_DIMENSION == 2:
         sharding = NamedSharding(mesh, P(None, 'x', 'y'))
-    else:
-        raise NotImplementedError("3D not yet implemented")
+    else:  # 3D
+        sharding = NamedSharding(mesh, P(None, 'x', 'y', 'z'))
 
     if is_main_process:
         print(f"Using automatic sharding with NamedSharding")

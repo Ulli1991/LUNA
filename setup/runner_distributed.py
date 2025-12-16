@@ -83,7 +83,7 @@ def run_simulation_distributed(
 
     # Warmup with combined dt+step function
     U_sharded, dt_warmup = time_step_fn(U_sharded, t_start, t_start, cfg.t_end)
-    U_sharded = jax.block_until_ready(U_sharded)
+    #U_sharded = jax.block_until_ready(U_sharded)
 
     if is_main_process:
         print("✓ Compilation complete\n")
