@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-def shu_osher(cfg):
+def shu_osher(cfg, x_slice=None):
     """
     Shu-Osher shock-density wave interaction test problem (1D).
 
@@ -14,17 +14,26 @@ def shu_osher(cfg):
     ----------
     cfg : Config
         Configuration object containing Nx, Lx, gamma
+    x_slice : tuple (x_start, x_end), optional
+        Generate only this x-range for distributed initialization
 
     Returns
     -------
     U : jax.numpy.ndarray
-        Conservative variables [rho, rho*u, E] with shape (3, Nx)
+        Conservative variables [rho, rho*u, E] with shape (3, Nx_local)
     """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma
 
-    # Define x values to cover the domain from -5 to 5
-    x = jnp.linspace(-Lx / 2, Lx / 2, Nx, endpoint=False)  # Adjusted to go from -5 to 5
+    # Determine local range
+    if x_slice is not None:
+        x_start, x_end = x_slice
+    else:
+        x_start, x_end = 0, Nx
+
+    # Create coordinate array for local slice only
+    x_full = jnp.linspace(-Lx / 2, Lx / 2, Nx, endpoint=False)
+    x = x_full[x_start:x_end]
 
     # Left state (for xc < -4)
     rho_L = 3.857143
