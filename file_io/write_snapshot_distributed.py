@@ -98,18 +98,16 @@ def write_snapshot_distributed(U_sharded, cfg, t, step, mesh=None):
 
     # Compute shard position in global grid
     if cfg.SPATIAL_DIMENSION == 1:
-        (x_start, x_end), _ = compute_local_slice(cfg.Nx, 1, mesh, process_id)
+        (x_start, x_end), _, _ = compute_local_slice(cfg.Nx, 1, mesh, process_id)
         y_start = 0
         z_start = 0
     elif cfg.SPATIAL_DIMENSION == 2:
-        (x_start, x_end), (y_start, y_end) = compute_local_slice(cfg.Nx, cfg.Ny, mesh, process_id)
+        (x_start, x_end), (y_start, y_end), _ = compute_local_slice(cfg.Nx, cfg.Ny, mesh, process_id)
         z_start = 0
     elif cfg.SPATIAL_DIMENSION == 3:
-        # For 3D, we would need a 3D version of compute_local_slice
-        # For now, set to 0 as 3D is not yet implemented
-        x_start = 0
-        y_start = 0
-        z_start = 0
+        (x_start, x_end), (y_start, y_end), (z_start, z_end) = compute_local_slice(
+            cfg.Nx, cfg.Ny, mesh, process_id, cfg.Nz
+        )
     else:
         x_start = 0
         y_start = 0
