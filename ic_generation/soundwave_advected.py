@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-def soundwave_advected(cfg):
+def soundwave_advected(cfg, x_slice=None):
     """
     Advected sound wave test problem (1D).
 
@@ -11,16 +11,26 @@ def soundwave_advected(cfg):
     ----------
     cfg : Config
         Configuration object containing Nx, Lx, gamma
+    x_slice : tuple (x_start, x_end), optional
+        Generate only this x-range for distributed initialization
 
     Returns
     -------
     U : jax.numpy.ndarray
-        Conservative variables [rho, rho*u, E] with shape (3, Nx)
+        Conservative variables [rho, rho*u, E] with shape (3, Nx_local)
     """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma
 
-    x = jnp.linspace(0, Lx, Nx, endpoint=False)
+    # Determine local range
+    if x_slice is not None:
+        x_start, x_end = x_slice
+    else:
+        x_start, x_end = 0, Nx
+
+    # Create coordinate array for local slice only
+    x_full = jnp.linspace(0, Lx, Nx, endpoint=False)
+    x = x_full[x_start:x_end]
 
     # Base state
     rho0    = 1.0
