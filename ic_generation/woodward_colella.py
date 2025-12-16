@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-def woodward_colella(cfg):
+def woodward_colella(cfg, x_slice=None):
     """
     Woodward-Colella blast wave interaction test problem (1D).
 
@@ -17,17 +17,26 @@ def woodward_colella(cfg):
     ----------
     cfg : Config
         Configuration object containing Nx, Lx, gamma
+    x_slice : tuple (x_start, x_end), optional
+        Generate only this x-range for distributed initialization
 
     Returns
     -------
     U : jax.numpy.ndarray
-        Conservative variables [rho, rho*u, E] with shape (3, Nx)
+        Conservative variables [rho, rho*u, E] with shape (3, Nx_local)
     """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma
 
-    # 1D coordinate
-    x = jnp.linspace(0, Lx, Nx, endpoint=False)
+    # Determine local range
+    if x_slice is not None:
+        x_start, x_end = x_slice
+    else:
+        x_start, x_end = 0, Nx
+
+    # Create coordinate array for local slice only
+    x_full = jnp.linspace(0, Lx, Nx, endpoint=False)
+    x = x_full[x_start:x_end]
 
     # Region interfaces
     x1 = 0.1 * Lx
