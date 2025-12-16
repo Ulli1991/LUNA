@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-def sod_shock_3d(cfg):
+def sod_shock_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     """
     Sod shock tube test problem in 3D.
 
@@ -13,11 +13,17 @@ def sod_shock_3d(cfg):
     cfg : Config
         Configuration object containing Nx, Lx, gamma.
         Note: Ny, Nz, Ly, Lz are modified by this function.
+    x_slice : tuple (x_start, x_end), optional
+        Generate only this x-range for distributed initialization
+    y_slice : tuple (y_start, y_end), optional
+        Generate only this y-range for distributed initialization
+    z_slice : tuple (z_start, z_end), optional
+        Generate only this z-range for distributed initialization
 
     Returns
     -------
     U : jax.numpy.ndarray
-        Conservative variables [rho, rho*vx, rho*vy, rho*vz, E] with shape (5, Nx, Ny, Nz)
+        Conservative variables [rho, rho*vx, rho*vy, rho*vz, E] with shape (5, Nx_local, Ny_local, Nz_local)
     """
     Nx = cfg.Nx
     Lx = cfg.Lx
@@ -43,19 +49,46 @@ def sod_shock_3d(cfg):
     cfg.Ly = Ly
     cfg.Lz = Lz
 
-    print(f"3D Sod Shock Tube Configuration:")
-    print(f"  X-direction: Nx={Nx}, Lx={Lx:.6f}, dx={dx:.6f}")
-    print(f"  Y-direction: Ny={Ny}, Ly={Ly:.6f}, dy={Ly/Ny:.6f}")
-    print(f"  Z-direction: Nz={Nz}, Lz={Lz:.6f}, dz={Lz/Nz:.6f}")
-    print(f"  Total cells: {Nx*Ny*Nz:,}")
+    # Only print on main process (when generating full array, not slices)
+    if x_slice is None and y_slice is None and z_slice is None:
+        print(f"3D Sod Shock Tube Configuration:")
+        print(f"  X-direction: Nx={Nx}, Lx={Lx:.6f}, dx={dx:.6f}")
+        print(f"  Y-direction: Ny={Ny}, Ly={Ly:.6f}, dy={Ly/Ny:.6f}")
+        print(f"  Z-direction: Nz={Nz}, Lz={Lz:.6f}, dz={Lz/Nz:.6f}")
+        print(f"  Total cells: {Nx*Ny*Nz:,}")
 
-    # 3D coordinates
-    x = jnp.linspace(0, Lx, Nx, endpoint=False)
-    y = jnp.linspace(0, Ly, Ny, endpoint=False)
-    z = jnp.linspace(0, Lz, Nz, endpoint=False)
+    # Determine local ranges
+    if x_slice is not None:
+        x_start, x_end = x_slice
+        Nx_local = x_end - x_start
+    else:
+        x_start, x_end = 0, Nx
+        Nx_local = Nx
+
+    if y_slice is not None:
+        y_start, y_end = y_slice
+        Ny_local = y_end - y_start
+    else:
+        y_start, y_end = 0, Ny
+        Ny_local = Ny
+
+    if z_slice is not None:
+        z_start, z_end = z_slice
+        Nz_local = z_end - z_start
+    else:
+        z_start, z_end = 0, Nz
+        Nz_local = Nz
+
+    # Create coordinate arrays for local slice only
+    x_full = jnp.linspace(0, Lx, Nx, endpoint=False)
+    y_full = jnp.linspace(0, Ly, Ny, endpoint=False)
+    z_full = jnp.linspace(0, Lz, Nz, endpoint=False)
+    x_local = x_full[x_start:x_end]
+    y_local = y_full[y_start:y_end]
+    z_local = z_full[z_start:z_end]
 
     # Create meshgrid
-    X, Y, Z = jnp.meshgrid(x, y, z, indexing='ij')
+    X, Y, Z = jnp.meshgrid(x_local, y_local, z_local, indexing='ij')
 
     # Interface at center
     x0 = 0.5 * Lx
