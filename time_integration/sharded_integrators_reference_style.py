@@ -36,8 +36,19 @@ def create_muscl_hancock_reference_style(gamma, order, limiter,
             vx, P = W[1], W[2]
             cs = jnp.sqrt(gamma * P / rho)
             return CFL * jnp.min(dx / (jnp.abs(vx) + cs))
+        elif spatial_dim == 3:
+            vx, vy, vz, P = W[1], W[2], W[3], W[4]
+            cs = jnp.sqrt(gamma * P / rho)
+            max_speed_x = jnp.abs(vx) + cs
+            max_speed_y = jnp.abs(vy) + cs
+            max_speed_z = jnp.abs(vz) + cs
+            dt_local = CFL * jnp.minimum(
+                jnp.minimum(dx / max_speed_x, dy / max_speed_y),
+                dz / max_speed_z
+            )
+            return jnp.min(dt_local)
         else:
-            raise NotImplementedError("3D not yet implemented")
+            raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")
 
     # Small @jax.jit helper for primitive conversion
     @jax.jit
@@ -55,13 +66,11 @@ def create_muscl_hancock_reference_style(gamma, order, limiter,
         Returns DIFFERENCES (ΔW), not derivatives (dW/dx).
         """
         if spatial_dim == 2:
-            # For each variable, compute slopes as central differences
             Nvar = W.shape[0]
             dWx = jnp.zeros_like(W)
             dWy = jnp.zeros_like(W)
 
             for i in range(Nvar):
-                # Central differences with rolls - return DIFFERENCES not derivatives!
                 dWx = dWx.at[i].set(
                     (jnp.roll(W[i], -1, axis=0) - jnp.roll(W[i], 1, axis=0)) / 2
                 )
@@ -69,7 +78,7 @@ def create_muscl_hancock_reference_style(gamma, order, limiter,
                     (jnp.roll(W[i], -1, axis=1) - jnp.roll(W[i], 1, axis=1)) / 2
                 )
 
-            return dWx, dWy
+            return dWx, dWy, None
         elif spatial_dim == 1:
             Nvar = W.shape[0]
             dWx = jnp.zeros_like(W)
@@ -79,37 +88,59 @@ def create_muscl_hancock_reference_style(gamma, order, limiter,
                     (jnp.roll(W[i], -1, axis=0) - jnp.roll(W[i], 1, axis=0)) / 2
                 )
 
-            return dWx, None
+            return dWx, None, None
+        elif spatial_dim == 3:
+            Nvar = W.shape[0]
+            dWx = jnp.zeros_like(W)
+            dWy = jnp.zeros_like(W)
+            dWz = jnp.zeros_like(W)
+
+            for i in range(Nvar):
+                dWx = dWx.at[i].set(
+                    (jnp.roll(W[i], -1, axis=0) - jnp.roll(W[i], 1, axis=0)) / 2
+                )
+                dWy = dWy.at[i].set(
+                    (jnp.roll(W[i], -1, axis=1) - jnp.roll(W[i], 1, axis=1)) / 2
+                )
+                dWz = dWz.at[i].set(
+                    (jnp.roll(W[i], -1, axis=2) - jnp.roll(W[i], 1, axis=2)) / 2
+                )
+
+            return dWx, dWy, dWz
         else:
-            raise NotImplementedError("3D not yet implemented")
+            raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")
 
     # Small @jax.jit helper for predictor step
     @jax.jit
-    def apply_predictor(W, dWx, dWy, dt):
+    def apply_predictor(W, dWx, dWy, dWz, dt):
         """
         MUSCL-Hancock predictor step - SMALL @jax.jit function.
 
         Evolve primitives half a timestep using characteristic evolution.
         """
-        from hydro.jacobian import apply_primitive_jacobian_2d, apply_primitive_jacobian_1d
+        from hydro.jacobian import apply_primitive_jacobian_2d, apply_primitive_jacobian_1d, apply_primitive_jacobian_3d
 
         if spatial_dim == 2:
-            Wc = W
             dWx_scaled = dWx * inv_dx
             dWy_scaled = dWy * inv_dy
-            A_dW = apply_primitive_jacobian_2d(Wc, dWx_scaled, dWy_scaled, gamma)
-            return Wc - 0.5 * dt * A_dW
+            A_dW = apply_primitive_jacobian_2d(W, dWx_scaled, dWy_scaled, gamma)
+            return W - 0.5 * dt * A_dW
         elif spatial_dim == 1:
-            Wc = W
             dWx_scaled = dWx * inv_dx
-            A_dW = apply_primitive_jacobian_1d(Wc, dWx_scaled, gamma)
-            return Wc - 0.5 * dt * A_dW
+            A_dW = apply_primitive_jacobian_1d(W, dWx_scaled, gamma)
+            return W - 0.5 * dt * A_dW
+        elif spatial_dim == 3:
+            dWx_scaled = dWx * inv_dx
+            dWy_scaled = dWy * inv_dy
+            dWz_scaled = dWz * inv_dz
+            A_dW = apply_primitive_jacobian_3d(W, dWx_scaled, dWy_scaled, dWz_scaled, gamma)
+            return W - 0.5 * dt * A_dW
         else:
-            raise NotImplementedError("3D not yet implemented")
+            raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")
 
     # Small @jax.jit helper for reconstruction (WITH ROLLS INSIDE!)
     @jax.jit
-    def reconstruct_to_faces(W, dWx, dWy):
+    def reconstruct_to_faces(W, dWx, dWy, dWz):
         """
         Reconstruct primitives to face centers - SMALL @jax.jit function.
 
@@ -121,28 +152,43 @@ def create_muscl_hancock_reference_style(gamma, order, limiter,
         - W_R[i] = W[i+1] - 0.5*slope[i+1] (left extrapolation from cell i+1)
         """
         if spatial_dim == 2:
-            # X-faces
             half_dWx = 0.5 * dWx
-            W_XL = W + half_dWx  # Right extrapolation
-            W_XR = W - half_dWx  # Left extrapolation
-            W_XR = jnp.roll(W_XR, -1, axis=1)  # Shift to get neighbor's value
+            W_XL = W + half_dWx
+            W_XR = W - half_dWx
+            W_XR = jnp.roll(W_XR, -1, axis=1)
 
-            # Y-faces
             half_dWy = 0.5 * dWy
-            W_YL = W + half_dWy  # Top extrapolation
-            W_YR = W - half_dWy  # Bottom extrapolation
-            W_YR = jnp.roll(W_YR, -1, axis=2)  # Shift to get neighbor's value
+            W_YL = W + half_dWy
+            W_YR = W - half_dWy
+            W_YR = jnp.roll(W_YR, -1, axis=2)
 
-            return W_XL, W_XR, W_YL, W_YR
+            return W_XL, W_XR, W_YL, W_YR, None, None
         elif spatial_dim == 1:
             half_dWx = 0.5 * dWx
-            W_L = W + half_dWx  # Right extrapolation
-            W_R = W - half_dWx  # Left extrapolation
-            W_R = jnp.roll(W_R, -1, axis=1)  # Shift to get neighbor's value
+            W_L = W + half_dWx
+            W_R = W - half_dWx
+            W_R = jnp.roll(W_R, -1, axis=1)
 
-            return W_L, W_R, None, None
+            return W_L, W_R, None, None, None, None
+        elif spatial_dim == 3:
+            half_dWx = 0.5 * dWx
+            W_XL = W + half_dWx
+            W_XR = W - half_dWx
+            W_XR = jnp.roll(W_XR, -1, axis=1)
+
+            half_dWy = 0.5 * dWy
+            W_YL = W + half_dWy
+            W_YR = W - half_dWy
+            W_YR = jnp.roll(W_YR, -1, axis=2)
+
+            half_dWz = 0.5 * dWz
+            W_ZL = W + half_dWz
+            W_ZR = W - half_dWz
+            W_ZR = jnp.roll(W_ZR, -1, axis=3)
+
+            return W_XL, W_XR, W_YL, W_YR, W_ZL, W_ZR
         else:
-            raise NotImplementedError("3D not yet implemented")
+            raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")
 
     # Small @jax.jit helper for flux computation
     @jax.jit
@@ -157,9 +203,15 @@ def create_muscl_hancock_reference_style(gamma, order, limiter,
         from hydro.fluxes import hllc_flux_primitive
         return hllc_flux_primitive(W_L, W_R, axis=1, gamma=gamma)
 
+    @jax.jit
+    def compute_fluxes_z(W_L, W_R):
+        """Compute HLLC fluxes in z-direction - SMALL @jax.jit function."""
+        from hydro.fluxes import hllc_flux_primitive
+        return hllc_flux_primitive(W_L, W_R, axis=2, gamma=gamma)
+
     # Small @jax.jit helper for applying fluxes (WITH ROLLS INSIDE!)
     @jax.jit
-    def apply_flux_update(U, Fx, Fy, dt):
+    def apply_flux_update(U, Fx, Fy, Fz, dt):
         """
         Apply fluxes to update conservatives - SMALL @jax.jit function.
 
@@ -169,21 +221,30 @@ def create_muscl_hancock_reference_style(gamma, order, limiter,
         We store densities, so we use dt/dx.
         """
         if spatial_dim == 2:
-            # X-direction update
             U_new = U - dt * inv_dx * Fx
-            U_new = U_new + dt * inv_dx * jnp.roll(Fx, 1, axis=1)  # Roll like reference!
+            U_new = U_new + dt * inv_dx * jnp.roll(Fx, 1, axis=1)
 
-            # Y-direction update
             U_new = U_new - dt * inv_dy * Fy
-            U_new = U_new + dt * inv_dy * jnp.roll(Fy, 1, axis=2)  # Roll like reference!
+            U_new = U_new + dt * inv_dy * jnp.roll(Fy, 1, axis=2)
 
             return U_new
         elif spatial_dim == 1:
             U_new = U - dt * inv_dx * Fx
             U_new = U_new + dt * inv_dx * jnp.roll(Fx, 1, axis=1)
             return U_new
+        elif spatial_dim == 3:
+            U_new = U - dt * inv_dx * Fx
+            U_new = U_new + dt * inv_dx * jnp.roll(Fx, 1, axis=1)
+
+            U_new = U_new - dt * inv_dy * Fy
+            U_new = U_new + dt * inv_dy * jnp.roll(Fy, 1, axis=2)
+
+            U_new = U_new - dt * inv_dz * Fz
+            U_new = U_new + dt * inv_dz * jnp.roll(Fz, 1, axis=3)
+
+            return U_new
         else:
-            raise NotImplementedError("3D not yet implemented")
+            raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")
 
     # Main timestep orchestrator (NOT @jax.jit! Like reference!)
     def time_step_reference_style(U, t, t_snapshot, t_end):
@@ -204,37 +265,53 @@ def create_muscl_hancock_reference_style(gamma, order, limiter,
 
         if order == 0:
             # First-order: compute fluxes at all interfaces
-            # Flux arrays must have same shape as U for apply_flux_update
-            if spatial_dim == 2:
-                # X-direction fluxes (right face of each cell)
-                Fx = compute_fluxes_x(W, jnp.roll(W, -1, axis=1))
-                # Y-direction fluxes (top face of each cell)
+            Fx = compute_fluxes_x(W, jnp.roll(W, -1, axis=1))
+            if spatial_dim >= 2:
                 Fy = compute_fluxes_y(W, jnp.roll(W, -1, axis=2))
             else:
-                Fx = compute_fluxes_x(W, jnp.roll(W, -1, axis=1))
                 Fy = None
+            if spatial_dim == 3:
+                Fz = compute_fluxes_z(W, jnp.roll(W, -1, axis=3))
+            else:
+                Fz = None
         else:
             # Second-order: MUSCL-Hancock
             # 3. Compute slopes (small @jax.jit with rolls!)
-            dWx, dWy = get_slopes(W)
+            dWx, dWy, dWz = get_slopes(W)
 
             # 4. Predictor step (small @jax.jit)
-            W_half = apply_predictor(W, dWx, dWy if dWy is not None else dWx * 0, dt)
+            W_half = apply_predictor(
+                W, dWx,
+                dWy if dWy is not None else dWx * 0,
+                dWz if dWz is not None else dWx * 0,
+                dt
+            )
 
             # 5. Reconstruct to faces (small @jax.jit with rolls!)
-            W_XL, W_XR, W_YL, W_YR = reconstruct_to_faces(W_half, dWx, dWy)
+            W_XL, W_XR, W_YL, W_YR, W_ZL, W_ZR = reconstruct_to_faces(
+                W_half, dWx,
+                dWy if dWy is not None else dWx,
+                dWz if dWz is not None else dWx
+            )
 
-            # 6. Compute fluxes (small @jax.jit) - must match U shape!
-            if spatial_dim == 2:
-                # Compute fluxes at all cell interfaces
-                Fx = compute_fluxes_x(W_XL, W_XR)
+            # 6. Compute fluxes (small @jax.jit)
+            Fx = compute_fluxes_x(W_XL, W_XR)
+            if spatial_dim >= 2:
                 Fy = compute_fluxes_y(W_YL, W_YR)
             else:
-                Fx = compute_fluxes_x(W_XL, W_XR)
                 Fy = None
+            if spatial_dim == 3:
+                Fz = compute_fluxes_z(W_ZL, W_ZR)
+            else:
+                Fz = None
 
         # 7. Apply fluxes (small @jax.jit with rolls!)
-        U_new = apply_flux_update(U, Fx, Fy if Fy is not None else Fx * 0, dt)
+        U_new = apply_flux_update(
+            U, Fx,
+            Fy if Fy is not None else Fx * 0,
+            Fz if Fz is not None else Fx * 0,
+            dt
+        )
 
         return U_new, dt
 

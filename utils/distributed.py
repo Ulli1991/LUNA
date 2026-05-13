@@ -236,7 +236,7 @@ def create_sharded_array_from_local(U_local, global_shape, mesh, spatial_dimensi
     elif spatial_dimension == 2:
         sharding = NamedSharding(mesh, P(None, 'x', 'y'))
     else:
-        raise NotImplementedError("3D not yet implemented")
+        sharding = NamedSharding(mesh, P(None, 'x', 'y', 'z'))
 
     # Put local array on local device
     local_device = jax.local_devices()[0]
@@ -272,17 +272,11 @@ def shard_array_to_devices(U_global, mesh, spatial_dimension):
         Sharded array distributed across devices
     """
     if spatial_dimension == 1:
-        # Shard along x dimension
-        # Array shape: (Nvar, Nx)
-        # Partition: (None, 'x')
         sharding = NamedSharding(mesh, P(None, 'x'))
     elif spatial_dimension == 2:
-        # Shard along x and y dimensions
-        # Array shape: (Nvar, Nx, Ny)
-        # Partition: (None, 'x', 'y')
         sharding = NamedSharding(mesh, P(None, 'x', 'y'))
     else:
-        raise NotImplementedError("3D not yet implemented")
+        sharding = NamedSharding(mesh, P(None, 'x', 'y', 'z'))
 
     # Shard the array
     U_sharded = jax.device_put(U_global, sharding)

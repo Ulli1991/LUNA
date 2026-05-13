@@ -6,7 +6,7 @@ JAX's automatic sharding with NamedSharding.
 """
 from config import Config
 from utils.grid_params import GridParams
-from utils.logo import print_KRATOS_banner
+from utils.logo import print_LUNA_banner
 from setup import (
     initialize_jax_distributed,
     create_distributed_mesh,
@@ -25,7 +25,7 @@ def main():
     # === Print logo (only process 0) ===
     import jax
     if jax.process_index() == 0:
-        print_KRATOS_banner()
+        print_LUNA_banner()
 
     # === Load configuration ===
     cfg = Config()

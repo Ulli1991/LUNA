@@ -181,5 +181,16 @@ def write_snapshot_distributed(U_sharded, cfg, t, step, mesh=None):
         # Conservative variables (full U array for this shard)
         cells.create_dataset("U", data=U_local)
 
+        # Write unit system metadata if configured
+        if cfg.units.is_enabled:
+            units_grp = f.create_group("units")
+            units_grp.attrs["UnitLength_in_cm"] = cfg.units.UnitLength_in_cm
+            units_grp.attrs["UnitMass_in_g"] = cfg.units.UnitMass_in_g
+            units_grp.attrs["UnitVelocity_in_cm_per_s"] = cfg.units.UnitVelocity_in_cm_per_s
+            units_grp.attrs["UnitTime_in_s"] = cfg.units.UnitTime_in_s
+            units_grp.attrs["UnitDensity_in_cgs"] = cfg.units.UnitDensity_in_cgs
+            units_grp.attrs["UnitPressure_in_cgs"] = cfg.units.UnitPressure_in_cgs
+            units_grp.attrs["UnitEnergy_in_cgs"] = cfg.units.UnitEnergy_in_cgs
+
     # Each process prints its own confirmation
     print(f"Process {process_id}: Snapshot saved to {os.path.basename(snapshot_filename)}")

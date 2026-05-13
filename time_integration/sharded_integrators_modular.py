@@ -26,9 +26,8 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
 
     # Separate JIT function for dt computation
     @jax.jit
-    def compute_dt(U):
-        """Compute timestep - separate JIT function."""
-        W = cons_to_prim(U, gamma)
+    def compute_dt(W):
+        """Compute timestep from primitives - separate JIT function."""
         rho = W[0]
 
         if spatial_dim == 1:
@@ -45,8 +44,21 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
             max_speed_x = jnp.abs(vx) + cs
             max_speed_y = jnp.abs(vy) + cs
             dt_local = CFL * jnp.minimum(dx / max_speed_x, dy / max_speed_y)
+        elif spatial_dim == 3:
+            vx = W[1]
+            vy = W[2]
+            vz = W[3]
+            P = W[4]
+            cs = jnp.sqrt(gamma * P / rho)
+            max_speed_x = jnp.abs(vx) + cs
+            max_speed_y = jnp.abs(vy) + cs
+            max_speed_z = jnp.abs(vz) + cs
+            dt_local = CFL * jnp.minimum(
+                jnp.minimum(dx / max_speed_x, dy / max_speed_y),
+                dz / max_speed_z
+            )
         else:
-            raise NotImplementedError("3D not yet implemented")
+            raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")
 
         return jnp.min(dt_local)
 
@@ -111,8 +123,25 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
                 Fx = hllc_flux_primitive(W_L, W_R, axis=0, gamma=gamma)
                 dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx
                 return -dFdx
+            elif spatial_dim == 3:
+                W_L_x = W_pad[:, :-1, 1:-1, 1:-1]
+                W_R_x = W_pad[:, 1:, 1:-1, 1:-1]
+                Fx = hllc_flux_primitive(W_L_x, W_R_x, axis=0, gamma=gamma)
+                dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx
+
+                W_L_y = W_pad[:, 1:-1, :-1, 1:-1]
+                W_R_y = W_pad[:, 1:-1, 1:, 1:-1]
+                Fy = hllc_flux_primitive(W_L_y, W_R_y, axis=1, gamma=gamma)
+                dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy
+
+                W_L_z = W_pad[:, 1:-1, 1:-1, :-1]
+                W_R_z = W_pad[:, 1:-1, 1:-1, 1:]
+                Fz = hllc_flux_primitive(W_L_z, W_R_z, axis=2, gamma=gamma)
+                dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz
+
+                return -(dFdx + dFdy + dFdz)
             else:
-                raise NotImplementedError("3D not yet implemented")
+                raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")
 
         # Second-order path with MUSCL-Hancock predictor
         def second_order_flux(W_pad):
@@ -158,8 +187,42 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
                 Fx = hllc_flux_primitive(WL, WR, axis=0, gamma=gamma)
                 dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx
                 return -dFdx
-            else:
-                raise NotImplementedError("3D not yet implemented")
+
+            else:  # 3D
+                from hydro.jacobian import apply_primitive_jacobian_3d
+
+                Wc = W_pad[:, 1:-1, 1:-1, 1:-1]
+
+                # MUSCL-Hancock predictor step
+                dWx_scaled = dWx * inv_dx
+                dWy_scaled = dWy * inv_dy
+                dWz_scaled = dWz * inv_dz
+                A_dW = apply_primitive_jacobian_3d(Wc, dWx_scaled, dWy_scaled, dWz_scaled, gamma)
+                W_half = Wc - 0.5 * dt * A_dW
+
+                half_dWx = 0.5 * dWx
+                half_dWy = 0.5 * dWy
+                half_dWz = 0.5 * dWz
+
+                # X-direction reconstruction
+                WL_x = jnp.concatenate([W_pad[:, 0:1, 1:-1, 1:-1], W_half + half_dWx], axis=1)
+                WR_x = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:, 1:-1, 1:-1]], axis=1)
+                Fx = hllc_flux_primitive(WL_x, WR_x, axis=0, gamma=gamma)
+                dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx
+
+                # Y-direction reconstruction
+                WL_y = jnp.concatenate([W_pad[:, 1:-1, 0:1, 1:-1], W_half + half_dWy], axis=2)
+                WR_y = jnp.concatenate([W_half - half_dWy, W_pad[:, 1:-1, -1:, 1:-1]], axis=2)
+                Fy = hllc_flux_primitive(WL_y, WR_y, axis=1, gamma=gamma)
+                dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy
+
+                # Z-direction reconstruction
+                WL_z = jnp.concatenate([W_pad[:, 1:-1, 1:-1, 0:1], W_half + half_dWz], axis=3)
+                WR_z = jnp.concatenate([W_half - half_dWz, W_pad[:, 1:-1, 1:-1, -1:]], axis=3)
+                Fz = hllc_flux_primitive(WL_z, WR_z, axis=2, gamma=gamma)
+                dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz
+
+                return -(dFdx + dFdy + dFdz)
 
         # Select based on order
         is_first_order = jnp.array(order == 0)

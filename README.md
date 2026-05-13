@@ -1,4 +1,4 @@
-# KRATOS
+# LUNA
 
 **A differentiable astrophysical MHD code for turbulence, shocks, ISM, and galaxy evolution**
 
@@ -281,7 +281,7 @@ OBSERVABLES['max_density'] = observable_max_density
 
 ###  Overview
 
-KRATOS supports multi-GPU execution using **JAX's native sharding**:
+LUNA supports multi-GPU execution using **JAX's native sharding**:
 - JAX automatically detects all available GPUs
 - Data is sharded across GPUs
 - Communication handled transparently via NCCL (NVIDIA) or RCCL (AMD)
@@ -367,7 +367,7 @@ JAX automatically:
 ## File Structure
 
 ```
-kratos/
+luna/
 ├── main.py                      # Single-GPU driver
 ├── main_multi.py                # Multi-GPU (JAX sharding) driver
 ├── main_autodiff.py             # Autodiff testing
@@ -412,11 +412,11 @@ kratos/
 If you use this code in your research, please cite:
 
 ```bibtex
-@software{kratos,
+@software{luna,
   author = {Your Name},
-  title = {KRATOS: A Differentiable Astrophysical MHD Code},
+  title = {LUNA: A Differentiable Astrophysical MHD Code},
   year = {2025},
-  url = {https://github.com/yourusername/kratos}
+  url = {https://github.com/yourusername/luna}
 }
 ```
 

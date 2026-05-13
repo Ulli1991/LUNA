@@ -63,6 +63,16 @@ def read_checkpoint(checkpoint_filename):
             "time_bet_snaps": float(f["time_control"].attrs["time_bet_snaps"]),
         }
 
+        # Read unit system (backward compatible - may not exist)
+        if "units" in f:
+            units_data = {
+                "UnitLength_in_cm": float(f["units"].attrs["UnitLength_in_cm"]),
+                "UnitMass_in_g": float(f["units"].attrs["UnitMass_in_g"]),
+                "UnitVelocity_in_cm_per_s": float(f["units"].attrs["UnitVelocity_in_cm_per_s"]),
+            }
+        else:
+            units_data = None
+
     checkpoint_data = {
         "U": U,
         "time": time,
@@ -71,6 +81,7 @@ def read_checkpoint(checkpoint_filename):
         "physics": physics,
         "numerics": numerics,
         "time_control": time_control,
+        "units": units_data,
     }
 
     print(f"✓ Checkpoint loaded: {checkpoint_filename}")

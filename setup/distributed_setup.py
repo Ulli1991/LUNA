@@ -223,13 +223,23 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
             elif cfg.test_problem == "Sod-Shock-3D":
                 from ic_generation.sod3d import sod_shock_3d
                 U_local = sod_shock_3d(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)
+            elif cfg.test_problem == "Sedov-Blast-3D":
+                from ic_generation.sedov3d import sedov_blast_3d
+                U_local = sedov_blast_3d(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)
+            elif cfg.test_problem == "Kelvin-Helmholtz-3D":
+                from ic_generation.kh3d import kelvin_helmholtz_3d
+                U_local = kelvin_helmholtz_3d(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)
+            elif cfg.test_problem == "Soundwave-3D":
+                from ic_generation.soundwave3d import soundwave_3d
+                U_local = soundwave_3d(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)
             else:
                 if is_main_process:
                     print(f"\n{'='*60}")
                     print(f"ERROR: Local IC generation not implemented for '{cfg.test_problem}'")
                     print(f"{'='*60}")
                     print(f"Multi-process mode requires local IC generation.")
-                    print(f"Currently supported: Kelvin-Helmholtz, Sod-Shock, Sod-Shock-3D")
+                    print(f"Currently supported: Kelvin-Helmholtz, Sod-Shock, Sod-Shock-3D,")
+                    print(f"  Sedov-Blast-3D, Kelvin-Helmholtz-3D, Soundwave-3D")
                     print(f"\nOptions:")
                     print(f"  1. Use one of the supported test problems")
                     print(f"  2. Run in single-process mode (1 GPU)")

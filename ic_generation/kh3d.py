@@ -1,0 +1,102 @@
+import jax.numpy as jnp
+
+
+def kelvin_helmholtz_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
+    """
+    Kelvin-Helmholtz instability in 3D.
+
+    Extends the 2D KH setup with a uniform z-direction and
+    an additional z-perturbation to seed 3D structure.
+    Periodic in all directions. Works well at 64^3 to 256^3.
+
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object containing Nx, Ny, Nz, Lx, Ly, Lz, gamma.
+    x_slice, y_slice, z_slice : tuple (start, end), optional
+        Generate only this range for distributed initialization
+
+    Returns
+    -------
+    U : jax.numpy.ndarray
+        Conservative variables [rho, rho*vx, rho*vy, rho*vz, E]
+        with shape (5, Nx_local, Ny_local, Nz_local)
+    """
+    Nx, Ny = cfg.Nx, cfg.Ny
+    Lx, Ly = cfg.Lx, cfg.Ly
+    gamma = cfg.gamma
+
+    # Auto-set thin z-slab: 16 cells with dz ≈ dx
+    dx = Lx / Nx
+    Nz = 16
+    Lz = Nz * dx
+    cfg.Nz = Nz
+    cfg.Lz = Lz
+
+    if x_slice is None and y_slice is None and z_slice is None:
+        print(f"3D Kelvin-Helmholtz Configuration:")
+        print(f"  X-Y plane: {Nx} x {Ny}, Lx={Lx}, Ly={Ly}")
+        print(f"  Z-direction: Nz={Nz}, Lz={Lz:.6f} (auto, 16 cells, dz={dx:.6f})")
+        print(f"  Total cells: {Nx*Ny*Nz:,}")
+
+    # Determine local ranges
+    if x_slice is not None:
+        x_start, x_end = x_slice
+    else:
+        x_start, x_end = 0, Nx
+
+    if y_slice is not None:
+        y_start, y_end = y_slice
+    else:
+        y_start, y_end = 0, Ny
+
+    if z_slice is not None:
+        z_start, z_end = z_slice
+    else:
+        z_start, z_end = 0, Nz
+
+    # Create coordinate arrays for local slice only
+    x_full = jnp.linspace(0, Lx, Nx, endpoint=False)
+    y_full = jnp.linspace(0, Ly, Ny, endpoint=False)
+    z_full = jnp.linspace(0, Lz, Nz, endpoint=False)
+    x_local = x_full[x_start:x_end]
+    y_local = y_full[y_start:y_end]
+    z_local = z_full[z_start:z_end]
+    X, Y, Z = jnp.meshgrid(x_local, y_local, z_local, indexing='ij')
+
+    # KH parameters (same as 2D)
+    U0 = 1.0
+    a = 0.05
+    A = 0.01
+    sigma = 0.2
+    Y1, Y2 = 0.5, 1.5
+    rho_low, rho_high = 1.0, 2.0
+    delta = (rho_high - rho_low) / rho_low
+
+    # Density and x-velocity: shear layers at Y1 and Y2
+    rho = 1.0 + 0.5 * delta * (jnp.tanh((Y - Y1) / a) - jnp.tanh((Y - Y2) / a))
+    vx = -U0 * ((jnp.tanh((Y - Y1) / a) - jnp.tanh((Y - Y2) / a)) - 1.0)
+
+    # y-perturbation: seed instability (same as 2D but with z-modulation)
+    vy = A * jnp.sin(2 * jnp.pi * X / Lx) * (
+        jnp.exp(-((Y - Y1)**2) / sigma**2) +
+        jnp.exp(-((Y - Y2)**2) / sigma**2)
+    )
+
+    # z-perturbation: seed 3D structure
+    vz = 0.5 * A * jnp.sin(2 * jnp.pi * X / Lx) * jnp.sin(2 * jnp.pi * Z / Lz) * (
+        jnp.exp(-((Y - Y1)**2) / sigma**2) +
+        jnp.exp(-((Y - Y2)**2) / sigma**2)
+    )
+
+    # Uniform pressure
+    Nx_local = x_local.shape[0]
+    Ny_local = y_local.shape[0]
+    Nz_local = z_local.shape[0]
+    p = jnp.ones((Nx_local, Ny_local, Nz_local)) * 10.0
+
+    # Total energy
+    E = p / (gamma - 1.0) + 0.5 * rho * (vx**2 + vy**2 + vz**2)
+
+    U = jnp.stack([rho, rho * vx, rho * vy, rho * vz, E], axis=0)
+    return U

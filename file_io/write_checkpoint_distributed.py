@@ -132,6 +132,13 @@ def write_checkpoint_distributed(
         time_control.attrs["t_end"] = cfg.t_end
         time_control.attrs["time_bet_snaps"] = cfg.time_bet_snaps
 
+        # Save unit system if configured
+        if cfg.units.is_enabled:
+            units_grp = f.create_group("units")
+            units_grp.attrs["UnitLength_in_cm"] = cfg.units.UnitLength_in_cm
+            units_grp.attrs["UnitMass_in_g"] = cfg.units.UnitMass_in_g
+            units_grp.attrs["UnitVelocity_in_cm_per_s"] = cfg.units.UnitVelocity_in_cm_per_s
+
     # Print confirmation (each process prints its own)
     print(f"Process {process_id}: Checkpoint shard saved to {os.path.basename(checkpoint_filename)}")
 

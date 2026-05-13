@@ -119,8 +119,21 @@ def create_muscl_hancock_sharded_step(pad_halo_fn, flux_div_fn, gamma, order, li
             max_speed_x = jax.numpy.abs(vx) + cs
             max_speed_y = jax.numpy.abs(vy) + cs
             dt_local = CFL * jax.numpy.minimum(dx / max_speed_x, dy / max_speed_y)
+        elif spatial_dim == 3:
+            vx = W[1]
+            vy = W[2]
+            vz = W[3]
+            P = W[4]
+            cs = jax.numpy.sqrt(gamma * P / rho)
+            max_speed_x = jax.numpy.abs(vx) + cs
+            max_speed_y = jax.numpy.abs(vy) + cs
+            max_speed_z = jax.numpy.abs(vz) + cs
+            dt_local = CFL * jax.numpy.minimum(
+                jax.numpy.minimum(dx / max_speed_x, dy / max_speed_y),
+                dz / max_speed_z
+            )
         else:
-            raise NotImplementedError("3D not yet implemented")
+            raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")
 
         dt = jax.numpy.min(dt_local)
 
