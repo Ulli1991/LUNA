@@ -82,11 +82,13 @@ def run_simulation_distributed(
         print("Running one step to trigger JIT compilation...")
 
     # Warmup with combined dt+step function
+    compile_start = pytime.time()
     U_sharded, dt_warmup = time_step_fn(U_sharded, t_start, t_start, cfg.t_end)
-    #U_sharded = jax.block_until_ready(U_sharded)
+    jax.block_until_ready(U_sharded)
+    compile_time = pytime.time() - compile_start
 
     if is_main_process:
-        print("✓ Compilation complete\n")
+        print(f"✓ Compilation complete ({compile_time:.1f}s)\n")
 
     # === SNAPSHOTS AND OUTPUT ===
     # Use pre-computed snapshot times from config (numpy array, not JAX)
@@ -109,7 +111,12 @@ def run_simulation_distributed(
         print("SIMULATION START")
         print("="*60)
         print(f"Time range: {t_start:.3f} → {cfg.t_end:.3f}")
-        print(f"Global grid: {cfg.Nx} x {cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 'N/A'}")
+        if cfg.SPATIAL_DIMENSION == 3:
+            print(f"Global grid: {cfg.Nx} x {cfg.Ny} x {cfg.Nz}")
+        elif cfg.SPATIAL_DIMENSION == 2:
+            print(f"Global grid: {cfg.Nx} x {cfg.Ny}")
+        else:
+            print(f"Global grid: {cfg.Nx}")
         print()
 
     t = t_start

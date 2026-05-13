@@ -68,7 +68,7 @@ def initialize_jax_distributed():
     # Configure JAX
     jax.config.update("jax_enable_x64", False)
     jax.config.update("jax_default_matmul_precision", "high")
-    jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
+    jax.config.update("jax_compilation_cache_dir", os.path.expanduser("~/.jax_cache"))
 
     print(f"Platform: {jax.default_backend()}")
     print(f"Total devices: {len(jax.devices())}")
@@ -362,7 +362,8 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
                 pad_halo_fn, flux_divergence_from_padded,
                 cfg.gamma, cfg.ORDER, cfg.LIMITER,
                 grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
+                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
+                sharding=sharding
             )
             integrator_name = "MUSCL-Hancock (MODULAR: few large @jax.jit)"
         else:  # "monolithic"

@@ -10,12 +10,14 @@ Key difference from sharded_integrators.py:
 - OLD: One big @jax.jit function with all operations
 - NEW: Regular Python function calling multiple @jax.jit subfunctions
 """
+import os
 import jax
 import jax.numpy as jnp
 
 
 def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
-                                       dx, dy, dz, inv_dx, inv_dy, inv_dz, boundary, spatial_dim, CFL):
+                                       dx, dy, dz, inv_dx, inv_dy, inv_dz, boundary, spatial_dim, CFL,
+                                       sharding=None):
     """
     Create MUSCL-Hancock stepper with MODULAR JIT compilation.
 
@@ -224,11 +226,22 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
 
                 return -(dFdx + dFdy + dFdz)
 
-        # Select based on order
-        is_first_order = jnp.array(order == 0)
-        dU = lax.cond(is_first_order, first_order_flux, second_order_flux, W_pad)
+        # Select based on order (static Python branching — order is a closure constant)
+        if order == 0:
+            dU = first_order_flux(W_pad)
+        else:
+            dU = second_order_flux(W_pad)
 
-        return U + dt * dU
+        U_new = U + dt * dU
+
+        # Enforce output sharding matches input to prevent sharding drift
+        if sharding is not None:
+            U_new = jax.lax.with_sharding_constraint(U_new, sharding)
+
+        return U_new
+
+    # Debug flag: set to True to trace which JIT call hangs (multi-GPU debugging)
+    _debug_sync = bool(os.environ.get('LUNA_DEBUG_SYNC', ''))
 
     # Main orchestrator function (NOT @jax.jit!)
     def time_step_muscl_hancock_modular(U, t, t_snapshot, t_end):
@@ -245,24 +258,59 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
         4. Compute fluxes directly from W_pad (no second conversion!)
         5. Update U
         """
+        import sys
+
+        if _debug_sync and jax.process_index() == 0:
+            print(f"[DEBUG] Starting time step, U.sharding={U.sharding}", flush=True, file=sys.stderr)
+
         # Step 1: Convert to primitives (JIT function)
-        # Do this ONCE at the start
         W = convert_to_prim(U)
+
+        if _debug_sync:
+            jax.block_until_ready(W)
+            if jax.process_index() == 0:
+                print(f"[DEBUG] ✓ convert_to_prim done, W.sharding={W.sharding}", flush=True, file=sys.stderr)
 
         # Step 2: Compute dt from primitives (JIT function with global reduction)
         dt = compute_dt(W)
 
+        if _debug_sync:
+            jax.block_until_ready(dt)
+            if jax.process_index() == 0:
+                print(f"[DEBUG] ✓ compute_dt done, dt={dt}", flush=True, file=sys.stderr)
+
         # Step 3: Adjust dt if needed (JIT function, scalar operation)
         dt = adjust_dt(dt, t, t_end)
 
+        if _debug_sync:
+            jax.block_until_ready(dt)
+            if jax.process_index() == 0:
+                print(f"[DEBUG] ✓ adjust_dt done, dt={dt}", flush=True, file=sys.stderr)
+
         # Step 4: Halo exchange on PRIMITIVES (JIT function with communication)
-        # This exchanges W (primitives) instead of U (conservatives)
-        # Can potentially overlap with dt computation above!
         W_pad = apply_halo_exchange_prim(W)
 
+        if _debug_sync:
+            jax.block_until_ready(W_pad)
+            if jax.process_index() == 0:
+                print(f"[DEBUG] ✓ halo exchange done, W_pad.sharding={W_pad.sharding}", flush=True, file=sys.stderr)
+
         # Step 5: Flux computation and update from primitives (JIT function)
-        # Uses W_pad directly, avoiding the U_pad→W_pad conversion!
         U_new = compute_flux_and_update_from_prim(U, W_pad, dt)
+
+        if _debug_sync:
+            jax.block_until_ready(U_new)
+            if jax.process_index() == 0:
+                print(f"[DEBUG] ✓ flux+update done, U_new.sharding={U_new.sharding}", flush=True, file=sys.stderr)
+
+        # Force correct sharding to prevent drift between time steps
+        if sharding is not None:
+            U_new = jax.device_put(U_new, sharding)
+
+            if _debug_sync:
+                jax.block_until_ready(U_new)
+                if jax.process_index() == 0:
+                    print(f"[DEBUG] ✓ resharding done, U_new.sharding={U_new.sharding}", flush=True, file=sys.stderr)
 
         return U_new, dt
 

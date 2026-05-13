@@ -60,51 +60,44 @@ def create_muscl_hancock_reference_style(gamma, order, limiter,
     @jax.jit
     def get_slopes(W):
         """
-        Compute slopes (differences, not derivatives) - SMALL @jax.jit function.
+        Compute LIMITED slopes using roll-based neighbor access - SMALL @jax.jit function.
 
-        IMPORTANT: Rolls happen HERE, inside @jax.jit!
+        Uses proper slope limiters (minmod/moncen/vanleer) for stability at shocks.
+        Rolls happen HERE, inside @jax.jit!
         Returns DIFFERENCES (ΔW), not derivatives (dW/dx).
         """
-        if spatial_dim == 2:
-            Nvar = W.shape[0]
-            dWx = jnp.zeros_like(W)
-            dWy = jnp.zeros_like(W)
+        from hydro.slopes import slope_limiter
 
-            for i in range(Nvar):
-                dWx = dWx.at[i].set(
-                    (jnp.roll(W[i], -1, axis=0) - jnp.roll(W[i], 1, axis=0)) / 2
-                )
-                dWy = dWy.at[i].set(
-                    (jnp.roll(W[i], -1, axis=1) - jnp.roll(W[i], 1, axis=1)) / 2
-                )
+        if spatial_dim == 1:
+            # Left and right differences using roll
+            dl_x = W - jnp.roll(W, 1, axis=1)
+            dr_x = jnp.roll(W, -1, axis=1) - W
+            dWx = slope_limiter(dl_x, dr_x, limiter)
+            return dWx, None, None
+
+        elif spatial_dim == 2:
+            dl_x = W - jnp.roll(W, 1, axis=1)
+            dr_x = jnp.roll(W, -1, axis=1) - W
+            dWx = slope_limiter(dl_x, dr_x, limiter)
+
+            dl_y = W - jnp.roll(W, 1, axis=2)
+            dr_y = jnp.roll(W, -1, axis=2) - W
+            dWy = slope_limiter(dl_y, dr_y, limiter)
 
             return dWx, dWy, None
-        elif spatial_dim == 1:
-            Nvar = W.shape[0]
-            dWx = jnp.zeros_like(W)
 
-            for i in range(Nvar):
-                dWx = dWx.at[i].set(
-                    (jnp.roll(W[i], -1, axis=0) - jnp.roll(W[i], 1, axis=0)) / 2
-                )
-
-            return dWx, None, None
         elif spatial_dim == 3:
-            Nvar = W.shape[0]
-            dWx = jnp.zeros_like(W)
-            dWy = jnp.zeros_like(W)
-            dWz = jnp.zeros_like(W)
+            dl_x = W - jnp.roll(W, 1, axis=1)
+            dr_x = jnp.roll(W, -1, axis=1) - W
+            dWx = slope_limiter(dl_x, dr_x, limiter)
 
-            for i in range(Nvar):
-                dWx = dWx.at[i].set(
-                    (jnp.roll(W[i], -1, axis=0) - jnp.roll(W[i], 1, axis=0)) / 2
-                )
-                dWy = dWy.at[i].set(
-                    (jnp.roll(W[i], -1, axis=1) - jnp.roll(W[i], 1, axis=1)) / 2
-                )
-                dWz = dWz.at[i].set(
-                    (jnp.roll(W[i], -1, axis=2) - jnp.roll(W[i], 1, axis=2)) / 2
-                )
+            dl_y = W - jnp.roll(W, 1, axis=2)
+            dr_y = jnp.roll(W, -1, axis=2) - W
+            dWy = slope_limiter(dl_y, dr_y, limiter)
+
+            dl_z = W - jnp.roll(W, 1, axis=3)
+            dr_z = jnp.roll(W, -1, axis=3) - W
+            dWz = slope_limiter(dl_z, dr_z, limiter)
 
             return dWx, dWy, dWz
         else:
