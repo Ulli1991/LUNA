@@ -9,13 +9,13 @@
 # Multi-node configuration for JAX sharding (NO MPI!)
 # ===================================================================
 #SBATCH --nodes=2               # Number of nodes
-#SBATCH --ntasks-per-node=1     # ONE task per node (each sees all local GPUs)
-#SBATCH --cpus-per-task=72      # Full node resources
+#SBATCH --ntasks-per-node=4     # ONE task per GPU (JAX 1-GPU-per-process model)
+#SBATCH --cpus-per-task=18      # 72 cpus / 4 tasks
 #SBATCH --mem=500000            # Full node memory
 #SBATCH --constraint="gpu"      # A100 GPU nodes
 #SBATCH --gres=gpu:4            # All 4 GPUs per node
 #
-#SBATCH --time=02:00:00
+#SBATCH --time=00:30:00
 #SBATCH --mail-type=BEGIN,FAIL
 #SBATCH --mail-user=uli@mpa-garching.mpg.de
 
@@ -28,8 +28,9 @@ source ~/jax-env/bin/activate
 
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
-# CRITICAL: Ensure all 4 GPUs are visible to JAX on each node
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+# Let SLURM bind each task to its own GPU (1-GPU-per-process model).
+# Do NOT force CUDA_VISIBLE_DEVICES=0,1,2,3 here — that would make every
+# task on a node see all 4 GPUs and fight over them.
 
 # Force CUDA platform (not ROCm!)
 export JAX_PLATFORM_NAME=cuda
@@ -68,6 +69,6 @@ echo "==================================================================="
 
 # Launch - each task sees all 4 local GPUs
 # IMPORTANT: Use srun here so each node gets its own process with correct SLURM_PROCID
-srun python main_multi.py
+srun python main.py
 
 echo "Simulation completed!"

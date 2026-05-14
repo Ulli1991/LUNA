@@ -343,7 +343,7 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
             pad_halo_fn, flux_divergence_from_padded,
             cfg.gamma, cfg.ORDER, cfg.LIMITER,
             grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION
+            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
         )
         integrator_name = "RK2"
     elif cfg.TIME_SOLVER == 1:
@@ -381,7 +381,7 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
             pad_halo_fn, flux_divergence_from_padded,
             cfg.gamma, cfg.ORDER, cfg.LIMITER,
             grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION
+            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
         )
         integrator_name = "RK4"
     else:
