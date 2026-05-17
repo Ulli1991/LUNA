@@ -1,7 +1,9 @@
 # template_config.py
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 import numpy as np
+
+from units import UnitSystem
 
 @dataclass
 class Config:
@@ -100,6 +102,10 @@ class Config:
     use_smooth_limiters: bool = False
     smooth_limiter_sharpness: float = 10.0
 
+    # Soundwave IC variant. True = single right-going acoustic eigenmode (matches
+    # AthenaK's linear_wave). False = u=0 superposition of left+right waves.
+    soundwave_single_mode: bool = True
+
     # ---------------- Time control ----------------
     t_start: float = 0.0
     t_end: float = 0.245
@@ -149,6 +155,13 @@ class Config:
 
     # Maximum number of checkpoints to keep (0 = keep all)
     max_checkpoints: int = 5
+
+    # ---------------- Units ----------------
+    # Default: dimensionless / reduced units (all base units = 0 -> is_enabled=False).
+    # Validation tests (Sod, soundwave, KH, etc.) run dimensionlessly.
+    # Override in a derived config (like the user's config.py) to attach a
+    # physical unit system for production / ISM physics runs.
+    units: UnitSystem = field(default_factory=UnitSystem)
 
     # -------------------------------------------------------------------------
     # Computed properties (lightweight, timing-related)

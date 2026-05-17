@@ -1,99 +1,105 @@
-"""AthenaK .athdf snapshot loader.
+"""AthenaK snapshot loader.
 
-AthenaK writes HDF5 files whose exact dataset/group layout depends on the
-output block configuration and whether mesh-refinement is on. The cleanest
-path: write a layout-introspection helper now, then have a real loader once
-we have a sample .athdf from the user's reference runs.
+AthenaK writes a custom `.bin` format during simulation runs. Their
+companion Python module (`vis/python/bin_convert.py`) supplies a
+`read_binary` function that returns a dict of per-meshblock arrays.
 
-Until then `load_1d` returns a best-effort dict for the common single-block
-unrefined output, and `inspect` prints the full HDF5 tree so the user can
-confirm the layout when the file arrives.
+This module is a thin LUNA-side wrapper around `read_binary` that
+re-shapes the per-meshblock data into flat 1D numpy arrays in the same
+format LUNA's plot scripts expect: {t, gamma, x, rho, vx, P, e_int}.
+
+Set ATHENAK_VIS_PATH if your AthenaK install is somewhere other than
+/raven/u/uli/athenak/vis/python.
 """
-import h5py
+import os
+import sys
 import numpy as np
 
 
+ATHENAK_VIS_PATH = os.environ.get(
+    "ATHENAK_VIS_PATH",
+    "/raven/u/uli/athenak/vis/python",
+)
+
+
+def _import_bin_convert():
+    if ATHENAK_VIS_PATH not in sys.path:
+        sys.path.insert(0, ATHENAK_VIS_PATH)
+    import bin_convert  # noqa: E402
+    return bin_convert
+
+
 def inspect(path):
-    """Print the HDF5 tree of an AthenaK .athdf file.
+    """Dump the structure of an AthenaK .bin file for debugging."""
+    bc = _import_bin_convert()
+    fd = bc.read_binary(path)
+    print(f"File: {path}")
+    print(f"  time  = {fd['time']}")
+    print(f"  cycle = {fd['cycle']}")
+    print(f"  Nx1,Nx2,Nx3 = {fd['Nx1']}, {fd['Nx2']}, {fd['Nx3']}")
+    print(f"  n_mbs = {fd['n_mbs']}")
+    print(f"  var_names = {fd['var_names']}")
+    print(f"  x1 range = [{fd['x1min']}, {fd['x1max']}]")
 
-    Useful first step when a new reference file arrives — confirms which
-    dataset names and dimensions to expect.
+
+def load_1d(path, gamma=5.0 / 3.0):
+    """Load a 1D AthenaK snapshot (.bin) into a flat dict.
+
+    Variables stored by AthenaK for hydro_w output are PRIMITIVES:
+        dens, velx, vely, velz, eint  (eint = specific internal energy)
+
+    LUNA uses pressure rather than eint, so we convert: P = (γ-1) ρ eint.
+
+    Parameters
+    ----------
+    path : str
+        Path to .bin file.
+    gamma : float
+        Adiabatic index (AthenaK doesn't store it in the binary header).
+
+    Returns
+    -------
+    dict with keys: t, gamma, x, rho, vx, P, e_int
     """
-    with h5py.File(path, "r") as f:
-        print(f"File: {path}")
-        print("Attributes:")
-        for k, v in f.attrs.items():
-            print(f"  {k} = {v}")
-        print("Structure:")
+    bc = _import_bin_convert()
+    fd = bc.read_binary(path)
 
-        def _visit(name, obj):
-            kind = "GROUP" if isinstance(obj, h5py.Group) else "DSET"
-            shape = getattr(obj, "shape", "")
-            dtype = getattr(obj, "dtype", "")
-            print(f"  [{kind}] {name}  {shape} {dtype}")
-            for ak, av in obj.attrs.items():
-                print(f"      @{ak} = {av}")
+    if fd["Nx2"] != 1 or fd["Nx3"] != 1:
+        raise ValueError(
+            f"load_1d expects a 1D snapshot, got shape ({fd['Nx1']}, {fd['Nx2']}, {fd['Nx3']})"
+        )
 
-        f.visititems(_visit)
+    Nx = int(fd["Nx1"])
+    x1min, x1max = float(fd["x1min"]), float(fd["x1max"])
+    dx = (x1max - x1min) / Nx
+    x = x1min + (np.arange(Nx) + 0.5) * dx
 
+    # mb_data stores per-meshblock arrays; for a single-MB 1D run, each is
+    # shape (n_mbs=1, nz=1, ny=1, nx=Nx). We squeeze + concatenate across MBs
+    # ordered by meshblock x1 origin.
+    def _stitch(varname):
+        arrs = fd["mb_data"][varname]  # numpy array, leading axis is meshblock index
+        # For a uniform-grid single-MB case, this is straightforward.
+        # If multi-MB, sort by mb_geometry[:,0] (x1min of each block).
+        if fd["n_mbs"] == 1:
+            return np.squeeze(arrs[0]).ravel()
+        # Multi-MB: order by x1min of each block, then concatenate along x.
+        geom = np.asarray(fd["mb_geometry"])  # (n_mbs, 6) usually
+        order = np.argsort(geom[:, 0])
+        pieces = [np.squeeze(arrs[i]).ravel() for i in order]
+        return np.concatenate(pieces)
 
-def load_1d(path, prefer="prim"):
-    """Load a 1D AthenaK snapshot into a flat dict.
+    rho = _stitch("dens")
+    vx = _stitch("velx")
+    eint = _stitch("eint")
+    P = (gamma - 1.0) * rho * eint
 
-    Tries the conventional layout used by AthenaK for single-meshblock,
-    uniform-grid outputs:
-        - /x1v       cell-center x coordinates (shape (Nmb, Nx_block))
-        - /prim or /cons  variables, shape (Nvar, Nmb, ..., Nx_block)
-                          Variable index order from `VariableNames` attr.
-        - Time attribute on root group.
-
-    For uniform single-block 1D the returned dict has flat 1D arrays:
-        {"x": (Nx,), "rho": (Nx,), "vx": (Nx,), "P": (Nx,),
-         "t": float, "gamma": float}
-
-    NOTE: not yet exercised against a real .athdf file. Will likely need
-    tweaks once the user provides a reference snapshot — use `inspect()`
-    first to confirm the dataset names.
-    """
-    with h5py.File(path, "r") as f:
-        t = float(f.attrs.get("Time", np.nan))
-        gamma = float(f.attrs.get("Gamma", 5.0 / 3.0))
-
-        # Variable name ordering, if recorded.
-        varnames_raw = f.attrs.get("VariableNames", None)
-        if varnames_raw is None:
-            # Fall back to a common AthenaK ordering for hydro primitives.
-            varnames = ["dens", "velx", "vely", "velz", "eint"] if prefer == "prim" \
-                       else ["dens", "mom1", "mom2", "mom3", "etot"]
-        else:
-            varnames = [
-                (v.decode() if isinstance(v, bytes) else str(v))
-                for v in varnames_raw
-            ]
-
-        if prefer not in f:
-            # Some AthenaK builds write top-level datasets per variable instead.
-            data = {name: np.asarray(f[name]).ravel() for name in varnames if name in f}
-        else:
-            arr = np.asarray(f[prefer])
-            # arr shape is typically (Nvar, Nmb, Nx) for 1D single-block.
-            # Squeeze meshblock axes and ravel any leftover singleton spatial dims.
-            arr = np.squeeze(arr)
-            data = {name: arr[i].ravel() for i, name in enumerate(varnames[:arr.shape[0]])}
-
-        x = np.squeeze(np.asarray(f["x1v"])).ravel() if "x1v" in f else None
-
-    # Normalize to LUNA-side names (rho, vx, P).
-    out = {"t": t, "gamma": gamma}
-    if x is not None:
-        out["x"] = x
-    if "dens" in data:
-        out["rho"] = data["dens"]
-    if "velx" in data:
-        out["vx"] = data["velx"]
-    if "press" in data:
-        out["P"] = data["press"]
-    elif "eint" in data and "rho" in out:
-        # If only specific internal energy is stored: P = (gamma-1) * rho * eint
-        out["P"] = (gamma - 1.0) * out["rho"] * data["eint"]
-    return out
+    return {
+        "t": float(fd["time"]),
+        "gamma": gamma,
+        "x": x,
+        "rho": rho,
+        "vx": vx,
+        "P": P,
+        "e_int": eint,
+    }

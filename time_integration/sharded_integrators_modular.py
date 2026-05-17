@@ -70,7 +70,8 @@ def _make_flux_stage(pad_halo_fn, flux_div_fn, gamma, order, limiter,
     def stage(U):
         U_pad = pad_halo_fn(U, boundary, spatial_dim)
         return flux_div_fn(U_pad, gamma, order, limiter,
-                           dx, dy, dz, inv_dx, inv_dy, inv_dz)
+                           dx, dy, dz, inv_dx, inv_dy, inv_dz,
+                           boundary=boundary)
     return stage
 
 
@@ -176,7 +177,8 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
         """
         from hydro.fluxes import hllc_flux_primitive
         from hydro.slopes import compute_slopes_from_padded
-        from hydro.jacobian import apply_primitive_jacobian_1d, apply_primitive_jacobian_2d
+        from hydro.jacobian import (primitive_flux_1d, primitive_flux_2d, primitive_flux_3d)
+        from hydro.conversions import cons_to_prim, prim_to_cons
         import jax.lax as lax
 
         # First-order path
@@ -235,15 +237,35 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
                 half_dWx = 0.5 * dWx
                 half_dWy = 0.5 * dWy
 
+                # Interior right-edge and left-edge reconstructions
+                Wr_x = W_half + half_dWx   # right face of each cell, axis 1
+                Wl_x = W_half - half_dWx   # left  face of each cell, axis 1
+                Wr_y = W_half + half_dWy   # top   face, axis 2
+                Wl_y = W_half - half_dWy   # bot   face, axis 2
+
+                # For periodic BC use the wrapped INTERIOR reconstruction
+                # (cells already have valid slopes via the periodic halo);
+                # for other BCs fall back to the unreconstructed ghost value.
+                if boundary == 0:
+                    WL_x_bc = Wr_x[:, -1:, :]
+                    WR_x_bc = Wl_x[:, 0:1, :]
+                    WL_y_bc = Wr_y[:, :, -1:]
+                    WR_y_bc = Wl_y[:, :, 0:1]
+                else:
+                    WL_x_bc = W_pad[:, 0:1, 1:-1]
+                    WR_x_bc = W_pad[:, -1:, 1:-1]
+                    WL_y_bc = W_pad[:, 1:-1, 0:1]
+                    WR_y_bc = W_pad[:, 1:-1, -1:]
+
                 # X-direction reconstruction
-                WL_x = jnp.concatenate([W_pad[:, 0:1, 1:-1], W_half + half_dWx], axis=1)
-                WR_x = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:, 1:-1]], axis=1)
+                WL_x = jnp.concatenate([WL_x_bc, Wr_x], axis=1)
+                WR_x = jnp.concatenate([Wl_x, WR_x_bc], axis=1)
                 Fx = hllc_flux_primitive(WL_x, WR_x, axis=0, gamma=gamma)
                 dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) * inv_dx
 
                 # Y-direction reconstruction
-                WL_y = jnp.concatenate([W_pad[:, 1:-1, 0:1], W_half + half_dWy], axis=2)
-                WR_y = jnp.concatenate([W_half - half_dWy, W_pad[:, 1:-1, -1:]], axis=2)
+                WL_y = jnp.concatenate([WL_y_bc, Wr_y], axis=2)
+                WR_y = jnp.concatenate([Wl_y, WR_y_bc], axis=2)
                 Fy = hllc_flux_primitive(WL_y, WR_y, axis=1, gamma=gamma)
                 dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) * inv_dy
 
@@ -251,15 +273,33 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
 
             elif spatial_dim == 1:
                 Wc = W_pad[:, 1:-1]
-
-                # MUSCL-Hancock predictor step
-                dWx_scaled = dWx * inv_dx
-                A_dW = apply_primitive_jacobian_1d(Wc, dWx_scaled, gamma)
-                W_half = Wc - 0.5 * dt * A_dW
-
                 half_dWx = 0.5 * dWx
-                WL = jnp.concatenate([W_pad[:, 0:1], W_half + half_dWx], axis=1)
-                WR = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:]], axis=1)
+
+                # MUSCL-Hancock predictor in FLUX-DIFFERENCE form (Toro 14.3):
+                # advance the cell-center state by -dt/(2·dx)·[F(WR_cell) - F(WL_cell)]
+                # evaluated on the LEFT and RIGHT reconstructed face values of cell i.
+                # Converts via U so the nonlinear advection terms in F are captured
+                # consistently with the conservation laws.
+                F_L = primitive_flux_1d(Wc - half_dWx, gamma)
+                F_R = primitive_flux_1d(Wc + half_dWx, gamma)
+                Uc = prim_to_cons(Wc, gamma)
+                U_half = Uc - 0.5 * dt * (F_R - F_L) * inv_dx
+                W_half = cons_to_prim(U_half, gamma)
+
+                Wr_x = W_half + half_dWx   # right-edge reconstruction per cell
+                Wl_x = W_half - half_dWx   # left-edge reconstruction per cell
+
+                # Periodic BC: wrap the interior reconstructions instead of
+                # using the unreconstructed ghost value (1st-order artifact).
+                if boundary == 0:
+                    WL_bc = Wr_x[:, -1:]
+                    WR_bc = Wl_x[:, 0:1]
+                else:
+                    WL_bc = W_pad[:, 0:1]
+                    WR_bc = W_pad[:, -1:]
+
+                WL = jnp.concatenate([WL_bc, Wr_x], axis=1)
+                WR = jnp.concatenate([Wl_x, WR_bc], axis=1)
                 Fx = hllc_flux_primitive(WL, WR, axis=0, gamma=gamma)
                 dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx
                 return -dFdx
@@ -280,21 +320,43 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
                 half_dWy = 0.5 * dWy
                 half_dWz = 0.5 * dWz
 
+                Wr_x = W_half + half_dWx
+                Wl_x = W_half - half_dWx
+                Wr_y = W_half + half_dWy
+                Wl_y = W_half - half_dWy
+                Wr_z = W_half + half_dWz
+                Wl_z = W_half - half_dWz
+
+                if boundary == 0:
+                    WL_x_bc = Wr_x[:, -1:, :, :]
+                    WR_x_bc = Wl_x[:, 0:1, :, :]
+                    WL_y_bc = Wr_y[:, :, -1:, :]
+                    WR_y_bc = Wl_y[:, :, 0:1, :]
+                    WL_z_bc = Wr_z[:, :, :, -1:]
+                    WR_z_bc = Wl_z[:, :, :, 0:1]
+                else:
+                    WL_x_bc = W_pad[:, 0:1, 1:-1, 1:-1]
+                    WR_x_bc = W_pad[:, -1:, 1:-1, 1:-1]
+                    WL_y_bc = W_pad[:, 1:-1, 0:1, 1:-1]
+                    WR_y_bc = W_pad[:, 1:-1, -1:, 1:-1]
+                    WL_z_bc = W_pad[:, 1:-1, 1:-1, 0:1]
+                    WR_z_bc = W_pad[:, 1:-1, 1:-1, -1:]
+
                 # X-direction reconstruction
-                WL_x = jnp.concatenate([W_pad[:, 0:1, 1:-1, 1:-1], W_half + half_dWx], axis=1)
-                WR_x = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:, 1:-1, 1:-1]], axis=1)
+                WL_x = jnp.concatenate([WL_x_bc, Wr_x], axis=1)
+                WR_x = jnp.concatenate([Wl_x, WR_x_bc], axis=1)
                 Fx = hllc_flux_primitive(WL_x, WR_x, axis=0, gamma=gamma)
                 dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx
 
                 # Y-direction reconstruction
-                WL_y = jnp.concatenate([W_pad[:, 1:-1, 0:1, 1:-1], W_half + half_dWy], axis=2)
-                WR_y = jnp.concatenate([W_half - half_dWy, W_pad[:, 1:-1, -1:, 1:-1]], axis=2)
+                WL_y = jnp.concatenate([WL_y_bc, Wr_y], axis=2)
+                WR_y = jnp.concatenate([Wl_y, WR_y_bc], axis=2)
                 Fy = hllc_flux_primitive(WL_y, WR_y, axis=1, gamma=gamma)
                 dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy
 
                 # Z-direction reconstruction
-                WL_z = jnp.concatenate([W_pad[:, 1:-1, 1:-1, 0:1], W_half + half_dWz], axis=3)
-                WR_z = jnp.concatenate([W_half - half_dWz, W_pad[:, 1:-1, 1:-1, -1:]], axis=3)
+                WL_z = jnp.concatenate([WL_z_bc, Wr_z], axis=3)
+                WR_z = jnp.concatenate([Wl_z, WR_z_bc], axis=3)
                 Fz = hllc_flux_primitive(WL_z, WR_z, axis=2, gamma=gamma)
                 dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz
 

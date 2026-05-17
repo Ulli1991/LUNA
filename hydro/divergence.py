@@ -242,8 +242,8 @@ def flux_divergence_primitive(U, gamma, order, limiter, boundary, dx, dy, dz,
         return -(dFdx + dFdy + dFdz)
 
 
-@partial(jit, static_argnums=(1, 2, 3))
-def flux_divergence_from_padded(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz, dt=None):
+@partial(jit, static_argnums=(1, 2, 3, 11))
+def flux_divergence_from_padded(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx, inv_dy, inv_dz, dt=None, boundary=1):
     """
     Compute flux divergence from ALREADY PADDED conservative data using PRIMITIVE reconstruction.
 
@@ -347,8 +347,16 @@ def flux_divergence_from_padded(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx
                 W_half = Wc
 
             half_dWx = 0.5 * dWx
-            WL = jnp.concatenate([W_pad[:, 0:1], W_half + half_dWx], axis=1)
-            WR = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:]], axis=1)
+            Wr_x = W_half + half_dWx
+            Wl_x = W_half - half_dWx
+            if boundary == 0:  # periodic: wrap interior reconstructions
+                WL_bc = Wr_x[:, -1:]
+                WR_bc = Wl_x[:, 0:1]
+            else:
+                WL_bc = W_pad[:, 0:1]
+                WR_bc = W_pad[:, -1:]
+            WL = jnp.concatenate([WL_bc, Wr_x], axis=1)
+            WR = jnp.concatenate([Wl_x, WR_bc], axis=1)
             Fx = hllc_flux_primitive(WL, WR, axis=0, gamma=gamma)
             dFdx = (Fx[:, 1:] - Fx[:, :-1]) * inv_dx
             return dFdx, None, None
@@ -368,13 +376,24 @@ def flux_divergence_from_padded(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx
             half_dWx = 0.5 * dWx
             half_dWy = 0.5 * dWy
 
-            WL_x = jnp.concatenate([W_pad[:, 0:1, 1:-1], W_half + half_dWx], axis=1)
-            WR_x = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:, 1:-1]], axis=1)
+            Wr_x = W_half + half_dWx
+            Wl_x = W_half - half_dWx
+            Wr_y = W_half + half_dWy
+            Wl_y = W_half - half_dWy
+            if boundary == 0:
+                WL_x_bc = Wr_x[:, -1:, :]; WR_x_bc = Wl_x[:, 0:1, :]
+                WL_y_bc = Wr_y[:, :, -1:]; WR_y_bc = Wl_y[:, :, 0:1]
+            else:
+                WL_x_bc = W_pad[:, 0:1, 1:-1]; WR_x_bc = W_pad[:, -1:, 1:-1]
+                WL_y_bc = W_pad[:, 1:-1, 0:1]; WR_y_bc = W_pad[:, 1:-1, -1:]
+
+            WL_x = jnp.concatenate([WL_x_bc, Wr_x], axis=1)
+            WR_x = jnp.concatenate([Wl_x, WR_x_bc], axis=1)
             Fx = hllc_flux_primitive(WL_x, WR_x, axis=0, gamma=gamma)
             dFdx = (Fx[:, 1:, :] - Fx[:, :-1, :]) * inv_dx
 
-            WL_y = jnp.concatenate([W_pad[:, 1:-1, 0:1], W_half + half_dWy], axis=2)
-            WR_y = jnp.concatenate([W_half - half_dWy, W_pad[:, 1:-1, -1:]], axis=2)
+            WL_y = jnp.concatenate([WL_y_bc, Wr_y], axis=2)
+            WR_y = jnp.concatenate([Wl_y, WR_y_bc], axis=2)
             Fy = hllc_flux_primitive(WL_y, WR_y, axis=1, gamma=gamma)
             dFdy = (Fy[:, :, 1:] - Fy[:, :, :-1]) * inv_dy
 
@@ -397,18 +416,33 @@ def flux_divergence_from_padded(U_pad, gamma, order, limiter, dx, dy, dz, inv_dx
             half_dWy = 0.5 * dWy
             half_dWz = 0.5 * dWz
 
-            WL_x = jnp.concatenate([W_pad[:, 0:1, 1:-1, 1:-1], W_half + half_dWx], axis=1)
-            WR_x = jnp.concatenate([W_half - half_dWx, W_pad[:, -1:, 1:-1, 1:-1]], axis=1)
+            Wr_x = W_half + half_dWx
+            Wl_x = W_half - half_dWx
+            Wr_y = W_half + half_dWy
+            Wl_y = W_half - half_dWy
+            Wr_z = W_half + half_dWz
+            Wl_z = W_half - half_dWz
+            if boundary == 0:
+                WL_x_bc = Wr_x[:, -1:, :, :]; WR_x_bc = Wl_x[:, 0:1, :, :]
+                WL_y_bc = Wr_y[:, :, -1:, :]; WR_y_bc = Wl_y[:, :, 0:1, :]
+                WL_z_bc = Wr_z[:, :, :, -1:]; WR_z_bc = Wl_z[:, :, :, 0:1]
+            else:
+                WL_x_bc = W_pad[:, 0:1, 1:-1, 1:-1]; WR_x_bc = W_pad[:, -1:, 1:-1, 1:-1]
+                WL_y_bc = W_pad[:, 1:-1, 0:1, 1:-1]; WR_y_bc = W_pad[:, 1:-1, -1:, 1:-1]
+                WL_z_bc = W_pad[:, 1:-1, 1:-1, 0:1]; WR_z_bc = W_pad[:, 1:-1, 1:-1, -1:]
+
+            WL_x = jnp.concatenate([WL_x_bc, Wr_x], axis=1)
+            WR_x = jnp.concatenate([Wl_x, WR_x_bc], axis=1)
             Fx = hllc_flux_primitive(WL_x, WR_x, axis=0, gamma=gamma)
             dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx
 
-            WL_y = jnp.concatenate([W_pad[:, 1:-1, 0:1, 1:-1], W_half + half_dWy], axis=2)
-            WR_y = jnp.concatenate([W_half - half_dWy, W_pad[:, 1:-1, -1:, 1:-1]], axis=2)
+            WL_y = jnp.concatenate([WL_y_bc, Wr_y], axis=2)
+            WR_y = jnp.concatenate([Wl_y, WR_y_bc], axis=2)
             Fy = hllc_flux_primitive(WL_y, WR_y, axis=1, gamma=gamma)
             dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy
 
-            WL_z = jnp.concatenate([W_pad[:, 1:-1, 1:-1, 0:1], W_half + half_dWz], axis=3)
-            WR_z = jnp.concatenate([W_half - half_dWz, W_pad[:, 1:-1, 1:-1, -1:]], axis=3)
+            WL_z = jnp.concatenate([WL_z_bc, Wr_z], axis=3)
+            WR_z = jnp.concatenate([Wl_z, WR_z_bc], axis=3)
             Fz = hllc_flux_primitive(WL_z, WR_z, axis=2, gamma=gamma)
             dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz
 

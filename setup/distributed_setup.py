@@ -36,11 +36,18 @@ from utils.halo_exchange_auto import pad_with_halo_auto
 from hydro.divergence import flux_divergence_from_padded
 
 
-def initialize_jax_distributed():
+def initialize_jax_distributed(enable_x64: bool = False):
     """
     Initialize JAX for distributed multi-node execution.
 
     Uses SLURM environment variables for coordination.
+
+    Parameters
+    ----------
+    enable_x64 : bool
+        If True, enable float64. Default False (float32) for production
+        performance; flip to True for convergence tests where the
+        perturbation amplitude is near the float32 round-off floor.
     """
     print("="*60)
     print("MULTI-NODE SHARDING MODE (1 GPU per process)")
@@ -59,9 +66,11 @@ def initialize_jax_distributed():
         print(f"  Error: {e}")
 
     # Configure JAX
-    jax.config.update("jax_enable_x64", False)
+    jax.config.update("jax_enable_x64", enable_x64)
     jax.config.update("jax_default_matmul_precision", "high")
     jax.config.update("jax_compilation_cache_dir", os.path.expanduser("~/.jax_cache"))
+    if enable_x64:
+        print("✓ float64 enabled (jax_enable_x64=True)")
 
     print(f"Platform: {jax.default_backend()}")
     print(f"Total devices: {len(jax.devices())}")

@@ -37,8 +37,13 @@ def run_one(overrides, *, jax_already_initialized=False):
     Returns (t_final, step_final, output_dir).
     """
     if not jax_already_initialized:
-        initialize_jax_distributed()
+        # Honor enable_x64 from overrides if present (validation tests with
+        # near-roundoff perturbations need float64). Not a Config field —
+        # JAX precision is process-global, set before any arrays exist.
+        initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
 
+    # Drop x64 sentinel before constructing Config (not a Config field).
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
     cfg = replace(Config(), **overrides)
     Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
 
