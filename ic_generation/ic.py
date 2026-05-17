@@ -1,5 +1,4 @@
 # ic.py
-import jax.numpy as jnp
 from .sod import sod_shock
 from .woodward_colella import woodward_colella
 from .shu_osher import shu_osher
@@ -18,45 +17,56 @@ from .sedov3d import sedov_blast_3d
 from .kh3d import kelvin_helmholtz_3d
 from .soundwave3d import soundwave_3d
 
-def initial_conditions(cfg):
+
+# test_problem name -> (ic_function, ndim).
+# Every IC function accepts the slice kwargs matching its dimensionality
+# (audited 2026-05-17); slices for higher dimensions are dropped here so the
+# IC functions don't have to know about them.
+_IC_REGISTRY = {
+    # 1D
+    "Sod-Shock":            (sod_shock, 1),
+    "Woodward-Colella":     (woodward_colella, 1),
+    "Shu-Osher":            (shu_osher, 1),
+    "Soundwave":            (soundwave, 1),
+    "Soundwave-Advected":   (soundwave_advected, 1),
+    "Einfeldt-Strong":      (einfeldt_strong_rarefaction, 1),
+    "Einfeldt-Shear":       (einfeldt_shear_rarefaction, 1),
+    "Einfeldt-Transverse":  (einfeldt_transverse_rarefaction, 1),
+    # 2D
+    "Square-Advected":         (advection_square, 2),
+    "Rotate-Slotted-Disk":     (rotation_slotted_disk, 2),
+    "Soundwave-Advected-2D":   (soundwave_advected2d, 2),
+    "Kelvin-Helmholtz":        (kelvin_helmholtz, 2),
+    "Double-Mach-Reflection":  (double_mach_reflection, 2),
+    # 3D
+    "Sod-Shock-3D":         (sod_shock_3d, 3),
+    "Sedov-Blast-3D":       (sedov_blast_3d, 3),
+    "Kelvin-Helmholtz-3D":  (kelvin_helmholtz_3d, 3),
+    "Soundwave-3D":         (soundwave_3d, 3),
+}
+
+
+def available_test_problems():
+    """Return the list of supported test_problem names."""
+    return list(_IC_REGISTRY.keys())
+
+
+def initial_conditions(cfg, x_slice=None, y_slice=None, z_slice=None):
     """
-    Select initial conditions based on cfg.test_problem
+    Build initial conditions for cfg.test_problem.
+
+    If x_slice / y_slice / z_slice are provided, the underlying IC function
+    returns only the local portion of the global domain — used for
+    distributed/sharded initialization. Slices beyond the problem's
+    dimensionality are ignored.
+
+    Returns the conservative state U with shape:
+        (3, Nx)            for 1D
+        (4, Nx, Ny)        for 2D
+        (5, Nx, Ny, Nz)    for 3D
+    or the corresponding local-slice shape when slices are passed.
     """
-    if cfg.test_problem == "Sod-Shock":
-        return sod_shock(cfg)
-    elif cfg.test_problem == "Woodward-Colella":
-        return woodward_colella(cfg)
-    elif cfg.test_problem == "Shu-Osher":
-        return shu_osher(cfg)
-    elif cfg.test_problem == "Soundwave":
-        return soundwave(cfg)
-    elif cfg.test_problem == "Soundwave-Advected":
-        return soundwave_advected(cfg)
-    elif cfg.test_problem == "Einfeldt-Strong":
-        return einfeldt_strong_rarefaction(cfg)
-    elif cfg.test_problem == "Einfeldt-Shear":
-        return einfeldt_shear_rarefaction(cfg)
-    elif cfg.test_problem == "Einfeldt-Transverse":
-        return einfeldt_transverse_rarefaction(cfg)
-    elif cfg.test_problem == "Square-Advected":
-        return advection_square(cfg)
-    elif cfg.test_problem == "Rotate-Slotted-Disk":
-        return rotation_slotted_disk(cfg)
-    elif cfg.test_problem == "Soundwave-Advected-2D":
-        return soundwave_advected2d(cfg)
-    elif cfg.test_problem == "Kelvin-Helmholtz":
-        return kelvin_helmholtz(cfg)
-    elif cfg.test_problem == "Double-Mach-Reflection":
-        return double_mach_reflection(cfg)
-    elif cfg.test_problem == "Sod-Shock-3D":
-        return sod_shock_3d(cfg)
-    elif cfg.test_problem == "Sedov-Blast-3D":
-        return sedov_blast_3d(cfg)
-    elif cfg.test_problem == "Kelvin-Helmholtz-3D":
-        return kelvin_helmholtz_3d(cfg)
-    elif cfg.test_problem == "Soundwave-3D":
-        return soundwave_3d(cfg)
-    else:
+    if cfg.test_problem not in _IC_REGISTRY:
         raise ValueError(
             f"Unknown test problem '{cfg.test_problem}'.\n"
             "Available options:\n"
@@ -67,3 +77,12 @@ def initial_conditions(cfg):
             "      Kelvin-Helmholtz, Double-Mach-Reflection\n"
             "  3D: Sod-Shock-3D, Sedov-Blast-3D, Kelvin-Helmholtz-3D, Soundwave-3D"
         )
+
+    ic_fn, ndim = _IC_REGISTRY[cfg.test_problem]
+
+    if ndim == 1:
+        return ic_fn(cfg, x_slice=x_slice)
+    elif ndim == 2:
+        return ic_fn(cfg, x_slice=x_slice, y_slice=y_slice)
+    else:  # ndim == 3
+        return ic_fn(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)

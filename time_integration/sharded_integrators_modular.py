@@ -1,78 +1,152 @@
 """
-Modular time integration with separate JIT functions.
+Modular time integration for LUNA (the only integrator module in the code).
 
-This follows the reference implementation pattern:
-- Main time_step function is NOT @jax.jit decorated
-- Individual operations are separate @jax.jit functions
-- Allows JAX to better overlap communication/computation and optimize collectives
+Pattern:
+- The user-facing step function is NOT @jax.jit decorated.
+- Individual operations are small @jax.jit functions called in sequence.
+- Halo exchanges live inside the JITs so JAX can overlap their collectives
+  with the surrounding compute.
 
-Key difference from sharded_integrators.py:
-- OLD: One big @jax.jit function with all operations
-- NEW: Regular Python function calling multiple @jax.jit subfunctions
+This is the path that runs across multi-GPU multi-node setups.
+
+Available integrators (all share the same Python-orchestration pattern):
+- RK2            via create_rk2_modular_step           (TIME_SOLVER=0)
+- MUSCL-Hancock  via create_muscl_hancock_modular_step (TIME_SOLVER=1)
+- RK4            via create_rk4_modular_step           (TIME_SOLVER=2)
+
+MUSCL-Hancock additionally exchanges PRIMITIVES rather than conservatives,
+which saves one cons→prim on the padded array per step. RK2/RK4 do
+multiple flux evaluations per step and reuse the standard conservative
+halo exchange (flux_divergence_from_padded does cons→prim internally).
 """
 import os
 import jax
 import jax.numpy as jnp
 
+from hydro.conversions import cons_to_prim
 
-def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
-                                       dx, dy, dz, inv_dx, inv_dy, inv_dz, boundary, spatial_dim, CFL,
-                                       sharding=None):
-    """
-    Create MUSCL-Hancock stepper with MODULAR JIT compilation.
 
-    Returns a regular Python function that orchestrates multiple JIT-compiled operations.
-    This allows JAX to asynchronously dispatch and potentially overlap operations.
-    """
-    from hydro.conversions import cons_to_prim
-
-    # Separate JIT function for dt computation
+# ---------------------------------------------------------------------------
+# Shared helpers (used by all integrators below)
+# ---------------------------------------------------------------------------
+def _make_compute_dt_fn(gamma, CFL, spatial_dim, dx, dy, dz):
+    """Factory: returns jit'd compute_dt(U) -> dt_cfl using primitives."""
     @jax.jit
-    def compute_dt(W):
-        """Compute timestep from primitives - separate JIT function."""
+    def compute_dt_from_U(U):
+        W = cons_to_prim(U, gamma)
         rho = W[0]
-
         if spatial_dim == 1:
-            vx = W[1]
-            P = W[2]
+            vx = W[1]; P = W[2]
             cs = jnp.sqrt(gamma * P / rho)
-            max_speed = jnp.abs(vx) + cs
-            dt_local = CFL * dx / max_speed
+            dt_local = CFL * dx / (jnp.abs(vx) + cs)
         elif spatial_dim == 2:
-            vx = W[1]
-            vy = W[2]
-            P = W[3]
+            vx = W[1]; vy = W[2]; P = W[3]
             cs = jnp.sqrt(gamma * P / rho)
-            max_speed_x = jnp.abs(vx) + cs
-            max_speed_y = jnp.abs(vy) + cs
-            dt_local = CFL * jnp.minimum(dx / max_speed_x, dy / max_speed_y)
+            dt_local = CFL * jnp.minimum(dx / (jnp.abs(vx) + cs),
+                                          dy / (jnp.abs(vy) + cs))
         elif spatial_dim == 3:
-            vx = W[1]
-            vy = W[2]
-            vz = W[3]
-            P = W[4]
+            vx = W[1]; vy = W[2]; vz = W[3]; P = W[4]
             cs = jnp.sqrt(gamma * P / rho)
-            max_speed_x = jnp.abs(vx) + cs
-            max_speed_y = jnp.abs(vy) + cs
-            max_speed_z = jnp.abs(vz) + cs
             dt_local = CFL * jnp.minimum(
-                jnp.minimum(dx / max_speed_x, dy / max_speed_y),
-                dz / max_speed_z
+                jnp.minimum(dx / (jnp.abs(vx) + cs),
+                            dy / (jnp.abs(vy) + cs)),
+                dz / (jnp.abs(vz) + cs),
             )
         else:
             raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")
-
         return jnp.min(dt_local)
+    return compute_dt_from_U
 
-    # Separate JIT function for dt adjustment
+
+def _make_flux_stage(pad_halo_fn, flux_div_fn, gamma, order, limiter,
+                     dx, dy, dz, inv_dx, inv_dy, inv_dz, boundary, spatial_dim):
+    """Factory: returns jit'd stage(U) -> dU = -∇·F(U).
+
+    One JIT containing both the halo exchange (with collectives) and the
+    flux divergence — the unit of work that gets scheduled by the Python
+    orchestrator in RK2/RK4.
+    """
     @jax.jit
-    def adjust_dt(dt, t, t_end):
-        """Adjust dt to hit t_end exactly - separate JIT function."""
-        return jnp.where(
-            (t_end - t < 10 * dt) & (t + dt > t_end),
-            t_end - t,
-            dt
-        )
+    def stage(U):
+        U_pad = pad_halo_fn(U, boundary, spatial_dim)
+        return flux_div_fn(U_pad, gamma, order, limiter,
+                           dx, dy, dz, inv_dx, inv_dy, inv_dz)
+    return stage
+
+
+# ---------------------------------------------------------------------------
+# RK2
+# ---------------------------------------------------------------------------
+def create_rk2_modular_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
+                             dx, dy, dz, inv_dx, inv_dy, inv_dz,
+                             boundary, spatial_dim, CFL, sharding=None):
+    """RK2 stepper following the modular pattern.
+
+    Returns (compute_dt_fn, step_fn) where
+        compute_dt_fn(U) -> dt_cfl   (pure CFL, runner does the clamping)
+        step_fn(U, dt)   -> U_new
+    """
+    compute_dt_fn = _make_compute_dt_fn(gamma, CFL, spatial_dim, dx, dy, dz)
+    stage = _make_flux_stage(pad_halo_fn, flux_div_fn, gamma, order, limiter,
+                              dx, dy, dz, inv_dx, inv_dy, inv_dz,
+                              boundary, spatial_dim)
+
+    def rk2_step(U, dt):
+        dU1 = stage(U)
+        U1 = U + dt * dU1
+        dU2 = stage(U1)
+        U_new = U + 0.5 * dt * (dU1 + dU2)
+        if sharding is not None:
+            U_new = jax.device_put(U_new, sharding)
+        return U_new
+
+    return compute_dt_fn, rk2_step
+
+
+# ---------------------------------------------------------------------------
+# RK4
+# ---------------------------------------------------------------------------
+def create_rk4_modular_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
+                             dx, dy, dz, inv_dx, inv_dy, inv_dz,
+                             boundary, spatial_dim, CFL, sharding=None):
+    """RK4 stepper following the modular pattern."""
+    compute_dt_fn = _make_compute_dt_fn(gamma, CFL, spatial_dim, dx, dy, dz)
+    stage = _make_flux_stage(pad_halo_fn, flux_div_fn, gamma, order, limiter,
+                              dx, dy, dz, inv_dx, inv_dy, inv_dz,
+                              boundary, spatial_dim)
+
+    def rk4_step(U, dt):
+        k1 = stage(U)
+        k2 = stage(U + 0.5 * dt * k1)
+        k3 = stage(U + 0.5 * dt * k2)
+        k4 = stage(U + dt * k3)
+        U_new = U + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        if sharding is not None:
+            U_new = jax.device_put(U_new, sharding)
+        return U_new
+
+    return compute_dt_fn, rk4_step
+
+
+# ---------------------------------------------------------------------------
+# MUSCL-Hancock
+# ---------------------------------------------------------------------------
+def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
+                                       dx, dy, dz, inv_dx, inv_dy, inv_dz, boundary, spatial_dim, CFL,
+                                       sharding=None):
+    """MUSCL-Hancock stepper with MODULAR JIT compilation.
+
+    Returns (compute_dt_fn, step_fn) where
+        compute_dt_fn(U) -> dt_cfl  (pure CFL, no t_end or snapshot clamping)
+        step_fn(U, dt)   -> U_new   (pure step using caller-supplied dt)
+
+    The runner is responsible for all time-target arithmetic.
+
+    Note: flux_div_fn is accepted for signature symmetry with RK2/RK4 but
+    is not used — MUSCL-Hancock inlines its own flux+predictor below to
+    fuse the cons→prim, slope, predictor, reconstruct, and HLLC stages.
+    """
+    compute_dt_fn = _make_compute_dt_fn(gamma, CFL, spatial_dim, dx, dy, dz)
 
     # Separate JIT function for cons→prim conversion
     @jax.jit
@@ -244,19 +318,16 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
     _debug_sync = bool(os.environ.get('LUNA_DEBUG_SYNC', ''))
 
     # Main orchestrator function (NOT @jax.jit!)
-    def time_step_muscl_hancock_modular(U, t, t_snapshot, t_end):
+    def time_step_muscl_hancock_modular(U, dt):
         """
-        MUSCL-Hancock time step with MODULAR JIT compilation.
+        MUSCL-Hancock time step with MODULAR JIT compilation. Pure: caller
+        supplies dt.
 
-        This is a regular Python function that calls separate JIT-compiled operations.
-        JAX can asynchronously dispatch these and potentially overlap them.
-
-        OPTIMIZED FLOW (avoids double conversion):
+        FLOW:
         1. U → W (convert once)
-        2. Compute dt from W
-        3. Pad W → W_pad (exchange primitives, not conservatives!)
-        4. Compute fluxes directly from W_pad (no second conversion!)
-        5. Update U
+        2. Pad W → W_pad (exchange primitives, not conservatives)
+        3. Compute fluxes directly from W_pad
+        4. Update U
         """
         import sys
 
@@ -271,23 +342,7 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
             if jax.process_index() == 0:
                 print(f"[DEBUG] ✓ convert_to_prim done, W.sharding={W.sharding}", flush=True, file=sys.stderr)
 
-        # Step 2: Compute dt from primitives (JIT function with global reduction)
-        dt = compute_dt(W)
-
-        if _debug_sync:
-            jax.block_until_ready(dt)
-            if jax.process_index() == 0:
-                print(f"[DEBUG] ✓ compute_dt done, dt={dt}", flush=True, file=sys.stderr)
-
-        # Step 3: Adjust dt if needed (JIT function, scalar operation)
-        dt = adjust_dt(dt, t, t_end)
-
-        if _debug_sync:
-            jax.block_until_ready(dt)
-            if jax.process_index() == 0:
-                print(f"[DEBUG] ✓ adjust_dt done, dt={dt}", flush=True, file=sys.stderr)
-
-        # Step 4: Halo exchange on PRIMITIVES (JIT function with communication)
+        # Step 2: Halo exchange on PRIMITIVES (JIT function with communication)
         W_pad = apply_halo_exchange_prim(W)
 
         if _debug_sync:
@@ -312,6 +367,6 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
                 if jax.process_index() == 0:
                     print(f"[DEBUG] ✓ resharding done, U_new.sharding={U_new.sharding}", flush=True, file=sys.stderr)
 
-        return U_new, dt
+        return U_new
 
-    return time_step_muscl_hancock_modular
+    return compute_dt_fn, time_step_muscl_hancock_modular

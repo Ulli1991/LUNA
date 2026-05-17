@@ -32,41 +32,18 @@ def run_simulation_distributed(
     step_start: int,
     cfg,
     grid: GridParams,
-    time_step_fn: Callable,  # Now: (U, t, t_snapshot, t_end) -> (U_new, dt)
+    compute_dt_fn: Callable,
+    step_fn: Callable,
     sharding: NamedSharding
 ) -> Tuple[Array, float, int, float]:
-    """
-    Execute the main distributed simulation time loop.
+    """Execute the main distributed simulation time loop.
 
-    Parameters
-    ----------
-    U_sharded : Array
-        Sharded initial state (conserved variables)
-    t_start : float
-        Start time
-    step_start : int
-        Start step
-    cfg : Config
-        Configuration object
-    grid : GridParams
-        Grid parameters
-    time_step_fn : Callable[[Array, float], Array]
-        Time stepping function: (U, dt) -> U
-    compute_dt_fn : Callable
-        Timestep computation function
-    sharding : NamedSharding
-        Sharding specification
-
-    Returns
-    -------
-    U_sharded : Array
-        Final sharded state
-    t : float
-        Final time
-    step : int
-        Final step
-    start_time : float
-        Wall-clock start time (for performance tracking)
+    The runner controls all time-target arithmetic. The integrator's job is
+    purely:
+        compute_dt_fn(U) -> dt_cfl
+        step_fn(U, dt)   -> U_new
+    The runner clamps dt to land on the next snapshot time or t_end exactly,
+    so no snapshots are ever skipped.
     """
     # Cache process info (avoid repeated function calls)
     is_main_process = (jax.process_index() == 0)
@@ -81,10 +58,15 @@ def run_simulation_distributed(
         print("="*60)
         print("Running one step to trigger JIT compilation...")
 
-    # Warmup with combined dt+step function
+    # Warmup: compile both compute_dt and step. Matches previous semantics
+    # (state advances by one initial-CFL step; the small inconsistency between
+    # the post-warmup U and t_start is well below CFL precision).
     compile_start = pytime.time()
-    U_sharded, dt_warmup = time_step_fn(U_sharded, t_start, t_start, cfg.t_end)
+    dt_warmup = compute_dt_fn(U_sharded)
+    jax.block_until_ready(dt_warmup)
+    U_sharded = step_fn(U_sharded, dt_warmup)
     jax.block_until_ready(U_sharded)
+    U_sharded = jax.lax.with_sharding_constraint(U_sharded, sharding)
     compile_time = pytime.time() - compile_start
 
     if is_main_process:
@@ -127,17 +109,27 @@ def run_simulation_distributed(
     # Total cells in global grid
     total_cells = grid.total_cells
 
-    # Main time loop
+    # Main time loop. Runner controls dt:
+    #     dt = min(dt_CFL, t_end - t, next_snapshot_time - t)
+    # so the step lands exactly on each snapshot time -> no snapshots skipped.
     while t < cfg.t_end:
-        # MUSCL-Hancock: Combined dt computation + time step in ONE function call
-        # This reduces multi-GPU overhead from 2 function calls to 1 per timestep
+        t_snapshot_local = (snapshot_times[snapshot_idx]
+                            if snapshot_idx < num_snapshots
+                            else float('inf'))
 
-        # Get next snapshot time (use infinity if all snapshots written)
-        t_snapshot_local = snapshot_times[snapshot_idx] if snapshot_idx < num_snapshots else float('inf')
+        dt_cfl = float(compute_dt_fn(U_sharded))
+        target = min(cfg.t_end, t_snapshot_local)
+        remaining = target - t
+        if dt_cfl >= remaining:
+            dt = remaining
+            new_t = target          # snap exactly, avoid float roundoff
+        else:
+            dt = dt_cfl
+            new_t = t + dt
 
-        U_sharded, dt = time_step_fn(U_sharded, t, t_snapshot_local, cfg.t_end)
+        U_sharded = step_fn(U_sharded, dt)
 
-        t += dt
+        t = new_t
         step += 1
 
         # Validation and progress (only on process 0)

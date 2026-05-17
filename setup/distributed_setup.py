@@ -27,18 +27,11 @@ from utils.distributed import (
     compute_local_slice,
     create_sharded_array_from_local
 )
-from time_integration.sharded_integrators import (
-    create_rk2_sharded_step,
-    create_muscl_hancock_sharded_step,
-    create_rk4_sharded_step
-)
 from time_integration.sharded_integrators_modular import (
-    create_muscl_hancock_modular_step
+    create_rk2_modular_step,
+    create_muscl_hancock_modular_step,
+    create_rk4_modular_step,
 )
-from time_integration.sharded_integrators_reference_style import (
-    create_muscl_hancock_reference_style
-)
-from time_integration.cfl import create_compute_dt_sharded
 from utils.halo_exchange_auto import pad_with_halo_auto
 from hydro.divergence import flux_divergence_from_padded
 
@@ -213,37 +206,17 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
                     mesh, process_id
                 )
 
-            # Generate only local portion
-            if cfg.test_problem == "Kelvin-Helmholtz":
-                from ic_generation.kh import kelvin_helmholtz
-                U_local = kelvin_helmholtz(cfg, x_slice=x_slice, y_slice=y_slice)
-            elif cfg.test_problem == "Sod-Shock":
-                from ic_generation.sod import sod_shock
-                U_local = sod_shock(cfg, x_slice=x_slice)
-            elif cfg.test_problem == "Sod-Shock-3D":
-                from ic_generation.sod3d import sod_shock_3d
-                U_local = sod_shock_3d(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)
-            elif cfg.test_problem == "Sedov-Blast-3D":
-                from ic_generation.sedov3d import sedov_blast_3d
-                U_local = sedov_blast_3d(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)
-            elif cfg.test_problem == "Kelvin-Helmholtz-3D":
-                from ic_generation.kh3d import kelvin_helmholtz_3d
-                U_local = kelvin_helmholtz_3d(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)
-            elif cfg.test_problem == "Soundwave-3D":
-                from ic_generation.soundwave3d import soundwave_3d
-                U_local = soundwave_3d(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)
-            else:
+            # Generate only the local portion via the unified IC dispatcher.
+            # All IC functions are sharded-aware and accept the relevant slice
+            # kwargs for their dimensionality; the dispatcher routes them.
+            try:
+                U_local = initial_conditions(
+                    cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice
+                )
+            except ValueError as e:
                 if is_main_process:
                     print(f"\n{'='*60}")
-                    print(f"ERROR: Local IC generation not implemented for '{cfg.test_problem}'")
-                    print(f"{'='*60}")
-                    print(f"Multi-process mode requires local IC generation.")
-                    print(f"Currently supported: Kelvin-Helmholtz, Sod-Shock, Sod-Shock-3D,")
-                    print(f"  Sedov-Blast-3D, Kelvin-Helmholtz-3D, Soundwave-3D")
-                    print(f"\nOptions:")
-                    print(f"  1. Use one of the supported test problems")
-                    print(f"  2. Run in single-process mode (1 GPU)")
-                    print(f"  3. Implement local generation for {cfg.test_problem}")
+                    print(f"ERROR: {e}")
                     print(f"{'='*60}\n")
                 sys.exit(1)
 
@@ -336,52 +309,36 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
     def pad_halo_fn(U, boundary, spatial_dim):
         return pad_with_halo_auto(U, boundary, spatial_dim)
 
-    # Select time integrator
+    # Select time integrator. Each factory returns (compute_dt_fn, step_fn):
+    #   compute_dt_fn(U) -> dt_cfl   (pure CFL, runner does the clamping)
+    #   step_fn(U, dt)   -> U_new
+    # All three share the same modular pattern (Python orchestration of
+    # small @jax.jit subfunctions) — the one that works multi-node.
     if cfg.TIME_SOLVER == 0:
-        # RK2
-        time_step_fn = create_rk2_sharded_step(
+        compute_dt_fn, step_fn = create_rk2_modular_step(
             pad_halo_fn, flux_divergence_from_padded,
             cfg.gamma, cfg.ORDER, cfg.LIMITER,
             grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
+            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
+            sharding=sharding,
         )
         integrator_name = "RK2"
     elif cfg.TIME_SOLVER == 1:
-        # MUSCL-Hancock - choose JIT strategy
-        if cfg.JIT_STRATEGY == "reference":
-            # Match reference code: main function NOT @jax.jit, many small @jax.jit helpers
-            time_step_fn = create_muscl_hancock_reference_style(
-                cfg.gamma, cfg.ORDER, cfg.LIMITER,
-                grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
-            )
-            integrator_name = "MUSCL-Hancock (REFERENCE STYLE: many small @jax.jit)"
-        elif cfg.JIT_STRATEGY == "modular":
-            # Few large @jax.jit functions
-            time_step_fn = create_muscl_hancock_modular_step(
-                pad_halo_fn, flux_divergence_from_padded,
-                cfg.gamma, cfg.ORDER, cfg.LIMITER,
-                grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
-                sharding=sharding
-            )
-            integrator_name = "MUSCL-Hancock (MODULAR: few large @jax.jit)"
-        else:  # "monolithic"
-            # One big @jax.jit function (original)
-            time_step_fn = create_muscl_hancock_sharded_step(
-                pad_halo_fn, flux_divergence_from_padded,
-                cfg.gamma, cfg.ORDER, cfg.LIMITER,
-                grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
-            )
-            integrator_name = "MUSCL-Hancock (MONOLITHIC: one big @jax.jit)"
-    elif cfg.TIME_SOLVER == 2:
-        # RK4
-        time_step_fn = create_rk4_sharded_step(
+        compute_dt_fn, step_fn = create_muscl_hancock_modular_step(
             pad_halo_fn, flux_divergence_from_padded,
             cfg.gamma, cfg.ORDER, cfg.LIMITER,
             grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL
+            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
+            sharding=sharding,
+        )
+        integrator_name = "MUSCL-Hancock"
+    elif cfg.TIME_SOLVER == 2:
+        compute_dt_fn, step_fn = create_rk4_modular_step(
+            pad_halo_fn, flux_divergence_from_padded,
+            cfg.gamma, cfg.ORDER, cfg.LIMITER,
+            grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
+            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
+            sharding=sharding,
         )
         integrator_name = "RK4"
     else:
@@ -391,7 +348,6 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
 
     if is_main_process:
         print(f"Using {integrator_name} time integration")
-        print(f"Note: dt computation now integrated into time_step (1 call per timestep)")
+        print(f"Runner controls dt clamping (snapshot times, t_end)")
 
-    # No longer need separate compute_dt_fn - it's integrated into time_step_fn
-    return time_step_fn, integrator_name, sharding
+    return compute_dt_fn, step_fn, integrator_name, sharding
