@@ -1,54 +1,74 @@
-"""2x2 physical-space comparison panels for the three 1D shock tests.
+"""4-panel comparison plots for the three 1D shock tests.
 
-Runs LUNA at Nx ∈ {256, 512, 1024, 2048} for each of:
-    Sod-Shock, Shu-Osher, Woodward-Colella
+LUNA (PLM + MUSCL-Hancock + minmod, HLLC) at Nx ∈ {256, 512, 1024, 2048}
+vs AthenaK PPMX (RK2) at Nx=8192 as the high-resolution reference.
 
-Produces one 2x2 figure per problem: density, vx, pressure, internal energy
-vs x. LUNA at each resolution is plotted as a colored curve. If an AthenaK
-PPM 8192 reference .athdf exists at `reference/athenak/<slug>_ppm_8192.athdf`,
-it is overlaid as a thick black curve; otherwise the LUNA-only plot is
-still useful as a visual convergence check.
-
-Saves figures/shock_panels_{problem}.pdf per problem.
+For each of Sod / Shu-Osher / Woodward-Colella we plot density, velocity,
+pressure, and specific internal energy as functions of x.
 """
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
 from scripts.validation.runner import sweep
-from scripts.validation.athenak_io import load_1d
+from scripts.validation.athenak_io import load_1d as load_ak
 from file_io.read_snapshot import read_snapshot, latest_snapshot_dir
 
 
-# Per-problem: t_end, AthenaK reference slug.
+# Per-problem: t_end, slug, physical domain
 PROBLEMS = {
-    "Sod-Shock": dict(t_end=0.2,   slug="sod"),
-    "Shu-Osher": dict(t_end=1.8,   slug="shu_osher"),
-    "Woodward-Colella": dict(t_end=0.038, slug="woodward_colella"),
+    "Sod-Shock": dict(
+        slug="sod",
+        t_end=0.2,
+        x_min=0.0,
+        x_max=1.0,
+        lx_runner=1.0,
+    ),
+    "Shu-Osher": dict(
+        slug="shu_osher",
+        t_end=1.8,
+        x_min=-5.0,
+        x_max=5.0,
+        lx_runner=10.0,  # LUNA's runner uses Lx=10; IC self-centers on [-5,5].
+    ),
+    "Woodward-Colella": dict(
+        slug="woodward_colella",
+        t_end=0.038,
+        x_min=0.0,
+        x_max=1.0,
+        lx_runner=1.0,
+    ),
 }
 
 NX_SCAN = [256, 512, 1024, 2048]
 AK_REF_DIR = Path("reference/athenak")
+GAMMA = 5.0 / 3.0
 
 
 def _internal_energy(rho, P, gamma):
     return P / ((gamma - 1.0) * rho)
 
 
-def plot_one(problem_name, t_end, slug):
+def plot_one(problem_name, params):
+    slug    = params["slug"]
+    t_end   = params["t_end"]
+    x_min   = params["x_min"]
+    lx      = params["lx_runner"]
+
     base = dict(
         test_problem=problem_name,
         SPATIAL_DIMENSION=1,
-        Lx=1.0,
-        BOUNDARY=1,  # zero-gradient for shock tubes
+        Lx=lx,
+        BOUNDARY=1,                # zero-gradient for shock tubes
         t_end=t_end,
         time_bet_snaps=t_end,
-        TIME_SOLVER=1,    # MUSCL-Hancock (the only validated integrator)
+        TIME_SOLVER=1,             # MUSCL-Hancock
         ORDER=1,
-        LIMITER=0,
+        LIMITER=0,                 # minmod, per user spec
         CFL=0.4,
         PLOT_AFTER_SIM=False,
         production_mode=True,
+        enable_x64=True,
     )
     out_template = f"snapshots/{slug}_Nx{{}}"
     results = sweep(base, "Nx", NX_SCAN, output_dir_template=out_template)
@@ -61,54 +81,59 @@ def plot_one(problem_name, t_end, slug):
         (axes[1, 1], "e_int", "internal energy"),
     ]
 
-    # AthenaK overlay if available
-    ak_path = AK_REF_DIR / f"{slug}_ppm_8192.athdf"
+    # AthenaK PPMX 8192 reference (load .bin via bin_convert; physical x in
+    # the file metadata)
+    ak_path = AK_REF_DIR / f"{slug}_ppmx_Nx8192.bin"
     if ak_path.is_file():
         try:
-            ref = load_1d(ak_path)
-            gamma = ref.get("gamma", 5.0 / 3.0)
-            ref_e = _internal_energy(ref["rho"], ref["P"], gamma)
+            ref = load_ak(ak_path, gamma=GAMMA)
+            ref_e = _internal_energy(ref["rho"], ref["P"], GAMMA)
+            ref_fields = {"rho": ref["rho"], "vx": ref["vx"],
+                          "P": ref["P"], "e_int": ref_e}
             for ax, key, _ in panels:
-                y = ref_e if key == "e_int" else ref[key]
-                ax.plot(ref["x"], y, "k-", lw=2.0, label="AthenaK PPM 8192")
+                ax.plot(ref["x"], ref_fields[key], "k-", lw=2.0,
+                        label="AthenaK PPMX (Nx=8192)")
         except Exception as exc:
             print(f"WARN: could not load AthenaK reference {ak_path}: {exc}")
     else:
         print(f"Note: no AthenaK reference at {ak_path} — LUNA-only plot.")
 
-    # LUNA overlays
+    # LUNA curves. NOTE: LUNA's snap["e_int"] is internal energy DENSITY
+    # (P/(γ-1)), not specific internal energy — recompute specific to match
+    # the AthenaK panel above.
     cmap = plt.get_cmap("viridis")
     for i, (Nx, outdir) in enumerate(results):
         snap = read_snapshot(latest_snapshot_dir(outdir))
+        x_phys = snap["x"] + x_min  # shift to physical domain
         gamma = snap["gamma"]
-        e_int = snap.get("e_int")
-        if e_int is None:
-            e_int = _internal_energy(snap["rho"], snap["P"], gamma)
-        fields = {"rho": snap["rho"], "vx": snap["vx"], "P": snap["P"], "e_int": e_int}
+        e_int = _internal_energy(snap["rho"], snap["P"], gamma)
+        fields = {"rho": snap["rho"], "vx": snap["vx"],
+                  "P": snap["P"], "e_int": e_int}
         color = cmap(0.15 + 0.7 * i / max(1, len(results) - 1))
         for ax, key, _ in panels:
-            ax.plot(snap["x"], fields[key], color=color, lw=1.0,
+            ax.plot(x_phys, fields[key], color=color, lw=1.0,
                     label=f"LUNA Nx={Nx}")
 
     for ax, _, label in panels:
         ax.set_ylabel(label)
+        ax.grid(True, alpha=0.3)
     axes[1, 0].set_xlabel("x")
     axes[1, 1].set_xlabel("x")
     axes[0, 0].legend(loc="best", fontsize=8)
 
-    fig.suptitle(f"{problem_name} at t = {t_end}  —  MUSCL-Hancock")
     fig.tight_layout()
-
     Path("figures").mkdir(exist_ok=True)
-    fname = f"figures/shock_panels_{slug}.pdf"
-    fig.savefig(fname)
-    print(f"Saved {fname}")
+    fname_pdf = f"figures/shock_panels_{slug}.pdf"
+    fname_png = f"figures/shock_panels_{slug}.png"
+    fig.savefig(fname_pdf)
+    fig.savefig(fname_png, dpi=200)
+    print(f"Saved {fname_pdf} and {fname_png}")
     plt.close(fig)
 
 
 def main():
     for name, params in PROBLEMS.items():
-        plot_one(name, params["t_end"], params["slug"])
+        plot_one(name, params)
 
 
 if __name__ == "__main__":
