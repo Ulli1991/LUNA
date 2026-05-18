@@ -15,28 +15,26 @@ from scripts.validation.athenak_io import load_1d as load_ak
 from file_io.read_snapshot import read_snapshot, latest_snapshot_dir
 
 
-# Per-problem: t_end, slug, physical domain
+# Per-problem: t_end, slug, physical domain, BC (1 = zero-gradient/outflow,
+# 2 = reflective — Woodward-Colella requires reflective walls).
 PROBLEMS = {
     "Sod-Shock": dict(
         slug="sod",
         t_end=0.2,
-        x_min=0.0,
-        x_max=1.0,
-        lx_runner=1.0,
+        x_min=0.0, x_max=1.0, lx_runner=1.0,
+        boundary=1,
     ),
     "Shu-Osher": dict(
         slug="shu_osher",
         t_end=1.8,
-        x_min=-5.0,
-        x_max=5.0,
-        lx_runner=10.0,  # LUNA's runner uses Lx=10; IC self-centers on [-5,5].
+        x_min=-5.0, x_max=5.0, lx_runner=10.0,
+        boundary=1,
     ),
     "Woodward-Colella": dict(
         slug="woodward_colella",
         t_end=0.038,
-        x_min=0.0,
-        x_max=1.0,
-        lx_runner=1.0,
+        x_min=0.0, x_max=1.0, lx_runner=1.0,
+        boundary=2,                  # reflecting walls — the gas is contained
     ),
 }
 
@@ -54,12 +52,13 @@ def plot_one(problem_name, params):
     t_end   = params["t_end"]
     x_min   = params["x_min"]
     lx      = params["lx_runner"]
+    bnd     = params["boundary"]   # 1 = zero-gradient, 2 = reflecting
 
     base = dict(
         test_problem=problem_name,
         SPATIAL_DIMENSION=1,
         Lx=lx,
-        BOUNDARY=1,                # zero-gradient for shock tubes
+        BOUNDARY=bnd,
         t_end=t_end,
         time_bet_snaps=t_end,
         TIME_SOLVER=1,             # MUSCL-Hancock
