@@ -34,11 +34,11 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 ![Sedov-Taylor 3D: shock evolution and column density](figures/sedov3d.png)
 
-*Sedov-Taylor 3D blast wave: E = 10⁵¹ erg deposited into the central 2×2×2 = 8 cells of a uniform n = 1 cm⁻³, T = 10⁴ K ISM (γ=5/3) on a 128³ grid spanning a 50 pc cube; outflow boundaries. LUNA PLM + MUSCL-Hancock + minmod + HLLC at CFL=0.4, units kpc / 10¹⁰ M☉ / km s⁻¹, run for 10⁴ yr. Left: simulated shock radius (peak-ρ location) vs the Sedov-Taylor self-similar prediction R_s(t) = ξ(E t²/ρ₀)^(1/5) with ξ=1.15 — agreement to ~2% at t = 10⁴ yr (13.1 pc sim vs 13.4 pc analytic). Right: column density projection along z showing the spherical blast shell.*
+*Sedov-Taylor 3D blast wave: E = 10⁵¹ erg deposited into the central 2×2×2 = 8 cells of a uniform n = 1 cm⁻³, T = 10⁴ K ISM (γ=5/3) on a 50 pc cube; outflow boundaries. LUNA PLM + MUSCL-Hancock + minmod + HLLC at CFL=0.4, units kpc / 10¹⁰ M☉ / km s⁻¹, run for 10⁴ yr. The figure shows the highest-resolution LUNA Sedov run available on disk. Left: simulated shock radius (peak-ρ location) vs the Sedov-Taylor self-similar prediction R_s(t) = ξ(E t²/ρ₀)^(1/5) with ξ=1.15 — current agreement to ~0.5% at t = 10⁴ yr at Nx=256³. Right: column density projection along z showing the spherical blast shell.*
 
-![Sedov-Taylor 3D radial profiles](figures/sedov3d_radial.png)
+![Sedov-Taylor 3D radial profiles: resolution study](figures/sedov3d_radial.png)
 
-*Spherically-averaged radial profiles at t = 10⁴ yr: number density n [cm⁻³], radial velocity v_r [km/s], pressure P [erg/cm³], and temperature T [K]. The dashed line marks the analytic Sedov-Taylor shock radius. The shock front is captured cleanly with the expected post-shock structure — strong density compression, peak radial velocity, pressure jump, and post-shock heating to ~10⁷ K.*
+*Sedov 3D resolution study: spherically-averaged radial profiles at t = 10⁴ yr of number density n [cm⁻³], radial velocity v_r [km/s], pressure P [erg/cm³], and temperature T [K] for every LUNA Sedov run available on disk (currently Nx=128³ and 256³). Curves shaded by resolution; dashed line marks the analytic Sedov-Taylor shock radius. As Nx increases the shock peak sharpens toward the Rankine-Hugoniot strong-shock ratio (ρ₂/ρ₁ = 4 for γ=5/3) while the central rarefaction deepens.*
 
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
