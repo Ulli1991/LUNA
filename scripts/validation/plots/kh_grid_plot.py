@@ -48,7 +48,7 @@ def main():
                 rho = snap["rho"]   # shape (Nx, Ny)
                 # Plot density with imshow (origin lower-left, extent in physical units)
                 ax.imshow(rho.T, origin="lower", extent=(0, LX, 0, LY),
-                          vmin=VMIN, vmax=VMAX, cmap="viridis",
+                          vmin=VMIN, vmax=VMAX, cmap="magma",
                           interpolation="nearest", aspect="equal")
             except FileNotFoundError as e:
                 ax.text(0.5, 0.5, f"no t≈{t_target}",

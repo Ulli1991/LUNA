@@ -34,3 +34,6 @@ Thumbs.db
 
 # bash scripts in main
 /*.sh
+
+# AthenaK reference simulation outputs (large binary dumps, regenerable)
+reference/

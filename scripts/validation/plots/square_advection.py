@@ -31,7 +31,8 @@ def main():
         t_end=T_END,
         TIME_SOLVER=1,         # MUSCL-Hancock
         ORDER=1,               # PLM
-        LIMITER=0,             # minmod
+        LIMITER=1,             # MonCen
+        CFL=0.4,
         PLOT_AFTER_SIM=False,
         production_mode=True,
         time_bet_snaps=0.25,
@@ -51,7 +52,7 @@ def main():
         snap = read_snapshot(find_snapshot_at_time(OUTDIR, t, tol=0.02))
         ax.imshow(snap["rho"].T, origin="lower",
                   extent=(0, snap["Lx"], 0, snap["Ly"]),
-                  vmin=VMIN, vmax=VMAX, cmap="viridis",
+                  vmin=VMIN, vmax=VMAX, cmap="magma",
                   interpolation="nearest", aspect="equal")
         ax.set_title(f"t = {t}", fontsize=11)
         ax.tick_params(top=True, right=True, direction="in")
