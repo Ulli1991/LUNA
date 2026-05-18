@@ -95,44 +95,28 @@ def sedov_blast_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     p = jnp.full_like(rho, p_bg)
 
     if units_on:
-        # Small-sphere injection: r_blast = R_INJECT_CELLS * dx. Total E_inject
-        # is distributed uniformly inside (top hat). This keeps the injection
-        # numerically tractable while still being "a few cells" wide.
-        R_INJECT_CELLS = 2.0
-        r_blast = R_INJECT_CELLS * max(dx, dy, dz)
+        # Central 2x2x2 = 8-cell cube injection. For even Nx the eight cells
+        # centred on the domain centre have indices {Nx/2-1, Nx/2} on each
+        # axis. Total E_inject is split uniformly across these 8 cells.
+        ix0, iy0, iz0 = Nx // 2 - 1, Ny // 2 - 1, Nz // 2 - 1
 
-        x_full = jnp.linspace(0, Lx, Nx, endpoint=False) + 0.5 * dx
-        y_full = jnp.linspace(0, Ly, Ny, endpoint=False) + 0.5 * dy
-        z_full = jnp.linspace(0, Lz, Nz, endpoint=False) + 0.5 * dz
-        X, Y, Z = jnp.meshgrid(
-            x_full[x_start:x_end],
-            y_full[y_start:y_end],
-            z_full[z_start:z_end],
-            indexing="ij",
-        )
-        r_centre = jnp.sqrt((X - 0.5 * Lx) ** 2
-                            + (Y - 0.5 * Ly) ** 2
-                            + (Z - 0.5 * Lz) ** 2)
+        ii = jnp.arange(x_start, x_end)[:, None, None]
+        jj = jnp.arange(y_start, y_end)[None, :, None]
+        kk = jnp.arange(z_start, z_end)[None, None, :]
+        in_cube = ((ii >= ix0) & (ii <= ix0 + 1)
+                 & (jj >= iy0) & (jj <= iy0 + 1)
+                 & (kk >= iz0) & (kk <= iz0 + 1))
 
-        # Count cells inside the injection sphere using the *global* grid so
-        # the energy normalization is identical on every shard.
-        x_gc = jnp.linspace(0, Lx, Nx, endpoint=False) + 0.5 * dx
-        y_gc = jnp.linspace(0, Ly, Ny, endpoint=False) + 0.5 * dy
-        z_gc = jnp.linspace(0, Lz, Nz, endpoint=False) + 0.5 * dz
-        Xg, Yg, Zg = jnp.meshgrid(x_gc, y_gc, z_gc, indexing="ij")
-        n_inject = int(jnp.sum((jnp.sqrt((Xg - 0.5 * Lx) ** 2
-                                         + (Yg - 0.5 * Ly) ** 2
-                                         + (Zg - 0.5 * Lz) ** 2) < r_blast)))
+        n_inject = 8
         V_inject = n_inject * dx * dy * dz
         p_inject = (gamma - 1.0) * (E_inject / V_inject)
 
         if is_global_call:
-            print(f"  Sedov inject: r_blast = {r_blast / max(dx,dy,dz):.2f} cells "
-                  f"= {r_blast:.4e} (code) ; {n_inject} cells; "
+            print(f"  Sedov inject: central 2x2x2 cube ({n_inject} cells), "
                   f"V_inject = {V_inject:.4e}")
             print(f"  p_inject (code) = {p_inject:.4e}")
 
-        p = jnp.where(r_centre < r_blast, p_inject + p_bg, p_bg)
+        p = jnp.where(in_cube, p_inject + p_bg, p_bg)
     else:
         # Legacy dimensionless mode: top-hat sphere, r_blast = 6*max(dx,dy,dz).
         x_full = jnp.linspace(0, Lx, Nx, endpoint=False) + 0.5 * dx

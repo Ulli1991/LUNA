@@ -32,6 +32,10 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *2D square-density advection (ρ=2 in [0.25,0.75]², ρ=1 outside; uniform u=v=1, p=1, γ=5/3; periodic Lx=Ly=1; LUNA PLM + MUSCL-Hancock + MonCen + HLLC at Nx=1024² with CFL=0.4). Density snapshots at t = 0, 0.25, 0.5, 0.75, 1.0 — the square advects diagonally and after one full traversal (t=1) the velocity has carried it exactly back to the center. Tests that the scheme preserves a sharp tangential contact under uniform-flow advection over the full domain length.*
 
+![Sedov-Taylor 3D blast wave: LUNA in Arepo-like units](figures/sedov3d.png)
+
+*Sedov-Taylor 3D blast wave: E = 10⁵¹ erg deposited into the central 2×2×2 = 8 cells of a uniform n = 1 cm⁻³, T = 10⁴ K ISM (γ=5/3) on a 128³ grid spanning a 50 pc cube; outflow boundaries. LUNA PLM + MUSCL-Hancock + minmod + HLLC at CFL=0.4, units kpc / 10¹⁰ M☉ / km s⁻¹, run for 10⁴ yr. Left: spherically-averaged radial profiles (ρ, P, v_r) at t = 10⁴ yr with the analytic shock radius overlaid as a dashed line. Middle: simulated shock radius (peak-ρ location) vs the Sedov-Taylor self-similar prediction R_s(t) = ξ(E t²/ρ₀)^(1/5) with ξ=1.15 — agreement to ~2% at t = 10⁴ yr (13.1 pc sim vs 13.4 pc analytic). Right: column density projection along z.*
+
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
 - ✅ HLLC Riemann solver with optimized flux computation
