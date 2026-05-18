@@ -7,6 +7,8 @@ config.py
 # HDF5 output files
 *.hdf5
 *.png
+# But keep validation figures embedded in the README
+!figures/*.png
 
 # Log files
 *.log
