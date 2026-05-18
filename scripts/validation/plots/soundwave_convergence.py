@@ -23,7 +23,7 @@ from scripts.validation.athenak_io import load_1d as load_athdf_1d
 from file_io.read_snapshot import read_snapshot, latest_snapshot_dir
 
 
-NX_SCAN = [128, 256, 512, 1024, 2048, 4096]
+NX_SCAN = [32, 64, 128, 256, 512]
 LX = 1.0
 GAMMA = 5.0 / 3.0
 RHO0 = 1.0
@@ -101,35 +101,59 @@ def main():
         if nx_list:
             ak_results[scheme] = (nx_list, l1_list)
 
+    # Compute a per-segment slope for the converging part (Nx ≤ 256), to put
+    # a meaningful number in the legend rather than a global fit that the
+    # plateau dilutes.
+    def converging_slope(nx, l1, nx_max=256):
+        nx_arr = np.asarray(nx, dtype=float)
+        l1_arr = np.asarray(l1, dtype=float)
+        mask = nx_arr <= nx_max
+        if mask.sum() < 2:
+            return convergence_slope(nx_arr, l1_arr)
+        return convergence_slope(nx_arr[mask], l1_arr[mask])
+
+    luna_conv = converging_slope(NX_SCAN, l1s)
+
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
-    ax.loglog(NX_SCAN, l1s, "o-", color="C0",
-              label=f"LUNA PLM (MUSCL-Hancock)  L1, slope {slope_l1:.2f}")
-    ax.loglog(NX_SCAN, l2s, "s-", color="C0", alpha=0.55,
-              label=f"LUNA PLM (MUSCL-Hancock)  L2, slope {slope_l2:.2f}")
+    ax.loglog(NX_SCAN, l1s, "o-", color="C0", lw=2.0, ms=7,
+              label=f"LUNA  PLM + MUSCL-Hancock + MonCen  (slope {luna_conv:.2f})")
 
     scheme_styles = {
-        "plm":  dict(color="C1", label="AthenaK PLM (RK2)"),
-        "ppmx": dict(color="C3", label="AthenaK PPMX (RK2)"),
+        "plm":  dict(color="C1", label="AthenaK  PLM + RK2"),
+        "ppmx": dict(color="C3", label="AthenaK  PPMX + RK2"),
     }
     for scheme, (nx, ak_l1) in ak_results.items():
         s = scheme_styles[scheme]
-        slope_l1_ak = convergence_slope(nx, ak_l1)
-        print(f"AthenaK {scheme} L1 slope: {slope_l1_ak:.3f}")
-        ax.loglog(nx, ak_l1, "o--", color=s["color"],
-                  label=f"{s['label']}  L1, slope {slope_l1_ak:.2f}")
+        ak_conv = converging_slope(nx, ak_l1)
+        ax.loglog(nx, ak_l1, "s--", color=s["color"], lw=1.5, ms=6,
+                  label=f"{s['label']}  (slope {ak_conv:.2f})")
 
-    if not ak_results:
-        print(f"Note: no AthenaK files in {ak_dir} — LUNA-only plot.")
-
-    nx_ref = np.array(NX_SCAN, dtype=float)
+    # 2nd-order reference, anchored to LUNA's first data point and spanning
+    # only the converging regime so it lives next to the data.
+    nx_ref = np.array([NX_SCAN[0], 512], dtype=float)
     ax.loglog(nx_ref, l1s[0] * (nx_ref / nx_ref[0]) ** -2,
-              "k--", lw=1, label="ref slope -2")
-    ax.loglog(nx_ref, l1s[0] * (nx_ref / nx_ref[0]) ** -4,
-              "k:", lw=1, label="ref slope -4")
-    ax.set_xlabel("Nx")
-    ax.set_ylabel("error norm (density)")
-    ax.set_title("Soundwave 1D convergence  —  LUNA vs AthenaK")
-    ax.legend(fontsize=8, loc="lower left")
+              color="0.4", linestyle=":", lw=1.5, label=r"slope $-2$ (2nd order)")
+
+    # Annotate the nonlinear-physics plateau
+    plateau = float(min(l1s))
+    ax.axhline(plateau, color="0.75", linestyle="-", lw=0.8, alpha=0.6, zorder=0)
+    ax.text(NX_SCAN[-1], plateau * 1.4,
+            f"nonlinear-wave floor (~{plateau:.1e}, scales as amp²)",
+            ha="right", va="bottom", fontsize=8, color="0.4")
+
+    ax.set_xlabel("resolution Nx", fontsize=11)
+    ax.set_ylabel(r"L1 error in density (vs linear analytic)", fontsize=11)
+    ax.set_title(
+        "Soundwave 1D convergence — LUNA vs AthenaK\n"
+        r"(right-going acoustic eigenmode, $\varepsilon=10^{-4}$, periodic, one period)",
+        fontsize=10,
+    )
+    # Zoom y-axis to the data range
+    ymin = 0.3 * plateau
+    ymax = 3.0 * max(max(l1s), max(max(v[1]) for v in ak_results.values()) if ak_results else 0)
+    ax.set_ylim(ymin, ymax)
+    ax.legend(fontsize=9, loc="upper right", framealpha=0.95)
+    ax.grid(True, which="both", alpha=0.3)
     fig.tight_layout()
 
     Path("figures").mkdir(exist_ok=True)
