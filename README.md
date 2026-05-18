@@ -24,6 +24,10 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Woodward-Colella interacting blast waves (P_L=1000, P_M=0.01, P_R=100; t=0.038, reflecting walls). Tests strong shocks with extreme pressure ratios (10⁵). LUNA captures the central density spike at x≈0.87 with the expected refinement behavior — Nx=256 underestimates the peak height; Nx=2048 essentially matches AthenaK PPMX 8192.*
 
+![Kelvin-Helmholtz density grid: LUNA refinement series](figures/kh_grid.png)
+
+*2D Kelvin-Helmholtz instability (double-tanh shear layers at y=0.5 and y=1.5 on Lx=Ly=2, periodic, γ=5/3; LUNA PLM + MUSCL-Hancock + MonCen + HLLC). Each row shows the same simulation at a fixed resolution; columns are density snapshots at t = 0, 1, 2.5, 4, 5. Higher resolution resolves progressively finer secondary roll-ups and the small-scale mixing layer between the two shear regions. The 4096² and 8192² rows will be added once those runs complete; an 8192² AthenaK WENOZ reference at the same times will sit alongside.*
+
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
 - ✅ HLLC Riemann solver with optimized flux computation

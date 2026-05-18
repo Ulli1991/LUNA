@@ -177,7 +177,9 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
         """
         from hydro.fluxes import hllc_flux_primitive
         from hydro.slopes import compute_slopes_from_padded
-        from hydro.jacobian import (primitive_flux_1d, primitive_flux_2d, primitive_flux_3d)
+        from hydro.jacobian import (apply_primitive_jacobian_1d,
+                                    apply_primitive_jacobian_2d,
+                                    apply_primitive_jacobian_3d)
         from hydro.conversions import cons_to_prim, prim_to_cons
         import jax.lax as lax
 
@@ -228,7 +230,7 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
             if spatial_dim == 2:
                 Wc = W_pad[:, 1:-1, 1:-1]
 
-                # MUSCL-Hancock predictor step
+                # MUSCL-Hancock predictor (Jacobian form): W_half = Wc - ½dt·A·∇W
                 dWx_scaled = dWx * inv_dx
                 dWy_scaled = dWy * inv_dy
                 A_dW = apply_primitive_jacobian_2d(Wc, dWx_scaled, dWy_scaled, gamma)
@@ -273,19 +275,13 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
 
             elif spatial_dim == 1:
                 Wc = W_pad[:, 1:-1]
+
+                # MUSCL-Hancock predictor (Jacobian form): W_half = Wc - ½dt·A·∇W
+                dWx_scaled = dWx * inv_dx
+                A_dW = apply_primitive_jacobian_1d(Wc, dWx_scaled, gamma)
+                W_half = Wc - 0.5 * dt * A_dW
+
                 half_dWx = 0.5 * dWx
-
-                # MUSCL-Hancock predictor in FLUX-DIFFERENCE form (Toro 14.3):
-                # advance the cell-center state by -dt/(2·dx)·[F(WR_cell) - F(WL_cell)]
-                # evaluated on the LEFT and RIGHT reconstructed face values of cell i.
-                # Converts via U so the nonlinear advection terms in F are captured
-                # consistently with the conservation laws.
-                F_L = primitive_flux_1d(Wc - half_dWx, gamma)
-                F_R = primitive_flux_1d(Wc + half_dWx, gamma)
-                Uc = prim_to_cons(Wc, gamma)
-                U_half = Uc - 0.5 * dt * (F_R - F_L) * inv_dx
-                W_half = cons_to_prim(U_half, gamma)
-
                 Wr_x = W_half + half_dWx   # right-edge reconstruction per cell
                 Wl_x = W_half - half_dWx   # left-edge reconstruction per cell
 
@@ -305,11 +301,9 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
                 return -dFdx
 
             else:  # 3D
-                from hydro.jacobian import apply_primitive_jacobian_3d
-
                 Wc = W_pad[:, 1:-1, 1:-1, 1:-1]
 
-                # MUSCL-Hancock predictor step
+                # MUSCL-Hancock predictor (Jacobian form): W_half = Wc - ½dt·A·∇W
                 dWx_scaled = dWx * inv_dx
                 dWy_scaled = dWy * inv_dy
                 dWz_scaled = dWz * inv_dz

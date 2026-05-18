@@ -35,9 +35,10 @@ def advection_square(cfg, x_slice=None, y_slice=None):
     else:
         y_start, y_end = 0, Ny
 
-    # Create coordinate arrays for local slice only
-    x_full = jnp.linspace(0, Lx, Nx, endpoint=False)
-    y_full = jnp.linspace(0, Ly, Ny, endpoint=False)
+    dx = Lx / Nx
+    dy = Ly / Ny
+    x_full = (jnp.arange(Nx) + 0.5) * dx
+    y_full = (jnp.arange(Ny) + 0.5) * dy
     x_local = x_full[x_start:x_end]
     y_local = y_full[y_start:y_end]
     X, Y = jnp.meshgrid(x_local, y_local, indexing='ij')
@@ -45,8 +46,7 @@ def advection_square(cfg, x_slice=None, y_slice=None):
     # Square in the middle of the domain
     square = (X > 0.25 * Lx) & (X < 0.75 * Lx) & (Y > 0.25 * Ly) & (Y < 0.75 * Ly)
 
-    # Initial conditions: density = 1, velocity = 1, pressure = 1 (uniform)
-    rho = square.astype(jnp.float32) + 1.0  # square with value 1 inside
+    rho = square.astype(jnp.float64) + 1.0  # square with value 1 inside
     u = jnp.ones_like(rho)  # vx = 1
     v = jnp.ones_like(rho)  # vy = 1
     p = jnp.ones_like(rho)  # constant pressure

@@ -1,58 +1,69 @@
 """2D square-advection time-progression plot.
 
-Runs the Square-Advected test at Nx² = 1024² for one full diagonal traversal
-(u=v=1, Lx=Ly=1, periodic BCs => t_end = 1). Saves density snapshots at a
-handful of times and assembles a horizontal time-progression strip showing
-the square exiting one boundary and re-entering through the periodic side.
+Runs the Square-Advected test at Nx^2 = 1024^2 with u=v=1, Lx=Ly=1, periodic.
+One full diagonal traversal => t_end = 1, so t=1 should match t=0 exactly
+modulo numerical diffusion. Saves a 1-row strip of density snapshots at
+t in {0, 0.25, 0.5, 0.75, 1.0}.
 
-Saves figures/square_advection.pdf.
+Saves figures/square_advection.{pdf,png}.
 """
 from pathlib import Path
 import matplotlib.pyplot as plt
 
+from file_io.read_snapshot import read_snapshot, find_snapshot_at_time
 from scripts.validation.runner import run_one
 
 
 NX = 1024
 T_END = 1.0
 SNAPSHOT_TIMES = [0.0, 0.25, 0.5, 0.75, 1.0]
+OUTDIR = f"snapshots/square_advection_Nx{NX}"
+VMIN, VMAX = 0.95, 2.05
 
 
 def main():
     overrides = dict(
         test_problem="Square-Advected",
         SPATIAL_DIMENSION=2,
-        BOUNDARY=0,  # periodic
+        BOUNDARY=0,            # periodic
         Nx=NX, Ny=NX,
+        Lx=1.0, Ly=1.0,
         t_end=T_END,
-        TIME_SOLVER=1,
-        ORDER=1,
+        TIME_SOLVER=1,         # MUSCL-Hancock
+        ORDER=1,               # PLM
+        LIMITER=0,             # minmod
         PLOT_AFTER_SIM=False,
         production_mode=True,
         time_bet_snaps=0.25,
-        output_dir=f"snapshots/square_advection_Nx{NX}",
+        output_dir=OUTDIR,
+        enable_x64=True,
     )
-    _, _, outdir = run_one(overrides)
+    run_one(overrides)
 
     fig, axes = plt.subplots(
         1, len(SNAPSHOT_TIMES),
         figsize=(2.5 * len(SNAPSHOT_TIMES), 2.8),
         squeeze=False,
     )
+
     for c, t in enumerate(SNAPSHOT_TIMES):
         ax = axes[0, c]
-        # TODO: load density at time t from outdir, then ax.pcolormesh(...).
-        raise NotImplementedError(
-            "Hook this up to the LUNA snapshot reader once the snapshot "
-            "format / per-time file naming is locked in."
-        )
-        ax.set_title(f"t = {t}")
-        ax.set_aspect("equal")
+        snap = read_snapshot(find_snapshot_at_time(OUTDIR, t, tol=0.02))
+        ax.imshow(snap["rho"].T, origin="lower",
+                  extent=(0, snap["Lx"], 0, snap["Ly"]),
+                  vmin=VMIN, vmax=VMAX, cmap="viridis",
+                  interpolation="nearest", aspect="equal")
+        ax.set_title(f"t = {t}", fontsize=11)
+        ax.tick_params(top=True, right=True, direction="in")
+        ax.grid(True, linestyle=":", alpha=0.4)
+        if c > 0:
+            ax.set_yticklabels([])
 
     fig.tight_layout()
     Path("figures").mkdir(exist_ok=True)
     fig.savefig("figures/square_advection.pdf")
-    print("Saved figures/square_advection.pdf")
+    fig.savefig("figures/square_advection.png", dpi=200)
+    print("Saved figures/square_advection.{pdf,png}")
 
 
 if __name__ == "__main__":
