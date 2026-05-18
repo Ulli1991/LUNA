@@ -26,7 +26,11 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 ![Kelvin-Helmholtz density grid: LUNA refinement series](figures/kh_grid.png)
 
-*2D Kelvin-Helmholtz instability (double-tanh shear layers at y=0.5 and y=1.5 on Lx=Ly=2, periodic, γ=5/3; LUNA PLM + MUSCL-Hancock + MonCen + HLLC). Each row shows the same simulation at a fixed resolution; columns are density snapshots at t = 0, 1, 2.5, 4, 5. Higher resolution resolves progressively finer secondary roll-ups and the small-scale mixing layer between the two shear regions. The 4096² and 8192² rows will be added once those runs complete; an 8192² AthenaK WENOZ reference at the same times will sit alongside.*
+*2D Kelvin-Helmholtz instability (double-tanh shear layers at y=0.5 and y=1.5 on Lx=Ly=2, periodic, γ=5/3; LUNA PLM + MUSCL-Hancock + MonCen + HLLC). Each row shows the same simulation at a fixed resolution; columns are density snapshots at t = 0, 1, 2.5, 4, 5. Higher resolution resolves progressively finer secondary roll-ups and the small-scale mixing layer between the two shear regions. The 8192² row and the AthenaK WENOZ reference column will be added once those runs complete.*
+
+![2D square advection: LUNA time progression](figures/square_advection.png)
+
+*2D square-density advection (ρ=2 in [0.25,0.75]², ρ=1 outside; uniform u=v=1, p=1, γ=5/3; periodic Lx=Ly=1; LUNA PLM + MUSCL-Hancock + MonCen + HLLC at Nx=1024² with CFL=0.4). Density snapshots at t = 0, 0.25, 0.5, 0.75, 1.0 — the square advects diagonally and after one full traversal (t=1) the velocity has carried it exactly back to the center. Tests that the scheme preserves a sharp tangential contact under uniform-flow advection over the full domain length.*
 
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
