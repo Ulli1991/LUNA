@@ -57,11 +57,13 @@ def pad_with_halo_1d_auto(U, boundary):
     U_padded : array (Nvar, Nx+2)
         Array with ghost cells
     """
-    if boundary == 0:  # Periodic - use roll
-        # Get left and right neighbors via roll
-        left_col = jnp.roll(U, 1, axis=1)[:, -1:]
-        right_col = jnp.roll(U, -1, axis=1)[:, 0:1]
-        U_padded = jnp.concatenate([left_col, U, right_col], axis=1)
+    if boundary == 0:  # Periodic — wrap-around
+        # Left ghost = U[Nx-1] (last interior cell), right ghost = U[0].
+        # NOTE: the previous implementation used
+        #   jnp.roll(U, 1, axis=1)[:, -1:]   (which gives U[Nx-2], off-by-one)
+        # and the mirror on the right side. That bug shifted both ghost
+        # cells by one and corrupted the slopes of cells 0 and Nx-1.
+        U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode='wrap')
 
     elif boundary == 1:  # Zero-gradient
         U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode='edge')
@@ -92,16 +94,8 @@ def pad_with_halo_2d_auto(U, boundary):
     U_padded : array (Nvar, Nx+2, Ny+2)
         Array with ghost cells
     """
-    if boundary == 0:  # Periodic - use roll
-        # X-direction: get left and right neighbors via roll
-        left_col = jnp.roll(U, 1, axis=1)[:, -1:, :]
-        right_col = jnp.roll(U, -1, axis=1)[:, 0:1, :]
-        U_x_padded = jnp.concatenate([left_col, U, right_col], axis=1)
-
-        # Y-direction: get top and bottom neighbors via roll
-        top_row = jnp.roll(U_x_padded, 1, axis=2)[:, :, -1:]
-        bottom_row = jnp.roll(U_x_padded, -1, axis=2)[:, :, 0:1]
-        U_padded = jnp.concatenate([top_row, U_x_padded, bottom_row], axis=2)
+    if boundary == 0:  # Periodic — wrap-around (was off-by-one with jnp.roll)
+        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1)), mode='wrap')
 
     elif boundary == 1:  # Zero-gradient - use edge mode
         # jnp.pad with 'edge' mode - copies edge values
@@ -140,21 +134,8 @@ def pad_with_halo_3d_auto(U, boundary):
     U_padded : array (Nvar, Nx+2, Ny+2, Nz+2)
         Array with ghost cells
     """
-    if boundary == 0:  # Periodic - use roll
-        # X-direction
-        left_col = jnp.roll(U, 1, axis=1)[:, -1:, :, :]
-        right_col = jnp.roll(U, -1, axis=1)[:, 0:1, :, :]
-        U_x = jnp.concatenate([left_col, U, right_col], axis=1)
-
-        # Y-direction
-        top_row = jnp.roll(U_x, 1, axis=2)[:, :, -1:, :]
-        bottom_row = jnp.roll(U_x, -1, axis=2)[:, :, 0:1, :]
-        U_xy = jnp.concatenate([top_row, U_x, bottom_row], axis=2)
-
-        # Z-direction
-        front_slab = jnp.roll(U_xy, 1, axis=3)[:, :, :, -1:]
-        back_slab = jnp.roll(U_xy, -1, axis=3)[:, :, :, 0:1]
-        U_padded = jnp.concatenate([front_slab, U_xy, back_slab], axis=3)
+    if boundary == 0:  # Periodic — wrap-around (was off-by-one with jnp.roll)
+        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1), (1, 1)), mode='wrap')
 
     elif boundary == 1:  # Zero-gradient
         U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1), (1, 1)), mode='edge')

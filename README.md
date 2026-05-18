@@ -4,6 +4,10 @@
 
 A high-performance JAX-based hydrodynamics simulation code for solving the Euler equations in 1D, 2D, and 3D with **single-GPU and multi-GPU support**.
 
+![Soundwave 1D convergence: LUNA vs AthenaK](figures/soundwave_convergence.png)
+
+*1D linear-wave convergence test (single right-going acoustic eigenmode, ρ₀=1, p₀=0.6, γ=5/3, ε=10⁻⁴, periodic Lx=1, run for one acoustic period). LUNA (MUSCL-Hancock + PLM + MonCen + HLLC, blue) matches AthenaK PLM+RK2 (orange) to floating-point precision at the TVD-limiter plateau ~3×10⁻⁸ and is ~4× more accurate at Nx=128.*
+
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
 - ✅ HLLC Riemann solver with optimized flux computation

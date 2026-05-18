@@ -134,7 +134,8 @@ def main():
 
     Path("figures").mkdir(exist_ok=True)
     fig.savefig("figures/soundwave_convergence.pdf")
-    print("Saved figures/soundwave_convergence.pdf")
+    fig.savefig("figures/soundwave_convergence.png", dpi=200)
+    print("Saved figures/soundwave_convergence.pdf and .png")
 
 
 if __name__ == "__main__":

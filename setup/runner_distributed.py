@@ -58,15 +58,18 @@ def run_simulation_distributed(
         print("="*60)
         print("Running one step to trigger JIT compilation...")
 
-    # Warmup: compile both compute_dt and step. Matches previous semantics
-    # (state advances by one initial-CFL step; the small inconsistency between
-    # the post-warmup U and t_start is well below CFL precision).
+    # Warmup: compile both compute_dt and step. Save the IC and restore it
+    # afterward so the warmup step does NOT advance the simulation state.
+    # (The previous behavior advanced U by one CFL timestep while leaving t
+    # at t_start, which introduced a fixed +dt_warmup phase offset visible in
+    # short-time convergence tests as a spurious 1st-order error.)
     compile_start = pytime.time()
+    U_pre_warmup = U_sharded
     dt_warmup = compute_dt_fn(U_sharded)
     jax.block_until_ready(dt_warmup)
-    U_sharded = step_fn(U_sharded, dt_warmup)
-    jax.block_until_ready(U_sharded)
-    U_sharded = jax.lax.with_sharding_constraint(U_sharded, sharding)
+    _ = step_fn(U_sharded, dt_warmup)        # trigger JIT compile, discard result
+    jax.block_until_ready(_)
+    U_sharded = jax.lax.with_sharding_constraint(U_pre_warmup, sharding)
     compile_time = pytime.time() - compile_start
 
     if is_main_process:

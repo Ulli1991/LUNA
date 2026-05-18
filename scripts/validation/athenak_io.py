@@ -92,7 +92,10 @@ def load_1d(path, gamma=5.0 / 3.0):
     rho = _stitch("dens")
     vx = _stitch("velx")
     eint = _stitch("eint")
-    P = (gamma - 1.0) * rho * eint
+    # AthenaK stores `eint` as the INTERNAL ENERGY DENSITY (p/(γ-1)), not the
+    # specific internal energy per mass. So pressure is (γ-1)·eint, NOT
+    # (γ-1)·ρ·eint as in the standard "specific eint" convention.
+    P = (gamma - 1.0) * eint
 
     return {
         "t": float(fd["time"]),
