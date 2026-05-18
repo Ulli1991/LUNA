@@ -36,8 +36,29 @@ E0_ERG = 1.0e51
 N0_CGS = 1.0
 RHO0_CGS = N0_CGS * PROTON_MASS_CGS
 
-OUTDIR = "snapshots/sedov3d_arepo_Nx128"
 XI_0_3D = 1.15            # Sedov-Taylor constant for gamma=5/3 in 3D
+
+
+def _list_res_outdirs():
+    """All snapshots/sedov3d_arepo_Nx*/ directories, sorted by Nx ascending.
+
+    Returns list of (Nx, dir) pairs.
+    """
+    import re
+    candidates = []
+    for d in glob.glob("snapshots/sedov3d_arepo_Nx*"):
+        m = re.match(r"^snapshots/sedov3d_arepo_Nx(\d+)$", d)
+        if m and os.path.isdir(d):
+            candidates.append((int(m.group(1)), d))
+    if not candidates:
+        raise SystemExit("No sedov3d_arepo_Nx* snapshot dirs found.")
+    candidates.sort(key=lambda x: x[0])
+    return candidates
+
+
+# 2-panel figure (R_s(t) + projection) uses the highest available Nx.
+OUTDIR = _list_res_outdirs()[-1][1]
+print(f"2-panel sedov snapshot dir (highest Nx): {OUTDIR}")
 
 
 def load_snapshot(snapdir):
@@ -115,22 +136,57 @@ def main():
     t_final_yr = final["t"] * UNIT_TIME_S / SEC_PER_YEAR
     R_s_analytic_pc = analytic_R_s(t_final_yr)
 
-    # === Figure 1: 4-panel radial profile at final snapshot ===
-    # Compute temperature: T = P / (n k_B); n = rho/(mu m_p), mu=1 for atomic H.
-    n_cgs = rho_cgs / PROTON_MASS_CGS
-    T_K = p_cgs / np.maximum(n_cgs, 1e-30) / BOLTZMANN_CGS
-
+    # === Figure 1: 4-panel radial-profile RESOLUTION STUDY ===
+    # Overlay n, v_r, P, T profiles from every available Nx run at t = t_end.
     R_xlim = final["Lx"] * UNIT_LENGTH / PARSEC_CGS / 2
 
     figR, axes = plt.subplots(2, 2, figsize=(11, 8))
-    panels = [
-        (axes[0, 0], n_cgs,  "n [cm$^{-3}$]",      "C0", "log"),
-        (axes[0, 1], vr_kms, r"$v_r$ [km s$^{-1}$]", "C2", "linear"),
-        (axes[1, 0], p_cgs,  "P [erg cm$^{-3}$]",  "C1", "log"),
-        (axes[1, 1], T_K,    "T [K]",              "C3", "log"),
+    cmap = plt.get_cmap("magma")
+    all_res = _list_res_outdirs()
+    colors = [cmap(0.15 + 0.7 * i / max(1, len(all_res) - 1))
+              for i in range(len(all_res))]
+
+    for (Nx_i, dir_i), color in zip(all_res, colors):
+        snap_files = sorted(glob.glob(os.path.join(dir_i, "snapdir_*")))
+        if not snap_files:
+            continue
+        s_final = load_snapshot(snap_files[-1])
+        ic_i = s_final["Nx"]/2 - 0.5
+        cc_i = (ic_i, ic_i, ic_i)
+        cx_i = s_final["Nx"]/2 * s_final["dx"]
+        cy_i = s_final["Nx"]/2 * s_final["dy"]
+        cz_i = s_final["Nx"]/2 * s_final["dz"]
+        r_bins_i, rho_i = radial_profile(s_final["rho"], s_final["dx"], s_final["dy"], s_final["dz"], center=cc_i)
+        _, p_i = radial_profile(s_final["p"], s_final["dx"], s_final["dy"], s_final["dz"], center=cc_i)
+        X, Y, Z = np.meshgrid(
+            (np.arange(s_final["Nx"]) + 0.5) * s_final["dx"],
+            (np.arange(s_final["Nx"]) + 0.5) * s_final["dy"],
+            (np.arange(s_final["Nx"]) + 0.5) * s_final["dz"],
+            indexing="ij",
+        )
+        rvec = np.sqrt((X-cx_i)**2 + (Y-cy_i)**2 + (Z-cz_i)**2)
+        vr_field = ((X-cx_i)*s_final["vx"] + (Y-cy_i)*s_final["vy"] + (Z-cz_i)*s_final["vz"]) / np.maximum(rvec, 1e-30)
+        _, vr_i = radial_profile(vr_field, s_final["dx"], s_final["dy"], s_final["dz"], center=cc_i)
+
+        r_pc_i = r_bins_i * UNIT_LENGTH / PARSEC_CGS
+        n_cgs_i = rho_i * UNIT_DENSITY / PROTON_MASS_CGS
+        p_cgs_i = p_i * UNIT_PRESSURE
+        vr_kms_i = vr_i * UNIT_VELOCITY / 1e5
+        T_K_i = p_cgs_i / np.maximum(n_cgs_i, 1e-30) / BOLTZMANN_CGS
+
+        label = f"Nx={Nx_i}"
+        axes[0, 0].plot(r_pc_i, n_cgs_i, color=color, label=label)
+        axes[0, 1].plot(r_pc_i, vr_kms_i, color=color, label=label)
+        axes[1, 0].plot(r_pc_i, p_cgs_i, color=color, label=label)
+        axes[1, 1].plot(r_pc_i, T_K_i, color=color, label=label)
+
+    panel_meta = [
+        (axes[0, 0], "n [cm$^{-3}$]", "log"),
+        (axes[0, 1], r"$v_r$ [km s$^{-1}$]", "linear"),
+        (axes[1, 0], "P [erg cm$^{-3}$]", "log"),
+        (axes[1, 1], "T [K]", "log"),
     ]
-    for ax, y, ylabel, color, yscale in panels:
-        ax.plot(r_pc, y, color=color)
+    for ax, ylabel, yscale in panel_meta:
         ax.axvline(R_s_analytic_pc, color="k", linestyle="--", lw=1.2,
                    label=fr"$R_s$ analytic = {R_s_analytic_pc:.1f} pc")
         ax.set_xlabel("r [pc]"); ax.set_ylabel(ylabel)
@@ -139,8 +195,8 @@ def main():
         ax.tick_params(top=True, right=True, direction="in", which="both")
         ax.grid(True, which="both", linestyle=":", alpha=0.4)
         ax.legend(frameon=False, fontsize=9)
-    figR.suptitle(f"Sedov 3D radial profile at t = {t_final_yr:.0f} yr "
-                  f"(LUNA, 128³ Arepo-units run)", fontsize=11)
+    figR.suptitle(f"Sedov 3D radial-profile resolution study at t = {t_final_yr:.0f} yr",
+                  fontsize=11)
     figR.tight_layout()
     Path("figures").mkdir(exist_ok=True)
     figR.savefig("figures/sedov3d_radial.pdf")

@@ -31,7 +31,7 @@ UNIT_TIME_S = UNIT_LENGTH / UNIT_VELOCITY        # ~3.086e16 s ~ 0.978 Gyr
 # Run config
 BOX_SIZE_PC = 50.0                                # 50 pc
 BOX_KPC = BOX_SIZE_PC * 1e-3                      # in code units
-NX = 128
+NX = 256
 T_END_YR = 1.0e4                                  # 10,000 yr
 T_END_CODE = T_END_YR * SEC_PER_YEAR / UNIT_TIME_S
 N_SNAPS = 10
