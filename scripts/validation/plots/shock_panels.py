@@ -23,24 +23,28 @@ PROBLEMS = {
         t_end=0.2,
         x_min=0.0, x_max=1.0, lx_runner=1.0,
         boundary=1,
+        gamma=5.0 / 3.0,             # Sod traditionally γ=5/3
     ),
     "Shu-Osher": dict(
         slug="shu_osher",
         t_end=1.8,
         x_min=-5.0, x_max=5.0, lx_runner=10.0,
         boundary=1,
+        gamma=1.4,                   # textbook Shu-Osher uses γ=1.4
     ),
     "Woodward-Colella": dict(
         slug="woodward_colella",
         t_end=0.038,
         x_min=0.0, x_max=1.0, lx_runner=1.0,
         boundary=2,                  # reflecting walls — the gas is contained
+        gamma=1.4,                   # textbook WC uses γ=1.4 (peak ρ ≈ 6)
     ),
 }
 
 NX_SCAN = [256, 512, 1024, 2048]
 AK_REF_DIR = Path("reference/athenak")
-GAMMA = 5.0 / 3.0
+# Per-problem γ is set in PROBLEMS below — Sod uses γ=5/3, Shu-Osher and
+# Woodward-Colella use the standard γ=1.4.
 
 
 def _internal_energy(rho, P, gamma):
@@ -53,12 +57,14 @@ def plot_one(problem_name, params):
     x_min   = params["x_min"]
     lx      = params["lx_runner"]
     bnd     = params["boundary"]   # 1 = zero-gradient, 2 = reflecting
+    gam     = params["gamma"]
 
     base = dict(
         test_problem=problem_name,
         SPATIAL_DIMENSION=1,
         Lx=lx,
         BOUNDARY=bnd,
+        gamma=gam,
         t_end=t_end,
         time_bet_snaps=t_end,
         TIME_SOLVER=1,             # MUSCL-Hancock
@@ -85,8 +91,8 @@ def plot_one(problem_name, params):
     ak_path = AK_REF_DIR / f"{slug}_ppmx_Nx8192.bin"
     if ak_path.is_file():
         try:
-            ref = load_ak(ak_path, gamma=GAMMA)
-            ref_e = _internal_energy(ref["rho"], ref["P"], GAMMA)
+            ref = load_ak(ak_path, gamma=gam)
+            ref_e = _internal_energy(ref["rho"], ref["P"], gam)
             ref_fields = {"rho": ref["rho"], "vx": ref["vx"],
                           "P": ref["P"], "e_int": ref_e}
             for ax, key, _ in panels:
