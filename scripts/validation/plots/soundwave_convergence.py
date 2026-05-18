@@ -116,7 +116,7 @@ def main():
 
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
     ax.loglog(NX_SCAN, l1s, "o-", color="C0", lw=2.0, ms=7,
-              label=f"LUNA  PLM + MUSCL-Hancock + MonCen  (slope {luna_conv:.2f})")
+              label="LUNA  PLM + MUSCL-Hancock + MonCen")
 
     scheme_styles = {
         "plm":  dict(color="C1", label="AthenaK  PLM + RK2"),
@@ -124,35 +124,25 @@ def main():
     }
     for scheme, (nx, ak_l1) in ak_results.items():
         s = scheme_styles[scheme]
-        ak_conv = converging_slope(nx, ak_l1)
         ax.loglog(nx, ak_l1, "s--", color=s["color"], lw=1.5, ms=6,
-                  label=f"{s['label']}  (slope {ak_conv:.2f})")
+                  label=s["label"])
 
-    # 2nd-order reference, anchored to LUNA's first data point and spanning
-    # only the converging regime so it lives next to the data.
+    # 2nd-order reference, anchored to LUNA's first data point.
     nx_ref = np.array([NX_SCAN[0], 512], dtype=float)
     ax.loglog(nx_ref, l1s[0] * (nx_ref / nx_ref[0]) ** -2,
               color="0.4", linestyle=":", lw=1.5, label=r"slope $-2$ (2nd order)")
 
-    # Annotate the nonlinear-physics plateau
+    # Annotate the nonlinear-physics plateau (no slope label, just a horizontal line)
     plateau = float(min(l1s))
     ax.axhline(plateau, color="0.75", linestyle="-", lw=0.8, alpha=0.6, zorder=0)
-    ax.text(NX_SCAN[-1], plateau * 1.4,
-            f"nonlinear-wave floor (~{plateau:.1e}, scales as amp²)",
-            ha="right", va="bottom", fontsize=8, color="0.4")
 
     ax.set_xlabel("resolution Nx", fontsize=11)
     ax.set_ylabel(r"L1 error in density (vs linear analytic)", fontsize=11)
-    ax.set_title(
-        "Soundwave 1D convergence — LUNA vs AthenaK\n"
-        r"(right-going acoustic eigenmode, $\varepsilon=10^{-4}$, periodic, one period)",
-        fontsize=10,
-    )
     # Zoom y-axis to the data range
     ymin = 0.3 * plateau
     ymax = 3.0 * max(max(l1s), max(max(v[1]) for v in ak_results.values()) if ak_results else 0)
     ax.set_ylim(ymin, ymax)
-    ax.legend(fontsize=9, loc="upper right", framealpha=0.95)
+    ax.legend(fontsize=10, loc="upper right", framealpha=0.95)
     ax.grid(True, which="both", alpha=0.3)
     fig.tight_layout()
 

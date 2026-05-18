@@ -78,28 +78,32 @@ def main():
     slope_l2 = convergence_slope(NX_SCAN, l2s)
     print(f"LUNA slope: L1={slope_l1:.3f}  L2={slope_l2:.3f}")
 
-    # AthenaK standing-wave reference: .bin files from the custom pgen
+    # AthenaK standing-wave reference: use errs.dat (DOUBLE precision L1
+    # computed inside AthenaK before the float32 .bin cast). .bin values are
+    # not usable here because they bottom out at the float32 storage floor.
     ak_dir = Path("reference/athenak")
     ak_nx, ak_l1 = [], []
     for Nx in NX_SCAN:
-        p = ak_dir / f"standing_Nx{Nx}_plm.bin"
-        if not p.is_file():
+        ep = ak_dir / f"standing_Nx{Nx}_plm-errs.dat"
+        if not ep.is_file():
             continue
-        ref = load_athenak_bin(p, gamma=GAMMA)
-        l1 = l1_error(ref["rho"], analytic_ic_density(ref["x"]))
+        data = np.loadtxt(ep, comments="#")
+        if data.ndim == 1:
+            data = data[np.newaxis, :]
+        d_L1 = float(data[-1, 6])
         ak_nx.append(Nx)
-        ak_l1.append(l1)
-        print(f"AthenaK Nx={Nx:5d}  L1={l1:.3e}")
+        ak_l1.append(d_L1)
+        print(f"AthenaK Nx={Nx:5d}  L1={d_L1:.3e}")
     if ak_nx:
         ak_slope = convergence_slope(ak_nx, ak_l1)
         print(f"AthenaK slope: L1={ak_slope:.3f}")
 
     fig, ax = plt.subplots(figsize=(7.0, 5.0))
     ax.loglog(NX_SCAN, l1s, "o-", color="C0", lw=2.0, ms=7,
-              label=f"LUNA  PLM+MUSCL-Hancock  (slope {slope_l1:.2f})")
+              label="LUNA  PLM+MUSCL-Hancock")
     if ak_nx:
         ax.loglog(ak_nx, ak_l1, "s--", color="C1", lw=1.5, ms=6,
-                  label=f"AthenaK  PLM+RK2  (slope {ak_slope:.2f})")
+                  label="AthenaK  PLM+RK2")
 
     # 2nd-order reference, anchored to LUNA's first point
     nx_ref = np.array(NX_SCAN, dtype=float)
@@ -108,12 +112,7 @@ def main():
 
     ax.set_xlabel("resolution Nx", fontsize=11)
     ax.set_ylabel(r"L1 error in density (vs analytic)", fontsize=11)
-    ax.set_title(
-        "Soundwave 1D STANDING WAVE convergence — LUNA vs AthenaK\n"
-        r"(u=0 superposition, $\varepsilon=10^{-4}$, periodic, one period)",
-        fontsize=10,
-    )
-    ax.legend(fontsize=9, loc="upper right", framealpha=0.95)
+    ax.legend(fontsize=10, loc="upper right", framealpha=0.95)
     ax.grid(True, which="both", alpha=0.3)
     fig.tight_layout()
 

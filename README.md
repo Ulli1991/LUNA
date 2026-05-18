@@ -6,11 +6,11 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 ![Soundwave 1D convergence (eigenmode): LUNA vs AthenaK](figures/soundwave_convergence.png)
 
-*1D linear-wave convergence (single right-going acoustic eigenmode, ρ₀=1, p₀=0.6, γ=5/3, ε=10⁻⁴, periodic Lx=1, one acoustic period). LUNA (MUSCL-Hancock + PLM + MonCen + HLLC) and AthenaK PLM+RK2 both converge at the expected 2nd order from Nx=32 onward; both then saturate at ~3×10⁻⁸, the irreducible O(ε²) nonlinear-steepening floor.*
+*Linear-wave convergence test, single right-going acoustic eigenmode (ρ₀=1, p₀=0.6, γ=5/3, ε=10⁻⁴, periodic Lx=1, one acoustic period). LUNA (PLM + MUSCL-Hancock + MonCen + HLLC) tracks AthenaK PLM+RK2 over the full Nx range. All curves approach the same O(ε²) nonlinear-steepening floor — that's the residual difference between the actual nonlinear wave and the linear analytic reference, identical in both codes. AthenaK PPMX is shown as a higher-order reference.*
 
 ![Soundwave 1D STANDING WAVE convergence: LUNA vs AthenaK](figures/soundwave_standing_convergence.png)
 
-*Same parameters but with u=0 superposition IC (standing wave). The standing-wave symmetry cancels the nonlinear O(ε²) corrections so the plateau disappears. LUNA shows clean ~3rd-order convergence down to 5×10⁻¹¹ at Nx=512; AthenaK PLM converges then saturates around 2×10⁻⁸ (RK2 + per-step PLM reconstruction has less symmetry cancellation than LUNA's single-step MUSCL-Hancock predictor).*
+*Same parameters but with u=0 superposition IC (standing wave). The standing-wave symmetry cancels the O(ε²) nonlinear corrections, so the floor disappears and convergence runs cleanly to ~10⁻¹⁰ at Nx=512. Both LUNA and AthenaK PLM+RK2 converge faster than the formal 2nd-order rate on this problem (a known symmetry-driven superconvergence). AthenaK L1 here is read from its built-in double-precision error output, not from the float32 binary snapshot.*
 
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
