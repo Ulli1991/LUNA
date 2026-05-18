@@ -112,8 +112,9 @@ def main():
 
     ax.set_xlabel("resolution Nx", fontsize=11)
     ax.set_ylabel(r"L1 error in density (vs analytic)", fontsize=11)
-    ax.legend(fontsize=10, loc="upper right", framealpha=0.95)
+    ax.legend(fontsize=10, loc="upper right", frameon=False)
     ax.grid(True, which="both", alpha=0.3)
+    ax.tick_params(which="both", top=True, right=True, direction="in")
     fig.tight_layout()
 
     Path("figures").mkdir(exist_ok=True)

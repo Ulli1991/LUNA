@@ -121,10 +121,12 @@ def plot_one(problem_name, params):
 
     for ax, _, label in panels:
         ax.set_ylabel(label)
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, which="both", alpha=0.3)
+        ax.tick_params(which="both", top=True, right=True, direction="in")
+        ax.minorticks_on()
     axes[1, 0].set_xlabel("x")
     axes[1, 1].set_xlabel("x")
-    axes[0, 0].legend(loc="best", fontsize=8)
+    axes[0, 0].legend(loc="best", fontsize=8, frameon=False)
 
     fig.tight_layout()
     Path("figures").mkdir(exist_ok=True)
