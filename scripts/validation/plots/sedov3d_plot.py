@@ -115,23 +115,39 @@ def main():
     t_final_yr = final["t"] * UNIT_TIME_S / SEC_PER_YEAR
     R_s_analytic_pc = analytic_R_s(t_final_yr)
 
-    fig, (axL, axR, axS) = plt.subplots(1, 3, figsize=(15, 4.4))
-    color_rho, color_p, color_v = "C0", "C1", "C2"
-    axL.plot(r_pc, rho_cgs / RHO0_CGS, label=r"$\rho/\rho_0$", color=color_rho)
-    axL.plot(r_pc, p_cgs / (RHO0_CGS * (1e8)**2), label=r"$P / (\rho_0 c_s^2)$ scaled", color=color_p)
-    # Plot v_r/cs0 with cs0 in km/s
-    cs0_kms = np.sqrt(5.0/3.0 * BOLTZMANN_CGS * 1e4 / PROTON_MASS_CGS) / 1e5
-    axL.plot(r_pc, vr_kms / max(cs0_kms, 1e-3), label=fr"$v_r / c_{{s,0}}$ (×{1/cs0_kms:.1e})", color=color_v)
-    axL.axvline(R_s_analytic_pc, color="k", linestyle="--", lw=1.2,
-                label=fr"$R_s$ (analytic) = {R_s_analytic_pc:.1f} pc")
-    axL.set_xlabel("r [pc]"); axL.set_ylabel("scaled")
-    axL.set_xlim(0, final["Lx"] * UNIT_LENGTH / PARSEC_CGS / 2)
-    axL.legend(frameon=False, fontsize=9)
-    axL.tick_params(top=True, right=True, direction="in")
-    axL.grid(True, linestyle=":", alpha=0.4)
-    axL.set_title(f"Radial profile at t = {t_final_yr:.0f} yr")
+    # === Figure 1: 4-panel radial profile at final snapshot ===
+    # Compute temperature: T = P / (n k_B); n = rho/(mu m_p), mu=1 for atomic H.
+    n_cgs = rho_cgs / PROTON_MASS_CGS
+    T_K = p_cgs / np.maximum(n_cgs, 1e-30) / BOLTZMANN_CGS
 
-    # === Right panel: R_shock(t) over snapshots vs analytic ===
+    R_xlim = final["Lx"] * UNIT_LENGTH / PARSEC_CGS / 2
+
+    figR, axes = plt.subplots(2, 2, figsize=(11, 8))
+    panels = [
+        (axes[0, 0], n_cgs,  "n [cm$^{-3}$]",      "C0", "log"),
+        (axes[0, 1], vr_kms, r"$v_r$ [km s$^{-1}$]", "C2", "linear"),
+        (axes[1, 0], p_cgs,  "P [erg cm$^{-3}$]",  "C1", "log"),
+        (axes[1, 1], T_K,    "T [K]",              "C3", "log"),
+    ]
+    for ax, y, ylabel, color, yscale in panels:
+        ax.plot(r_pc, y, color=color)
+        ax.axvline(R_s_analytic_pc, color="k", linestyle="--", lw=1.2,
+                   label=fr"$R_s$ analytic = {R_s_analytic_pc:.1f} pc")
+        ax.set_xlabel("r [pc]"); ax.set_ylabel(ylabel)
+        ax.set_xlim(0, R_xlim)
+        ax.set_yscale(yscale)
+        ax.tick_params(top=True, right=True, direction="in", which="both")
+        ax.grid(True, which="both", linestyle=":", alpha=0.4)
+        ax.legend(frameon=False, fontsize=9)
+    figR.suptitle(f"Sedov 3D radial profile at t = {t_final_yr:.0f} yr "
+                  f"(LUNA, 128³ Arepo-units run)", fontsize=11)
+    figR.tight_layout()
+    Path("figures").mkdir(exist_ok=True)
+    figR.savefig("figures/sedov3d_radial.pdf")
+    figR.savefig("figures/sedov3d_radial.png", dpi=200)
+
+    # === Figure 2: R_s(t) + column density projection ===
+    fig, (axR, axS) = plt.subplots(1, 2, figsize=(11, 4.4))
     t_yrs = np.array([s["t"] * UNIT_TIME_S / SEC_PER_YEAR for s in snaps])
     R_sim = np.array([shock_radius_from_snap(s) for s in snaps])
     t_dense = np.linspace(max(t_yrs[0], 1.0), t_yrs[-1], 200)
