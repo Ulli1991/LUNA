@@ -16,6 +16,7 @@ from .sod3d import sod_shock_3d
 from .sedov3d import sedov_blast_3d
 from .kh3d import kelvin_helmholtz_3d
 from .soundwave3d import soundwave_3d
+from .driven_turbulence_3d import driven_turbulence_3d
 
 
 # test_problem name -> (ic_function, ndim).
@@ -43,6 +44,7 @@ _IC_REGISTRY = {
     "Sedov-Blast-3D":       (sedov_blast_3d, 3),
     "Kelvin-Helmholtz-3D":  (kelvin_helmholtz_3d, 3),
     "Soundwave-3D":         (soundwave_3d, 3),
+    "Driven-Turbulence-3D": (driven_turbulence_3d, 3),
 }
 
 

@@ -214,20 +214,15 @@ def main():
     axR.legend(frameon=False, fontsize=9)
     axR.tick_params(top=True, right=True, direction="in", which="both")
     axR.grid(True, which="both", linestyle=":", alpha=0.4)
-    axR.set_title("Shock radius evolution")
 
-    # === Right-most panel: density projection (column integrate along z) ===
-    # Use the final snapshot. Convert column density to physical (g/cm^2).
+    # === Right panel: density projection (column integrate along z) ===
     rho_proj = final["rho"].sum(axis=2) * final["dz"] * UNIT_DENSITY * UNIT_LENGTH
     L_pc = final["Lx"] * UNIT_LENGTH / PARSEC_CGS
-    im = axS.imshow(rho_proj.T, origin="lower",
-                    extent=(0, L_pc, 0, L_pc),
-                    cmap="magma", aspect="equal")
+    axS.imshow(rho_proj.T, origin="lower",
+               extent=(0, L_pc, 0, L_pc),
+               cmap="magma", aspect="equal")
     axS.set_xlabel("x [pc]"); axS.set_ylabel("y [pc]")
-    axS.set_title(f"Column density at t = {t_final_yr:.0f} yr")
     axS.tick_params(top=True, right=True, direction="in")
-    cb = fig.colorbar(im, ax=axS, fraction=0.046, pad=0.04)
-    cb.set_label(r"$\int\rho\,dz$  [g cm$^{-2}$]")
 
     fig.tight_layout()
     Path("figures").mkdir(exist_ok=True)

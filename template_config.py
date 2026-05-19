@@ -1,9 +1,11 @@
 # template_config.py
 from dataclasses import dataclass, field
 from functools import cached_property
+from typing import Optional
 import numpy as np
 
 from units import UnitSystem
+from hydro.turbulence import OUDriverConfig
 
 @dataclass
 class Config:
@@ -162,6 +164,20 @@ class Config:
     # Override in a derived config (like the user's config.py) to attach a
     # physical unit system for production / ISM physics runs.
     units: UnitSystem = field(default_factory=UnitSystem)
+
+    # ---------------- OU turbulent driving ----------------
+    # Optional Ornstein-Uhlenbeck forcing applied as an operator-split momentum
+    # source after each hydro step (see hydro/turbulence.py). When None,
+    # the runner doesn't touch U after the hydro step.
+    ou_config: Optional[OUDriverConfig] = None
+    ou_seed: int = 7                                 # PRNG seed for OU evolve()
+
+    # ---------------- Isothermal projection ----------------
+    # When > 0, after each hydro+forcing step the runner overwrites the total
+    # energy so the equation of state effectively becomes p = isothermal_cs2 * rho.
+    # This is the "soft thermostat" version of an isothermal EOS: the solver
+    # internals keep using gamma (HLLC, CFL) but no thermal energy accumulates.
+    isothermal_cs2: float = 0.0
 
     # -------------------------------------------------------------------------
     # Computed properties (lightweight, timing-related)

@@ -15,7 +15,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import Array
-from jax.sharding import NamedSharding
+from jax.sharding import NamedSharding, PartitionSpec
 from jax.experimental import multihost_utils
 
 from file_io.write_snapshot_distributed import write_snapshot_distributed
@@ -24,6 +24,25 @@ from file_io.checkpoint_utils import manage_checkpoints
 from hydro.physics_checks import validate_from_diagnostics
 from utils.memory_utils import get_memory_usage
 from utils.grid_params import GridParams
+
+
+@jax.jit
+def _isothermal_project_jit(U, cs2_iso, gm1):
+    """Reset total energy so p = cs2_iso * rho exactly.
+
+    E_new = p / (gamma - 1) + 0.5 |mom|^2 / rho with p = cs2_iso * rho.
+    Leaves rho and momentum components untouched.
+    """
+    rho = U[0]
+    mx, my, mz = U[1], U[2], U[3]
+    p_iso = cs2_iso * rho
+    KE = 0.5 * (mx * mx + my * my + mz * mz) / rho
+    E_new = p_iso / gm1 + KE
+    return U.at[4].set(E_new)
+
+
+def _isothermal_project(U, cs2_iso, gamma):
+    return _isothermal_project_jit(U, jnp.float32(cs2_iso), jnp.float32(gamma - 1.0))
 
 
 def run_simulation_distributed(
@@ -50,6 +69,47 @@ def run_simulation_distributed(
 
     # Apply sharding constraint to initial array
     U_sharded = jax.lax.with_sharding_constraint(U_sharded, sharding)
+
+    # === Optional OU turbulent driving setup ===
+    # Operator-split: after each hydro step_fn, evolve the OU amplitudes by dt
+    # then apply F = sum_k a_k exp(i k.x) as a momentum source. Coord arrays
+    # are sharded the same way as U's spatial axes so the work stays local.
+    forcing_state = None
+    if cfg.ou_config is not None:
+        from hydro.turbulence import OUDriver
+        driver = OUDriver(cfg.ou_config)
+
+        dx, dy, dz = cfg.Lx / cfg.Nx, cfg.Ly / cfg.Ny, cfg.Lz / cfg.Nz
+        x_full = (jnp.arange(cfg.Nx, dtype=jnp.float32) + 0.5) * dx
+        y_full = (jnp.arange(cfg.Ny, dtype=jnp.float32) + 0.5) * dy
+        z_full = (jnp.arange(cfg.Nz, dtype=jnp.float32) + 0.5) * dz
+        X, Y, Z = jnp.meshgrid(x_full, y_full, z_full, indexing="ij")
+        # U has spec (None, 'x', 'y') for 2D or (None, 'x', 'y', 'z') for 3D;
+        # coords are 3D, share axes 1.. of U.
+        coord_spec = PartitionSpec(*sharding.spec[1:])
+        coord_sharding = NamedSharding(sharding.mesh, coord_spec)
+        X = jax.device_put(X, coord_sharding)
+        Y = jax.device_put(Y, coord_sharding)
+        Z = jax.device_put(Z, coord_sharding)
+
+        key = jax.random.PRNGKey(int(cfg.ou_seed))
+        key, sub = jax.random.split(key)
+        a_state = driver.init_state(sub)
+
+        @jax.jit
+        def _forcing_apply(U, a, key, dt):
+            new_key, sub = jax.random.split(key)
+            a_new = driver.evolve(a, dt, sub)
+            U_new = driver.apply(U, a_new, dt, X, Y, Z)
+            return U_new, a_new, new_key
+
+        forcing_state = {"a": a_state, "key": key, "apply": _forcing_apply}
+        if is_main_process:
+            print(f"✓ OU driver active: {driver.n_modes} modes "
+                  f"(k in [{cfg.ou_config.k_min}, {cfg.ou_config.k_max}]), "
+                  f"zeta={cfg.ou_config.solenoidal_weight}, "
+                  f"T_ac={cfg.ou_config.autocorrelation_time}, "
+                  f"rms_a={cfg.ou_config.rms_acceleration}")
 
     # === WARMUP COMPILATION ===
     if is_main_process:
@@ -131,6 +191,16 @@ def run_simulation_distributed(
             new_t = t + dt
 
         U_sharded = step_fn(U_sharded, dt)
+
+        # Operator-split OU forcing
+        if forcing_state is not None:
+            U_sharded, forcing_state["a"], forcing_state["key"] = forcing_state["apply"](
+                U_sharded, forcing_state["a"], forcing_state["key"], dt)
+
+        # Isothermal-EOS projection: overwrite E so p = cs2_iso * rho.
+        # Soft thermostat — leaves rho, momentum untouched.
+        if cfg.isothermal_cs2 > 0.0:
+            U_sharded = _isothermal_project(U_sharded, cfg.isothermal_cs2, cfg.gamma)
 
         t = new_t
         step += 1
