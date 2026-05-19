@@ -121,7 +121,7 @@ def plot_one(problem_name, params):
 
     for ax, _, label in panels:
         ax.set_ylabel(label)
-        ax.grid(True, which="both", alpha=0.3)
+        ax.grid(True, which="major", alpha=0.3)
         ax.tick_params(which="both", top=True, right=True, direction="in")
         ax.minorticks_on()
     axes[1, 0].set_xlabel("x")

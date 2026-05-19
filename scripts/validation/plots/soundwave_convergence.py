@@ -143,7 +143,7 @@ def main():
     ymax = 3.0 * max(max(l1s), max(max(v[1]) for v in ak_results.values()) if ak_results else 0)
     ax.set_ylim(ymin, ymax)
     ax.legend(fontsize=10, loc="upper right", frameon=False)
-    ax.grid(True, which="both", alpha=0.3)
+    ax.grid(True, which="major", alpha=0.3)
     ax.tick_params(which="both", top=True, right=True, direction="in")
     fig.tight_layout()
 
