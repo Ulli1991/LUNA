@@ -17,10 +17,12 @@ NX_LIST = [128, 256, 512, 1024]
 TARGET_T = 4.0
 
 
-def _read_density_slice(snapdir):
-    """Stitch the density field from all shards and take z=Lz/2 slice.
+def _read_density_projection(snapdir):
+    """Stitch the density field and integrate along z (column density).
 
-    Returns (rho_xy, t, Lx).
+    Returns (col_density, t, Lx) where col_density has shape (Nx, Ny) and
+    is the sum of rho along the z axis times dz (so it's a column-integrated
+    density in code units of mass/area).
     """
     files = sorted(glob.glob(os.path.join(snapdir, "*.hdf5")))
     if not files:
@@ -29,18 +31,16 @@ def _read_density_slice(snapdir):
         a = h["cells"].attrs
         Nx = int(a["Nx_global"]); Ny = int(a["Ny_global"]); Nz = int(a["Nz_global"])
         Lx = float(a["Lx"]); t = float(a["time"])
-    z_mid = Nz // 2
-    rho = np.empty((Nx, Ny), dtype=np.float32)
+        dz = float(a["dz"])
+    col = np.zeros((Nx, Ny), dtype=np.float64)
     for f in files:
         with h5py.File(f, "r") as h:
             c = h["cells"]
-            xs = int(c.attrs["x_start"]); ys = int(c.attrs["y_start"]); zs = int(c.attrs["z_start"])
-            shp = c["density"].shape
-            local_z = z_mid - zs
-            if not (0 <= local_z < shp[2]):
-                continue
-            rho[xs:xs+shp[0], ys:ys+shp[1]] = c["density"][:, :, local_z]
-    return rho, t, Lx
+            xs = int(c.attrs["x_start"]); ys = int(c.attrs["y_start"])
+            data = c["density"][:]
+            col[xs:xs+data.shape[0], ys:ys+data.shape[1]] += data.sum(axis=2)
+    col *= dz
+    return col.astype(np.float32), t, Lx
 
 
 def _find_closest(outdir, t_target):
@@ -74,7 +74,7 @@ def main():
         if snapdir is None:
             data[Nx] = None
             continue
-        rho, t, Lx = _read_density_slice(snapdir)
+        rho, t, Lx = _read_density_projection(snapdir)
         data[Nx] = (rho, t, Lx)
 
     available = [(Nx, d) for Nx, d in data.items() if d is not None]
