@@ -56,9 +56,21 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Same layout as above but showing the relative temperature perturbation δT/T_eq — the V&T (2025) Figure 9 analogue. Same colorbar range across panels for easy comparison between solvers and resolutions.*
 
-![CC85 M82 starburst wind: log n_H at t = 100 Myr](figures/cc85_wind_grid.png)
+![CC85 M82 starburst wind — log n_H at t = 60 Myr](figures/cc85_wind_density.png)
 
-*3D Chevalier-Clegg (1985) thermally driven wind with M82 nuclear-region loading (SFR = 12 M⊙/yr, η_M = 1, η_E = 0.6 → Ṁ = 12 M⊙/yr, Ė ≈ 2.3 × 10⁴² erg/s, asymptotic v_∞ ≈ 776 km/s). Box 10 × 10 × 20 kpc, central injection sphere R_⋆ = 300 pc, hot CGM ambient (n = 10⁻⁴ cm⁻³, T = 10⁶ K), Sutherland & Dopita (1993) CIE cooling integrated with Townsend (2009). Final x–z slice through y = Ly/2 of log₁₀ n_H. Resolution scan Nx ∈ {128, 256, 512}; the 512 panel is a placeholder for a run still in flight.*
+*3D Chevalier-Clegg (1985) thermally driven wind with M82 nuclear-region loading (SFR = 12 M⊙/yr, η_M = 1, η_E = 0.6 → Ṁ = 12 M⊙/yr, Ė ≈ 2.3 × 10⁴² erg/s, asymptotic v_∞ ≈ 776 km/s). Box 10 × 10 × 20 kpc, central injection sphere R_⋆ = 300 pc, hot CGM ambient (n = 10⁻⁴ cm⁻³, T = 10⁶ K), Sutherland & Dopita (1993) CIE cooling integrated with Townsend (2009). x–z slice through y = Ly/2 of log₁₀ n_H at t = 60 Myr. Resolution scan Nx ∈ {128, 256, 512}; the 512 panel is a placeholder for a run still in flight.*
+
+![CC85 M82 wind — radial velocity](figures/cc85_wind_vradial.png)
+
+*Same slice and snapshot, showing radial velocity v_r (km/s) with a diverging colormap. Positive (red) is outflow from the box center; the inner injection region accelerates the wind to the asymptotic CC85 velocity (~776 km/s) and the entrained ambient gas dominates the outer regions.*
+
+![CC85 M82 wind — log T](figures/cc85_wind_temperature.png)
+
+*Same slice and snapshot, showing log₁₀ T (K). The injection region maintains the launched hot wind at T > 10⁷ K, with the surrounding shocked CGM and the inflow regions visible at intermediate temperatures.*
+
+![CC85 M82 wind — radial profiles](figures/cc85_wind_radial_profiles.png)
+
+*Spherically-averaged radial profiles of n_H, v_rad, and T at t = 60 Myr for each resolution. Computed by 3D binning in radius from the box center. Useful for direct comparison against the analytic CC85 solution (which predicts power-law n ∝ r⁻², constant v ∝ v_∞ outside R_⋆, and adiabatic T ∝ r^(−4/3) in the steady wind).*
 
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
