@@ -48,6 +48,18 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Subsonic (M_rms = 0.3) driven isothermal turbulence at t ≈ 4 (≈1.2 turnover times): density slice through z = L/2 for a resolution sweep Nx³ ∈ {128³, 256³, 512³, 1024³}. Solenoidal-only OU forcing (Federrath/Schmidt 2010) on a 1³ periodic box, k_min=1, k_max=2 driving range, identical PRNG seed at every Nx so the driven realisation matches. EOS: LUNA solves γ=5/3 Euler internally for HLLC robustness, but the runner enforces p = c_s² ρ as an operator-split post-step projection (soft isothermal thermostat) — no spurious compressive heating accumulates. The 1024³ run is on a 2-node × 4-GPU schedule slot.*
 
+![V&T solar convection — δρ/ρ_eq](figures/solar_vt_drho_grid.png)
+
+*2D Velasco-Romero & Teyssier (2025) 3-layer polytropic atmosphere with a buoyant Gaussian bubble, well-balanced MUSCL-Hancock + MonCen, gravity along −y. Top row HLLC, bottom row L-HLLC, columns Nx ∈ {1024, 2048, 4096}. Final-snapshot relative density perturbation δρ/ρ_eq with a diverging colormap. The Nx=4096 columns are placeholders for runs still in flight.*
+
+![V&T solar convection — δT/T_eq](figures/solar_vt_dT_grid.png)
+
+*Same layout as above but showing the relative temperature perturbation δT/T_eq — the V&T (2025) Figure 9 analogue. Same colorbar range across panels for easy comparison between solvers and resolutions.*
+
+![CC85 M82 starburst wind: log n_H at t = 100 Myr](figures/cc85_wind_grid.png)
+
+*3D Chevalier-Clegg (1985) thermally driven wind with M82 nuclear-region loading (SFR = 12 M⊙/yr, η_M = 1, η_E = 0.6 → Ṁ = 12 M⊙/yr, Ė ≈ 2.3 × 10⁴² erg/s, asymptotic v_∞ ≈ 776 km/s). Box 10 × 10 × 20 kpc, central injection sphere R_⋆ = 300 pc, hot CGM ambient (n = 10⁻⁴ cm⁻³, T = 10⁶ K), Sutherland & Dopita (1993) CIE cooling integrated with Townsend (2009). Final x–z slice through y = Ly/2 of log₁₀ n_H. Resolution scan Nx ∈ {128, 256, 512}; the 512 panel is a placeholder for a run still in flight.*
+
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
 - ✅ HLLC Riemann solver with optimized flux computation
@@ -463,36 +475,6 @@ If you use this code in your research, please cite:
   url = {https://github.com/yourusername/luna}
 }
 ```
-
----
-
-## Stratified flows: V&T solar convection (in progress)
-
-2D Velasco-Romero & Teyssier (2025) 3-layer polytropic atmosphere with a
-buoyant Gaussian bubble, well-balanced MUSCL-Hancock + MonCen. Resolution
-scan at Nx ∈ {1024, 2048, 4096}, HLLC and L-HLLC Riemann solvers. Final
-snapshot perturbation fields (the 4096 columns are placeholders for runs
-still in flight).
-
-![V&T solar convection — δρ/ρ_eq](figures/solar_vt_drho_grid.png)
-*Relative density perturbation δρ/ρ_eq.*
-
-![V&T solar convection — δT/T_eq](figures/solar_vt_dT_grid.png)
-*Relative temperature perturbation δT/T_eq — V&T (2025) Figure 9 analogue.*
-
----
-
-## Galactic winds: CC85 / M82-like starburst
-
-3D Chevalier-Clegg (1985) thermally driven wind with M82 nuclear-region
-loading factors (SFR = 12 M⊙/yr, η_M = 1, η_E = 0.6 → Ṁ = 12 M⊙/yr,
-Ė ≈ 2.3 × 10⁴² erg/s, v_∞ ≈ 776 km/s). Box 10 × 10 × 20 kpc, central
-injection sphere R_⋆ = 300 pc, hot CGM ambient (n = 10⁻⁴ cm⁻³, T = 10⁶ K).
-Cooling: Sutherland & Dopita (1993) CIE + Townsend (2009) exact integration.
-
-![CC85 M82 wind — log nH at t = 100 Myr](figures/cc85_wind_grid.png)
-*Final x–z slice (y = Ly/2) of log₁₀ n_H. Nx=512 placeholder for run still
-in flight.*
 
 ---
 
