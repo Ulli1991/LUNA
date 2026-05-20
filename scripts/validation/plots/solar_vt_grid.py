@@ -70,20 +70,27 @@ def _load_run(solver, Nx, snapshots_root):
     y   = snap["y"]
     rho_eq, p_eq = equilibrium_1d(y, g=-_GRAVITY)
     T_eq = p_eq / rho_eq
-    drho_rel = (rho - rho_eq[None, :]) / rho_eq[None, :]
-    dT_rel   = (T   - T_eq[None, :])   / T_eq[None, :]
+    drho_abs = rho - rho_eq[None, :]
+    dT_abs   = T   - T_eq[None, :]
     return {
-        "drho_rel": drho_rel,
-        "dT_rel":   dT_rel,
+        "drho_abs": drho_abs,
+        "dT_abs":   dT_abs,
         "t":        snap["t"],
         "Lx":       snap["Lx"],
         "Ly":       snap["Ly"],
     }
 
 
-def _plot_grid(field_key, vmin, vmax, label, outpath_stem, runs):
-    # Box is 5.5 wide x 11 tall; each panel ~1:2. 3 cols x 2 rows of 1:2
-    # boxes -> figure aspect width:height ~ 3 : 4 (with cbar and titles).
+def _plot_grid(field_key, label, outpath_stem, runs):
+    # Pick a symmetric vmin/vmax from the 2-98 percentile of the union of
+    # loaded panels, so the colormap captures the bulk of the dynamic range
+    # without being dragged by tail outliers in the tenuous upper atmosphere
+    # (where rho_eq -> 0 and small numerical noise becomes huge relative).
+    all_data = np.concatenate([r[field_key].ravel() for r in runs.values()])
+    lo, hi = np.percentile(all_data, [2, 98])
+    vmag = max(abs(lo), abs(hi))
+    vmin, vmax = -vmag, vmag
+
     fig, axes = plt.subplots(2, 3, figsize=(9, 12), sharex=True, sharey=True,
                              constrained_layout=True)
     cmap = plt.get_cmap("RdBu_r")
@@ -138,11 +145,11 @@ def main():
     if not runs:
         raise RuntimeError("no runs found under snapshots/solar_vt_*")
 
-    _plot_grid("drho_rel", -0.05, 0.05,
-               r"$\delta\rho / \rho_{\rm eq}$",
+    _plot_grid("drho_abs",
+               r"$\delta\rho = \rho - \rho_{\rm eq}$",
                "figures/solar_vt_drho_grid", runs)
-    _plot_grid("dT_rel", -0.05, 0.05,
-               r"$\delta T / T_{\rm eq}$",
+    _plot_grid("dT_abs",
+               r"$\delta T = T - T_{\rm eq}$",
                "figures/solar_vt_dT_grid", runs)
 
 
