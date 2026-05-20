@@ -466,6 +466,36 @@ If you use this code in your research, please cite:
 
 ---
 
+## Stratified flows: V&T solar convection (in progress)
+
+2D Velasco-Romero & Teyssier (2025) 3-layer polytropic atmosphere with a
+buoyant Gaussian bubble, well-balanced MUSCL-Hancock + MonCen. Resolution
+scan at Nx ∈ {1024, 2048, 4096}, HLLC and L-HLLC Riemann solvers. Final
+snapshot perturbation fields (the 4096 columns are placeholders for runs
+still in flight).
+
+![V&T solar convection — δρ/ρ_eq](figures/solar_vt_drho_grid.png)
+*Relative density perturbation δρ/ρ_eq.*
+
+![V&T solar convection — δT/T_eq](figures/solar_vt_dT_grid.png)
+*Relative temperature perturbation δT/T_eq — V&T (2025) Figure 9 analogue.*
+
+---
+
+## Galactic winds: CC85 / M82-like starburst
+
+3D Chevalier-Clegg (1985) thermally driven wind with M82 nuclear-region
+loading factors (SFR = 12 M⊙/yr, η_M = 1, η_E = 0.6 → Ṁ = 12 M⊙/yr,
+Ė ≈ 2.3 × 10⁴² erg/s, v_∞ ≈ 776 km/s). Box 10 × 10 × 20 kpc, central
+injection sphere R_⋆ = 300 pc, hot CGM ambient (n = 10⁻⁴ cm⁻³, T = 10⁶ K).
+Cooling: Sutherland & Dopita (1993) CIE + Townsend (2009) exact integration.
+
+![CC85 M82 wind — log nH at t = 100 Myr](figures/cc85_wind_grid.png)
+*Final x–z slice (y = Ly/2) of log₁₀ n_H. Nx=512 placeholder for run still
+in flight.*
+
+---
+
 ## License
 
 [Add your license here]

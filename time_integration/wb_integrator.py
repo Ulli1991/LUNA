@@ -50,8 +50,10 @@ def create_wb_muscl_hancock_step(pad_halo_fn, flux_div_fn, gamma, order, limiter
     else:
         from hydro.jacobian import apply_primitive_jacobian_2d as apply_jacobian
 
-    W_eq_global = cons_to_prim(U_eq, gamma)
-    p_eq_global = W_eq_global[-1]      # last primitive is pressure in 2D and 3D
+    # Note: W_eq is recomputed inside step_fn each call (cheap) so JAX traces
+    # it together with the live U and gives it the matching NamedSharding.
+    # Pre-computing at factory time desyncs the sharding spec on multi-GPU
+    # runs, which crashes the W_pad - W_eq_pad subtraction inside the JIT.
 
     # Slot index of the vertical momentum and pressure components
     if spatial_dim == 2:
@@ -91,8 +93,9 @@ def create_wb_muscl_hancock_step(pad_halo_fn, flux_div_fn, gamma, order, limiter
     @jax.jit
     def step_fn(U, dt):
         W = cons_to_prim(U, gamma)
+        W_eq = cons_to_prim(U_eq, gamma)
         W_pad = pad_halo_fn(W, boundary, spatial_dim)
-        W_eq_pad = pad_halo_fn(W_eq_global, boundary, spatial_dim)
+        W_eq_pad = pad_halo_fn(W_eq, boundary, spatial_dim)
         W_prime_pad = W_pad - W_eq_pad
 
         dWx, dWy, dWz = compute_slopes_from_padded(W_prime_pad, limiter)

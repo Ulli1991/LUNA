@@ -179,6 +179,26 @@ class Config:
     solar_pert_amp: float = 0.0      # random entropy seed amplitude
     solar_pert_seed: int = 11
 
+    # ---------------- CC85 starburst wind (M82-style) ----------------
+    # Mdot/Edot injection inside a sphere of radius R_*. Requires cfg.units
+    # enabled (we convert SFR + loading factors to code units at setup time).
+    cc85_enabled: bool = False
+    cc85_R_star_pc: float = 300.0          # injection sphere radius (pc)
+    cc85_SFR_Msun_per_yr: float = 12.0     # star formation rate
+    cc85_eta_M: float = 1.0                # mass loading: Mdot = eta_M * SFR
+    cc85_eta_E: float = 0.6                # energy loading: Edot = eta_E * (SFR/100) * 1e51 erg/yr
+    cc85_n_ambient_cgs: float = 1.0e-4     # ambient CGM density
+    cc85_T_ambient_K: float = 1.0e6        # ambient CGM temperature
+    cc85_mu: float = 0.6                   # mean molecular weight
+
+    # ---------------- Radiative cooling ----------------
+    # When True, apply Townsend (2009) cooling step + heating after each
+    # hydro step. Requires cfg.units enabled.
+    cooling_enabled: bool = False
+    cooling_table: str = "sd93_solar"      # "sd93_solar" (Sutherland-Dopita 93)
+    cooling_T_floor_K: float = 1.0e4
+    cooling_T_max_K:   float = 1.0e9
+
     # ---------------- Gravity + well-balanced ----------------
     # Constant gravity along z (negative = pointing down). When non-zero and
     # use_well_balanced=True, the integrator subtracts the equilibrium flux

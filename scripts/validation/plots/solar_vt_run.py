@@ -30,7 +30,11 @@ def main():
     Nx = int(os.environ.get("LUNA_SOLAR_VT_NX", "128"))
     Ny = 2 * Nx
     t_end = float(os.environ.get("LUNA_SOLAR_VT_TEND", "100.0"))
-    out_dir = os.environ.get("LUNA_SOLAR_VT_OUT", f"snapshots/solar_vt_Nx{Nx}")
+    riemann = os.environ.get("LUNA_SOLAR_VT_RIEMANN", "lhllc").lower()
+    cfl = float(os.environ.get("LUNA_SOLAR_VT_CFL", "0.4"))
+    out_dir = os.environ.get(
+        "LUNA_SOLAR_VT_OUT", f"snapshots/solar_vt_{riemann}_Nx{Nx}_cfl{cfl}"
+    )
     overrides = dict(
         test_problem="Solar-Convection-VT-2D",
         SPATIAL_DIMENSION=2,
@@ -41,19 +45,19 @@ def main():
         TIME_SOLVER=1,
         ORDER=1,
         LIMITER=1,                  # MonCen
-        CFL=0.4,
+        CFL=cfl,
         t_end=t_end,
         time_bet_snaps=t_end / 20.0,
         gravity_z=-1.0,
         use_well_balanced=True,
-        riemann_solver="lhllc",
+        riemann_solver=riemann,
         PLOT_AFTER_SIM=False,
         production_mode=True,
         output_dir=out_dir,
         enable_x64=True,
     )
     print(f"V&T solar convection: Nx={Nx}, Ny={Ny}, Lx={LX}, Ly={LY}, "
-          f"t_end={t_end}")
+          f"t_end={t_end}, riemann={riemann}")
     run_one(overrides)
 
 

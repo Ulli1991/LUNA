@@ -338,14 +338,27 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
             from ic_generation.ic import equilibrium_state
             from time_integration.wb_integrator import create_wb_muscl_hancock_step
             from utils.distributed import compute_local_slice
-            local_slices = compute_local_slice(
-                cfg.Nx, cfg.Ny, mesh, jax.process_index(), cfg.Nz
-            )
-            U_eq_local = equilibrium_state(
-                cfg, x_slice=local_slices[0], y_slice=local_slices[1],
-                z_slice=local_slices[2],
-            )
-            U_eq = jax.device_put(U_eq_local, sharding)
+            if jax.process_count() > 1:
+                local_slices = compute_local_slice(
+                    cfg.Nx, cfg.Ny, mesh, jax.process_index(), cfg.Nz
+                )
+                U_eq_local = equilibrium_state(
+                    cfg, x_slice=local_slices[0], y_slice=local_slices[1],
+                    z_slice=local_slices[2],
+                )
+                if cfg.SPATIAL_DIMENSION == 2:
+                    u_eq_global_shape = (4, cfg.Nx, cfg.Ny)
+                else:
+                    u_eq_global_shape = (5, cfg.Nx, cfg.Ny, cfg.Nz)
+                U_eq = create_sharded_array_from_local(
+                    U_eq_local, u_eq_global_shape, mesh, cfg.SPATIAL_DIMENSION
+                )
+            else:
+                # Single-process multi-GPU: generate the global U_eq once,
+                # then device_put with the live sharding so it splits across
+                # devices the same way the runtime's U does.
+                U_eq_global = equilibrium_state(cfg)
+                U_eq = jax.device_put(U_eq_global, sharding)
             compute_dt_fn, step_fn = create_wb_muscl_hancock_step(
                 pad_halo_fn, flux_divergence_from_padded,
                 cfg.gamma, cfg.ORDER, cfg.LIMITER,

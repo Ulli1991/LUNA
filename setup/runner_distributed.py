@@ -111,6 +111,84 @@ def run_simulation_distributed(
                   f"T_ac={cfg.ou_config.autocorrelation_time}, "
                   f"rms_a={cfg.ou_config.rms_acceleration}")
 
+    # === Optional CC85 starburst-wind source ===
+    # Mdot/Edot deposited uniformly inside a sphere of radius R_*, centered
+    # on the box. Operator-split, same pattern as the OU forcing.
+    cc85_state = None
+    if getattr(cfg, "cc85_enabled", False):
+        if not cfg.units.is_enabled:
+            raise ValueError("cc85_enabled requires cfg.units (Arepo system).")
+        # Convert physical inputs to code-unit rates
+        SEC_PER_YR = 3.15576e7
+        MSUN = 1.98892e33
+        PC = 3.08568e18
+        Mdot_cgs = cfg.cc85_eta_M * cfg.cc85_SFR_Msun_per_yr * MSUN / SEC_PER_YR
+        Edot_cgs = (cfg.cc85_eta_E * cfg.cc85_SFR_Msun_per_yr / 100.0
+                    * 1.0e51 / SEC_PER_YR)
+        R_star_cgs = cfg.cc85_R_star_pc * PC
+
+        # Code-unit rates: code-mass per code-time, code-energy per code-time
+        Mdot_code = (Mdot_cgs / cfg.units.UnitMass_in_g
+                     * cfg.units.UnitTime_in_s)
+        Edot_code = (Edot_cgs / cfg.units.UnitEnergy_in_cgs
+                     * cfg.units.UnitTime_in_s)
+        R_star_code = R_star_cgs / cfg.units.UnitLength_in_cm
+        V_sphere_code = (4.0 / 3.0) * jnp.pi * R_star_code ** 3
+
+        # Build the sphere mask (sharded same as U)
+        from jax.sharding import PartitionSpec
+        dx, dy, dz = cfg.Lx / cfg.Nx, cfg.Ly / cfg.Ny, cfg.Lz / cfg.Nz
+        x_full = (jnp.arange(cfg.Nx, dtype=jnp.float32) + 0.5) * dx
+        y_full = (jnp.arange(cfg.Ny, dtype=jnp.float32) + 0.5) * dy
+        z_full = (jnp.arange(cfg.Nz, dtype=jnp.float32) + 0.5) * dz
+        X, Y, Z = jnp.meshgrid(x_full, y_full, z_full, indexing="ij")
+        cx, cy, cz = 0.5 * cfg.Lx, 0.5 * cfg.Ly, 0.5 * cfg.Lz
+        r2 = (X - cx) ** 2 + (Y - cy) ** 2 + (Z - cz) ** 2
+        sphere_mask = (r2 < R_star_code ** 2).astype(jnp.float32)
+        if cfg.SPATIAL_DIMENSION == 3:
+            coord_spec = PartitionSpec(*sharding.spec[1:])
+            coord_sharding = NamedSharding(sharding.mesh, coord_spec)
+            sphere_mask = jax.device_put(sphere_mask, coord_sharding)
+
+        rho_dot_code = Mdot_code / V_sphere_code
+        e_dot_code   = Edot_code / V_sphere_code
+
+        @jax.jit
+        def _cc85_apply(U, dt):
+            # Add per-cell rho_dot*dt and e_dot*dt only inside the sphere.
+            drho = rho_dot_code * dt * sphere_mask
+            dE   = e_dot_code   * dt * sphere_mask
+            U_new = U.at[0].add(drho)
+            U_new = U_new.at[-1].add(dE)
+            return U_new
+
+        cc85_state = {"apply": _cc85_apply}
+        if is_main_process:
+            n_inj = int(jnp.sum(sphere_mask))
+            print(f"✓ CC85 wind source: R*={cfg.cc85_R_star_pc:.1f} pc, "
+                  f"SFR={cfg.cc85_SFR_Msun_per_yr} Msun/yr, "
+                  f"eta_M={cfg.cc85_eta_M}, eta_E={cfg.cc85_eta_E}")
+            print(f"  Mdot = {Mdot_cgs:.3e} g/s = {Mdot_code:.3e} code/code_t")
+            print(f"  Edot = {Edot_cgs:.3e} erg/s = {Edot_code:.3e} code")
+            print(f"  Injection cells: {n_inj}")
+
+    # === Optional radiative cooling (Townsend 2009 + S&D93 CIE) ===
+    cooling_solver = None
+    if getattr(cfg, "cooling_enabled", False):
+        if not cfg.units.is_enabled:
+            raise ValueError("cooling_enabled requires cfg.units (Arepo system).")
+        from hydro.cooling import sutherland_dopita_cie, TownsendCoolingSolver
+        if cfg.cooling_table == "sd93_solar":
+            table = sutherland_dopita_cie(metallicity="solar")
+        else:
+            raise ValueError(f"Unknown cooling_table: {cfg.cooling_table}")
+        mu_cool = getattr(cfg, "cc85_mu", 0.6)
+        cooling_solver = TownsendCoolingSolver(table=table, mu=mu_cool)
+        if is_main_process:
+            print(f"✓ Cooling enabled: table={cfg.cooling_table}, "
+                  f"T range [{table.T.min():.2e}, {table.T.max():.2e}] K, "
+                  f"mu={mu_cool}")
+
     # === WARMUP COMPILATION ===
     if is_main_process:
         print("="*60)
@@ -202,6 +280,15 @@ def run_simulation_distributed(
         if cfg.isothermal_cs2 > 0.0:
             U_sharded = _isothermal_project(U_sharded, cfg.isothermal_cs2, cfg.gamma)
 
+        # Operator-split CC85 central source: Mdot/Edot inside R_*.
+        if cc85_state is not None:
+            U_sharded = cc85_state["apply"](U_sharded, dt)
+
+        # Operator-split radiative cooling (Townsend exact integration).
+        if cooling_solver is not None:
+            from hydro.cooling import apply_cooling
+            U_sharded = apply_cooling(U_sharded, dt, cfg, cooling_solver)
+
         t = new_t
         step += 1
 
@@ -242,6 +329,12 @@ def run_simulation_distributed(
                 print(f"\n{'─'*60}")
                 print(f"💾 Saving snapshot #{snapshot_idx} at t = {t:.5f}")
                 print(f"{'─'*60}")
+
+            # At very large problem sizes (e.g. 8192^2) the protobuf cache
+            # path can produce an array whose sharding metadata is
+            # "UnspecifiedValue", which breaks shard.index in the writer.
+            # Re-attach the explicit sharding before writing.
+            U_sharded = jax.device_put(U_sharded, sharding)
 
             # Each process writes its own shard to separate file
             write_snapshot_distributed(U_sharded, cfg, t, snapshot_idx)
