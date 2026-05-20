@@ -25,18 +25,20 @@ def _density_cgs_from_code(rho_code):
     return rho_code * UnitDensity_cgs
 
 
-def _latest_snapshot(run_dir):
+def _snapshot_at_index(run_dir, idx):
     if not os.path.isdir(run_dir):
         return None
-    snaps = sorted([d for d in os.listdir(run_dir) if d.startswith("snapdir_")])
-    if not snaps:
-        return None
-    return os.path.join(run_dir, snaps[-1])
+    p = os.path.join(run_dir, f"snapdir_{idx:03d}")
+    return p if os.path.isdir(p) else None
+
+
+# t_end=100 Myr, time_bet_snaps=5 Myr  -> t=60 Myr is snapdir_012.
+_SNAP_IDX = 12
 
 
 def _load_run(Nx, snapshots_root):
     run_dir = os.path.join(snapshots_root, f"cc85_Nx{Nx}")
-    snapdir = _latest_snapshot(run_dir)
+    snapdir = _snapshot_at_index(run_dir, _SNAP_IDX)
     if snapdir is None:
         return None
     snap = read_snapshot(snapdir)
