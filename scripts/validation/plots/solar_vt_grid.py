@@ -46,18 +46,21 @@ def equilibrium_1d(y, g=2.7):
     return rho, p
 
 
-def _latest_snapshot(run_dir):
+def _snapshot_at_index(run_dir, idx):
+    """Return path to snapdir_{idx:03d} if it exists, else None."""
     if not os.path.isdir(run_dir):
         return None
-    snaps = sorted([d for d in os.listdir(run_dir) if d.startswith("snapdir_")])
-    if not snaps:
-        return None
-    return os.path.join(run_dir, snaps[-1])
+    p = os.path.join(run_dir, f"snapdir_{idx:03d}")
+    return p if os.path.isdir(p) else None
+
+
+# t_end=1000, time_bet_snaps = t_end/20 = 50  -> t=100 is snapdir_002.
+_SNAP_IDX = 2
 
 
 def _load_run(solver, Nx, snapshots_root):
     run_dir = os.path.join(snapshots_root, f"solar_vt_{solver}_Nx{Nx}")
-    snapdir = _latest_snapshot(run_dir)
+    snapdir = _snapshot_at_index(run_dir, _SNAP_IDX)
     if snapdir is None:
         return None
     snap = read_snapshot(snapdir)
