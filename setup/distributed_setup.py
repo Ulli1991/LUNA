@@ -333,14 +333,44 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
         )
         integrator_name = "RK2"
     elif cfg.TIME_SOLVER == 1:
-        compute_dt_fn, step_fn = create_muscl_hancock_modular_step(
-            pad_halo_fn, flux_divergence_from_padded,
-            cfg.gamma, cfg.ORDER, cfg.LIMITER,
-            grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
-            sharding=sharding,
-        )
-        integrator_name = "MUSCL-Hancock"
+        if getattr(cfg, "use_well_balanced", False):
+            # Build hydrostatic equilibrium U_eq sharded the same way as U
+            from ic_generation.ic import equilibrium_state
+            from time_integration.wb_integrator import create_wb_muscl_hancock_step
+            from utils.distributed import compute_local_slice
+            local_slices = compute_local_slice(
+                cfg.Nx, cfg.Ny, mesh, jax.process_index(), cfg.Nz
+            )
+            U_eq_local = equilibrium_state(
+                cfg, x_slice=local_slices[0], y_slice=local_slices[1],
+                z_slice=local_slices[2],
+            )
+            U_eq = jax.device_put(U_eq_local, sharding)
+            compute_dt_fn, step_fn = create_wb_muscl_hancock_step(
+                pad_halo_fn, flux_divergence_from_padded,
+                cfg.gamma, cfg.ORDER, cfg.LIMITER,
+                grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
+                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
+                U_eq=U_eq,
+                gravity_z=cfg.gravity_z,
+                sharding=sharding,
+                riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
+            )
+            integrator_name = (
+                f"WB-MUSCL-Hancock "
+                f"({getattr(cfg, 'riemann_solver', 'hllc').upper()}, "
+                f"g_z={cfg.gravity_z})"
+            )
+        else:
+            compute_dt_fn, step_fn = create_muscl_hancock_modular_step(
+                pad_halo_fn, flux_divergence_from_padded,
+                cfg.gamma, cfg.ORDER, cfg.LIMITER,
+                grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
+                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
+                sharding=sharding,
+                riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
+            )
+            integrator_name = f"MUSCL-Hancock ({getattr(cfg, 'riemann_solver', 'hllc').upper()})"
     elif cfg.TIME_SOLVER == 2:
         compute_dt_fn, step_fn = create_rk4_modular_step(
             pad_halo_fn, flux_divergence_from_padded,

@@ -134,7 +134,7 @@ def create_rk4_modular_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
 # ---------------------------------------------------------------------------
 def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
                                        dx, dy, dz, inv_dx, inv_dy, inv_dz, boundary, spatial_dim, CFL,
-                                       sharding=None):
+                                       sharding=None, riemann_solver="hllc"):
     """MUSCL-Hancock stepper with MODULAR JIT compilation.
 
     Returns (compute_dt_fn, step_fn) where
@@ -175,7 +175,10 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
         Takes W_pad (primitives) directly, avoiding the U_pad→W_pad conversion.
         Supports both first-order and second-order (with MUSCL-Hancock predictor).
         """
-        from hydro.fluxes import hllc_flux_primitive
+        if riemann_solver == "lhllc":
+            from hydro.fluxes_lhllc import lhllc_flux_primitive as hllc_flux_primitive
+        else:
+            from hydro.fluxes import hllc_flux_primitive
         from hydro.slopes import compute_slopes_from_padded
         from hydro.jacobian import (apply_primitive_jacobian_1d,
                                     apply_primitive_jacobian_2d,

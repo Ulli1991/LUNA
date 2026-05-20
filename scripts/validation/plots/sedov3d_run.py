@@ -63,7 +63,10 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         output_dir=f"snapshots/sedov3d_arepo_Nx{NX}",
-        enable_x64=True,
+        # float32 for the 1024^3 multi-node run — float64 + workspace overflows 40 GB
+        # per A100 and triggers an XLA collective-combiner bug. Sedov visualization
+        # doesn't need float64 precision.
+        enable_x64=False,
     )
     print(f"Sedov 3D Arepo run: box={BOX_SIZE_PC} pc, Nx={NX}, t_end={T_END_YR} yr "
           f"= {T_END_CODE:.4e} code")

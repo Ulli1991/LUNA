@@ -172,6 +172,29 @@ class Config:
     ou_config: Optional[OUDriverConfig] = None
     ou_seed: int = 7                                 # PRNG seed for OU evolve()
 
+    # ---------------- Solar convection (polytropic atmosphere) ----------------
+    solar_rho0: float = 1.0          # density at the bottom of the box
+    solar_p0: float = 1.0            # pressure at the bottom of the box
+    solar_Gamma: float = 0.0         # polytropic index; 0 -> use cfg.gamma (adiabatic)
+    solar_pert_amp: float = 0.0      # random entropy seed amplitude
+    solar_pert_seed: int = 11
+
+    # ---------------- Gravity + well-balanced ----------------
+    # Constant gravity along z (negative = pointing down). When non-zero and
+    # use_well_balanced=True, the integrator subtracts the equilibrium flux
+    # F_eq at every face and applies the gravity source term as a perturbation
+    # update (Velasco-Romero & Teyssier 2025). Pre-built U_eq is sourced from
+    # ic.equilibrium_state(cfg, ...) at setup time.
+    gravity_z: float = 0.0
+    use_well_balanced: bool = False
+
+    # ---------------- Riemann solver selection ----------------
+    # "hllc"  -> hydro.fluxes.hllc_flux_primitive (Davis-style HLLC; default)
+    # "lhllc" -> hydro.fluxes_lhllc.lhllc_flux_primitive (Toro 10.71 + V&T 2025
+    #           low-Mach correction; intended for stratified low-Mach flows like
+    #           solar convection).
+    riemann_solver: str = "hllc"
+
     # ---------------- Isothermal projection ----------------
     # When > 0, after each hydro+forcing step the runner overwrites the total
     # energy so the equation of state effectively becomes p = isothermal_cs2 * rho.

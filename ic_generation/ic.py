@@ -17,6 +17,15 @@ from .sedov3d import sedov_blast_3d
 from .kh3d import kelvin_helmholtz_3d
 from .soundwave3d import soundwave_3d
 from .driven_turbulence_3d import driven_turbulence_3d
+from .solar_convection_3d import (
+    solar_convection_3d, solar_convection_3d_equilibrium,
+)
+from .solar_convection_2d import (
+    solar_convection_2d, solar_convection_2d_equilibrium,
+)
+from .solar_convection_vt_2d import (
+    solar_convection_vt_2d, solar_convection_vt_2d_equilibrium,
+)
 
 
 # test_problem name -> (ic_function, ndim).
@@ -45,12 +54,42 @@ _IC_REGISTRY = {
     "Kelvin-Helmholtz-3D":  (kelvin_helmholtz_3d, 3),
     "Soundwave-3D":         (soundwave_3d, 3),
     "Driven-Turbulence-3D": (driven_turbulence_3d, 3),
+    "Solar-Convection-3D":  (solar_convection_3d, 3),
+    "Solar-Convection-2D":  (solar_convection_2d, 2),
+    "Solar-Convection-VT-2D": (solar_convection_vt_2d, 2),
+}
+
+
+# Equilibrium-state registry for problems that use the well-balanced
+# integrator. Keys are the test_problem name; values are callables with the
+# same signature as the IC function but returning U_eq (hydrostatic
+# equilibrium state). Problems that don't define HSE simply aren't listed.
+_EQ_REGISTRY = {
+    "Solar-Convection-3D":    solar_convection_3d_equilibrium,
+    "Solar-Convection-2D":    solar_convection_2d_equilibrium,
+    "Solar-Convection-VT-2D": solar_convection_vt_2d_equilibrium,
 }
 
 
 def available_test_problems():
     """Return the list of supported test_problem names."""
     return list(_IC_REGISTRY.keys())
+
+
+def equilibrium_state(cfg, x_slice=None, y_slice=None, z_slice=None):
+    """Return hydrostatic-equilibrium state U_eq for the configured problem.
+
+    Only defined for problems registered in _EQ_REGISTRY. Raises KeyError
+    otherwise. Used by the well-balanced integrator path.
+    """
+    if cfg.test_problem not in _EQ_REGISTRY:
+        raise KeyError(
+            f"test_problem '{cfg.test_problem}' has no equilibrium_state "
+            "registered. Add an entry to _EQ_REGISTRY in ic.py if this "
+            "problem supports the well-balanced integrator."
+        )
+    fn = _EQ_REGISTRY[cfg.test_problem]
+    return fn(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)
 
 
 def initial_conditions(cfg, x_slice=None, y_slice=None, z_slice=None):

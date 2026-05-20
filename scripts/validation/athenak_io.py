@@ -106,3 +106,69 @@ def load_1d(path, gamma=5.0 / 3.0):
         "P": P,
         "e_int": eint,
     }
+
+
+def load_2d(path, gamma=5.0 / 3.0):
+    """Load a 2D AthenaK snapshot (.bin) and stitch meshblocks into one array.
+
+    Returns dict with keys: t, gamma, x, y, Lx, Ly, rho, vx, vy, P, e_int.
+    rho/vx/vy/P are (Nx, Ny) numpy arrays in code units.
+    """
+    bc = _import_bin_convert()
+    fd = bc.read_binary(path)
+
+    if fd["Nx3"] != 1:
+        raise ValueError(
+            f"load_2d expects a 2D snapshot, got shape "
+            f"({fd['Nx1']}, {fd['Nx2']}, {fd['Nx3']})"
+        )
+
+    Nx = int(fd["Nx1"]); Ny = int(fd["Nx2"])
+    x1min, x1max = float(fd["x1min"]), float(fd["x1max"])
+    x2min, x2max = float(fd["x2min"]), float(fd["x2max"])
+    dx = (x1max - x1min) / Nx
+    dy = (x2max - x2min) / Ny
+    x = x1min + (np.arange(Nx) + 0.5) * dx
+    y = x2min + (np.arange(Ny) + 0.5) * dy
+
+    # Per-MB arrays shape (n_mbs, nz=1, ny_block, nx_block). Stitch into
+    # global (Nx, Ny) by mb_geometry[:, 0:2] for x1min and mb_geometry[:, 2:4]
+    # for x2min — locate each MB in the global grid.
+    geom = np.asarray(fd["mb_geometry"])
+    n_mbs = int(fd["n_mbs"])
+
+    def _stitch(varname):
+        # AthenaK's bin_convert returns mb_data[var] as a *list* of per-MB
+        # arrays (could be a numpy array of arrays). Force to numpy.
+        arrs = fd["mb_data"][varname]
+        first = np.asarray(arrs[0])
+        out = np.empty((Nx, Ny), dtype=first.dtype)
+        for m in range(n_mbs):
+            block = np.squeeze(np.asarray(arrs[m]))  # (ny_block, nx_block)
+            block_ny, block_nx = block.shape
+            x_lo = geom[m, 0]
+            y_lo = geom[m, 2]
+            ix = int(round((x_lo - x1min) / dx))
+            iy = int(round((y_lo - x2min) / dy))
+            out[ix:ix+block_nx, iy:iy+block_ny] = block.T
+        return out
+
+    rho  = _stitch("dens")
+    vx   = _stitch("velx")
+    vy   = _stitch("vely")
+    eint = _stitch("eint")
+    P    = (gamma - 1.0) * eint
+
+    return {
+        "t":     float(fd["time"]),
+        "gamma": gamma,
+        "x":     x,
+        "y":     y,
+        "Lx":    x1max - x1min,
+        "Ly":    x2max - x2min,
+        "rho":   rho,
+        "vx":    vx,
+        "vy":    vy,
+        "P":     P,
+        "e_int": eint,
+    }
