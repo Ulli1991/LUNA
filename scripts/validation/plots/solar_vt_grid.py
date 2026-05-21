@@ -73,13 +73,16 @@ def _load_run(solver, Nx, snapshots_root):
     p   = snap["P"]
     T   = p / rho                                # code units
     y   = snap["y"]
-    rho_eq, p_eq = equilibrium_1d(y, g=-_GRAVITY)
-    T_eq = p_eq / rho_eq
-    drho_abs = rho - rho_eq[None, :]
-    dT_abs   = T   - T_eq[None, :]
+    # Subtract the CURRENT horizontal average at each height. This isolates
+    # plume / convective-cell structure cleanly (initial-equilibrium
+    # subtraction is dominated by bulk mass redistribution at late times).
+    rho_h = rho.mean(axis=0, keepdims=True)        # shape (1, Ny)
+    T_h   = T.mean(axis=0, keepdims=True)
+    drho_prime = rho - rho_h
+    dT_prime   = T   - T_h
     return {
-        "drho_abs": drho_abs,
-        "dT_abs":   dT_abs,
+        "drho_abs": drho_prime,
+        "dT_abs":   dT_prime,
         "t":        snap["t"],
         "Lx":       snap["Lx"],
         "Ly":       snap["Ly"],
@@ -91,11 +94,13 @@ def _plot_grid(field_key, label, outpath_stem, runs):
     # loaded panels, so the colormap captures the bulk of the dynamic range
     # without being dragged by tail outliers in the tenuous upper atmosphere
     # (where rho_eq -> 0 and small numerical noise becomes huge relative).
-    # Fixed tight symmetric range that brings out the weak buoyancy
-    # structure of the saturated convective layer. The largest mixing-
-    # driven cells get saturated, which is fine — the bulk of the box
-    # carries the visual signal we care about.
-    vmin, vmax = -0.08, 0.08
+    # Now that we subtract horizontal-mean (not initial equilibrium), the
+    # field is centered on zero and 2-98 percentile is a good symmetric
+    # range that shows the plume structure clearly.
+    all_data = np.concatenate([r[field_key].ravel() for r in runs.values()])
+    lo, hi = np.percentile(all_data, [2, 98])
+    vmag = max(abs(lo), abs(hi))
+    vmin, vmax = -vmag, vmag
 
     # Single row, LHLLC only (HLLC is unstable for this stratified setup).
     fig, axes = plt.subplots(1, 4, figsize=(13, 8), sharex=True, sharey=True,

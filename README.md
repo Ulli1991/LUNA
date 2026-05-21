@@ -50,11 +50,11 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 ![V&T solar convection — δρ at t=1000](figures/solar_vt_drho_grid.png)
 
-*2D Velasco-Romero & Teyssier (2025) 3-layer polytropic atmosphere with a buoyant Gaussian bubble (δρ/ρ_eq = −0.012, r_b = 0.5), well-balanced MUSCL-Hancock + MonCen + L-HLLC at CFL = 0.1, gravity along −y. Resolution scan Nx ∈ {512, 1024, 2048, 4096} at t = 1000 (saturated convective state, well past V&T's early-phase KE peak at t ≈ 100). Absolute density perturbation δρ = ρ − ρ_eq with a symmetric diverging colormap (2–98 percentile of the loaded panels). HLLC was removed from this scan: HLLC NaN's around t ≈ 150–280 in this stratified low-Mach regime independent of CFL choice; L-HLLC's low-Mach fix (Velasco-Romero & Teyssier 2025) is what makes the integration stable.*
+*2D Velasco-Romero & Teyssier (2025) 3-layer polytropic atmosphere with a buoyant Gaussian bubble (δρ/ρ_eq = −0.012, r_b = 0.5), well-balanced MUSCL-Hancock + MonCen + L-HLLC at CFL = 0.1, gravity along −y. Resolution scan Nx ∈ {512, 1024, 2048, 4096} at t = 1000 (saturated convective state, well past V&T's early-phase KE peak at t ≈ 100). Density perturbation δρ = ρ − ⟨ρ⟩_x (subtracted current horizontal-mean at each height, not the initial polytropic equilibrium — this isolates plume structure cleanly at saturated times). Symmetric diverging colormap, 2–98 percentile. HLLC was removed from this scan: HLLC NaN's around t ≈ 150–280 in this stratified low-Mach regime independent of CFL choice; L-HLLC's low-Mach fix (Velasco-Romero & Teyssier 2025) is what makes the integration stable.*
 
 ![V&T solar convection — δT at t=1000](figures/solar_vt_dT_grid.png)
 
-*Same setup and snapshot as above but showing the absolute temperature perturbation δT = T − T_eq — the V&T (2025) Figure 9 analogue. Symmetric diverging colormap. Empty panels are placeholders for runs still in flight.*
+*Same setup and snapshot as above but showing the temperature deviation from the horizontal mean δT = T − ⟨T⟩_x — the V&T (2025) Figure 9 analogue. Symmetric diverging colormap. Empty panels are placeholders for runs still in flight.*
 
 ![M82 disk + CC85 starburst wind — log n_H at t = 60 Myr](figures/m82_wind_density.png)
 
