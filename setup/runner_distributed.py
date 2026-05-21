@@ -177,18 +177,26 @@ def run_simulation_distributed(
         rho_dot_code = Mdot_code / V_sphere_code
         e_dot_code   = Edot_code / V_sphere_code
 
+        # CRITICAL: pass sphere_mask as a JIT argument (NOT closure),
+        # otherwise JAX tries to inline the sharded array as MLIR constants
+        # and crashes multi-process. Same lesson as ext_grav above.
         @jax.jit
-        def _cc85_apply(U, dt):
-            # Add per-cell rho_dot*dt and e_dot*dt only inside the sphere.
-            drho = rho_dot_code * dt * sphere_mask
-            dE   = e_dot_code   * dt * sphere_mask
+        def _cc85_apply_inner(U, dt, mask):
+            drho = rho_dot_code * dt * mask
+            dE   = e_dot_code   * dt * mask
             U_new = U.at[0].add(drho)
             U_new = U_new.at[-1].add(dE)
             return U_new
 
+        def _cc85_apply(U, dt):
+            return _cc85_apply_inner(U, dt, sphere_mask)
+
         cc85_state = {"apply": _cc85_apply}
         if is_main_process:
-            n_inj = int(jnp.sum(sphere_mask))
+            # In multi-process mode, sphere_mask is sharded across nodes —
+            # jnp.sum and then int() requires a global reduction. Skip the
+            # cell-count print for that case to keep setup deadlock-free.
+            n_inj = int(jnp.sum(sphere_mask)) if jax.process_count() == 1 else -1
             print(f"✓ CC85 wind source: R*={cfg.cc85_R_star_pc:.1f} pc, "
                   f"SFR={cfg.cc85_SFR_Msun_per_yr} Msun/yr, "
                   f"eta_M={cfg.cc85_eta_M}, eta_E={cfg.cc85_eta_E}")
@@ -250,25 +258,29 @@ def run_simulation_distributed(
             gy = jax.device_put(gy, coord_sharding)
             gz = jax.device_put(gz, coord_sharding)
 
+        # CRITICAL: pass gx, gy, gz as JIT arguments (NOT as closure
+        # variables), otherwise JAX tries to inline the sharded global
+        # arrays as MLIR constants and crashes in multi-process mode with
+        # "Fetching value for jax.Array that spans non-addressable devices".
         @jax.jit
-        def _ext_grav_apply(U, dt):
+        def _ext_grav_apply_inner(U, dt, gx_in, gy_in, gz_in):
             rho = U[0]
             mx, my, mz = U[1], U[2], U[3]
-            # Momentum: d_t (rho v) = rho g
-            new_mx = mx + dt * rho * gx
-            new_my = my + dt * rho * gy
-            new_mz = mz + dt * rho * gz
-            # Energy: d_t E = (rho v) . g  using the half-updated momentum
-            #         (midpoint) for second-order in time.
+            new_mx = mx + dt * rho * gx_in
+            new_my = my + dt * rho * gy_in
+            new_mz = mz + dt * rho * gz_in
             mx_mid = 0.5 * (mx + new_mx)
             my_mid = 0.5 * (my + new_my)
             mz_mid = 0.5 * (mz + new_mz)
-            new_E = U[-1] + dt * (mx_mid * gx + my_mid * gy + mz_mid * gz)
+            new_E = U[-1] + dt * (mx_mid * gx_in + my_mid * gy_in + mz_mid * gz_in)
             U_new = U.at[1].set(new_mx)
             U_new = U_new.at[2].set(new_my)
             U_new = U_new.at[3].set(new_mz)
             U_new = U_new.at[-1].set(new_E)
             return U_new
+
+        def _ext_grav_apply(U, dt):
+            return _ext_grav_apply_inner(U, dt, gx, gy, gz)
 
         ext_grav_state = {"apply": _ext_grav_apply}
         if is_main_process:

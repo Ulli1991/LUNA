@@ -31,6 +31,10 @@ def main():
     t_end_Myr = float(os.environ.get("LUNA_M82_TEND", "10.0"))
     n_snaps = int(os.environ.get("LUNA_M82_NSNAPS", "20"))
     use_fp64 = os.environ.get("LUNA_M82_FP32", "0") != "1"
+    # Feature toggles for multi-node bisection.
+    cc85_on = os.environ.get("LUNA_M82_CC85", "1") == "1"
+    grav_on = os.environ.get("LUNA_M82_GRAV", "1") == "1"
+    cool_on = os.environ.get("LUNA_M82_COOL", "1") == "1"
 
     units = UnitSystem(
         UnitLength_in_cm=KPC,
@@ -55,16 +59,19 @@ def main():
         units=units,
         riemann_solver="hllc",
         # CC85 central source
-        cc85_enabled=True,
+        cc85_enabled=cc85_on,
         cc85_R_star_pc=300.0,
-        cc85_SFR_Msun_per_yr=12.0,
-        cc85_eta_M=0.3,
-        cc85_eta_E=0.6,
+        # Schneider+ 2018 CGOLS "high mass-loading" phase (5-40 Myr):
+        #   SFR = 20, eta_M = 0.6, eta_E = 0.9
+        #   -> Mdot = 12 Msun/yr, Edot = 5.4e42 erg/s
+        cc85_SFR_Msun_per_yr=20.0,
+        cc85_eta_M=0.6,
+        cc85_eta_E=0.9,
         cc85_n_ambient_cgs=1.0e-4,
         cc85_T_ambient_K=1.0e6,
         cc85_mu=0.6,
         # M82 disk + static potential
-        m82_use_external_gravity=True,
+        m82_use_external_gravity=grav_on,
         m82_disk_M_gas=0.25,
         m82_disk_R_scale_kpc=1.6,
         m82_disk_R_trunc_kpc=4.5,
@@ -75,12 +82,15 @@ def main():
         m82_halo_NFW_M_vir=50.0,
         m82_halo_NFW_c=20.0,
         # Cooling
-        cooling_enabled=True,
+        cooling_enabled=cool_on,
         cooling_table="sd93_solar",
         # Output
         PLOT_AFTER_SIM=False,
         production_mode=True,
-        output_dir=f"snapshots/m82_Nx{Nx}",
+        output_dir=f"snapshots/m82_Nx{Nx}"
+                   + ("_no_cc85" if not cc85_on else "")
+                   + ("_no_grav" if not grav_on else "")
+                   + ("_no_cool" if not cool_on else ""),
         enable_x64=use_fp64,
     )
 
