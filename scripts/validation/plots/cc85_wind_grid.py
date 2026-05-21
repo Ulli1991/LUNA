@@ -29,8 +29,9 @@ UnitDensity_cgs = UnitMass_g / (UnitLength_cm ** 3)
 UnitPressure_cgs = UnitDensity_cgs * UnitVel_cms ** 2
 
 
-# t_end=100 Myr, time_bet_snaps=5 Myr  -> t=60 Myr is snapdir_012.
-_SNAP_IDX = 12
+# M82 runs: t_end=60 Myr, time_bet_snaps=1 Myr  -> final snap at t=60 is snapdir_060.
+_SNAP_IDX = 60
+_RUN_PREFIX = "m82_Nx"            # snapshots/m82_NxN/snapdir_NNN
 
 
 def _snapshot_at_index(run_dir, idx):
@@ -41,7 +42,7 @@ def _snapshot_at_index(run_dir, idx):
 
 
 def _load_run(Nx, snapshots_root):
-    run_dir = os.path.join(snapshots_root, f"cc85_Nx{Nx}")
+    run_dir = os.path.join(snapshots_root, f"{_RUN_PREFIX}{Nx}")
     snapdir = _snapshot_at_index(run_dir, _SNAP_IDX)
     if snapdir is None:
         return None
@@ -105,7 +106,11 @@ def _plot_grid(field_key, cmap_name, vmin, vmax, label, outpath_stem, runs,
             ax.set_xticks([]); ax.set_yticks([])
             continue
         data = run[field_key].T
-        extent = [0, run["Lx"], 0, run["Lz"]]
+        # Center the box so axes go from -L/2 to +L/2 (matches the wind
+        # geometry: injection sphere is at the origin, outflow is bi-conical
+        # with v_r > 0 above the midplane and v_r < 0 below).
+        extent = [-0.5 * run["Lx"], 0.5 * run["Lx"],
+                  -0.5 * run["Lz"], 0.5 * run["Lz"]]
         im = ax.imshow(data, origin="lower", extent=extent, cmap=cmap,
                        vmin=vmin, vmax=vmax, aspect="equal",
                        interpolation="nearest")
@@ -160,7 +165,7 @@ def _plot_radial_profiles(runs, snapshots_root="snapshots"):
     resolutions = sorted(runs.keys())
     colors = plt.cm.viridis(np.linspace(0.15, 0.85, len(resolutions)))
     for i, Nx in enumerate(resolutions):
-        run_dir = os.path.join(snapshots_root, f"cc85_Nx{Nx}")
+        run_dir = os.path.join(snapshots_root, f"{_RUN_PREFIX}{Nx}")
         snapdir = _snapshot_at_index(run_dir, _SNAP_IDX)
         snap = read_snapshot(snapdir)
         r, n_H, v_r, T = _radial_profile(
@@ -178,7 +183,7 @@ def _plot_radial_profiles(runs, snapshots_root="snapshots"):
         ax.grid(True, alpha=0.3); ax.legend(loc="best", fontsize=10)
 
     for ext in ("pdf", "png"):
-        path = f"figures/cc85_wind_radial_profiles.{ext}"
+        path = f"figures/m82_wind_radial_profiles.{ext}"
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         fig.savefig(path, dpi=180, bbox_inches="tight")
         print(f"wrote {path}")
@@ -208,13 +213,13 @@ def main(snapshots_root="snapshots"):
 
     _plot_grid("log_n", "inferno", n_lo, n_hi,
                r"$\log_{10}\, n_{\rm H}\ [{\rm cm}^{-3}]$",
-               "figures/cc85_wind_density", runs)
+               "figures/m82_wind_density", runs)
     _plot_grid("v_r", "RdBu_r", -vr_mag, vr_mag,
                r"$v_{\rm rad}\ [{\rm km\,s^{-1}}]$",
-               "figures/cc85_wind_vradial", runs, diverging=True)
+               "figures/m82_wind_vradial", runs, diverging=True)
     _plot_grid("log_T", "plasma", T_lo, T_hi,
                r"$\log_{10}\, T\ [{\rm K}]$",
-               "figures/cc85_wind_temperature", runs)
+               "figures/m82_wind_temperature", runs)
     _plot_radial_profiles(runs, snapshots_root)
 
 

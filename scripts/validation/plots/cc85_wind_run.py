@@ -56,7 +56,7 @@ def main():
         cc85_enabled=True,
         cc85_R_star_pc=300.0,
         cc85_SFR_Msun_per_yr=12.0,
-        cc85_eta_M=1.0,
+        cc85_eta_M=0.3,
         cc85_eta_E=0.6,
         cc85_n_ambient_cgs=1.0e-4,
         cc85_T_ambient_K=1.0e6,

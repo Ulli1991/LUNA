@@ -27,6 +27,7 @@ from .solar_convection_vt_2d import (
     solar_convection_vt_2d, solar_convection_vt_2d_equilibrium,
 )
 from .cc85_wind_3d import cc85_wind_3d
+from .m82_disk_3d import m82_disk_3d
 
 
 # test_problem name -> (ic_function, ndim).
@@ -59,6 +60,7 @@ _IC_REGISTRY = {
     "Solar-Convection-2D":  (solar_convection_2d, 2),
     "Solar-Convection-VT-2D": (solar_convection_vt_2d, 2),
     "CC85-Wind-3D":           (cc85_wind_3d, 3),
+    "M82-Disk-3D":            (m82_disk_3d, 3),
 }
 
 

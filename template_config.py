@@ -191,6 +191,23 @@ class Config:
     cc85_T_ambient_K: float = 1.0e6        # ambient CGM temperature
     cc85_mu: float = 0.6                   # mean molecular weight
 
+    # ---------------- M82 disk galaxy (Schneider+ 2018 CC85 setup) ----------------
+    # Rotating exponential gas disk in vertical HSE in a static
+    # Miyamoto-Nagai (stellar) + NFW (dark halo) potential. When enabled,
+    # the runner applies a position-dependent gravity source term every
+    # step using hydro/external_gravity.py. The disk IC is selected via
+    # test_problem = "M82-Disk-3D".
+    m82_use_external_gravity: bool = False
+    m82_disk_M_gas: float = 0.25                    # 2.5e9 Msun in code (1e10 Msun)
+    m82_disk_R_scale_kpc: float = 1.6
+    m82_disk_R_trunc_kpc: float = 4.5
+    m82_disk_T_K: float = 1.0e4
+    m82_stellar_MN_M: float = 1.0                   # 1e10 Msun
+    m82_stellar_MN_a_kpc: float = 0.8
+    m82_stellar_MN_b_kpc: float = 0.15
+    m82_halo_NFW_M_vir: float = 50.0                # 5e11 Msun in code
+    m82_halo_NFW_c: float = 20.0
+
     # ---------------- Radiative cooling ----------------
     # When True, apply Townsend (2009) cooling step + heating after each
     # hydro step. Requires cfg.units enabled.

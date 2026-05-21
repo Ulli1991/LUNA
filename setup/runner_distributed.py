@@ -135,20 +135,44 @@ def run_simulation_distributed(
         R_star_code = R_star_cgs / cfg.units.UnitLength_in_cm
         V_sphere_code = (4.0 / 3.0) * jnp.pi * R_star_code ** 3
 
-        # Build the sphere mask (sharded same as U)
+        # Build the sphere mask. Must be multi-process aware: each rank only
+        # builds its local slice (otherwise the full-domain construction +
+        # device_put deadlocks in multi-process mode when arrays are large).
         from jax.sharding import PartitionSpec
+        import numpy as _np
+        from utils.distributed import compute_local_slice
         dx, dy, dz = cfg.Lx / cfg.Nx, cfg.Ly / cfg.Ny, cfg.Lz / cfg.Nz
-        x_full = (jnp.arange(cfg.Nx, dtype=jnp.float32) + 0.5) * dx
-        y_full = (jnp.arange(cfg.Ny, dtype=jnp.float32) + 0.5) * dy
-        z_full = (jnp.arange(cfg.Nz, dtype=jnp.float32) + 0.5) * dz
-        X, Y, Z = jnp.meshgrid(x_full, y_full, z_full, indexing="ij")
         cx, cy, cz = 0.5 * cfg.Lx, 0.5 * cfg.Ly, 0.5 * cfg.Lz
-        r2 = (X - cx) ** 2 + (Y - cy) ** 2 + (Z - cz) ** 2
-        sphere_mask = (r2 < R_star_code ** 2).astype(jnp.float32)
-        if cfg.SPATIAL_DIMENSION == 3:
-            coord_spec = PartitionSpec(*sharding.spec[1:])
-            coord_sharding = NamedSharding(sharding.mesh, coord_spec)
-            sphere_mask = jax.device_put(sphere_mask, coord_sharding)
+        if jax.process_count() > 1:
+            xs, ys, zs = compute_local_slice(cfg.Nx, cfg.Ny,
+                                             sharding.mesh, jax.process_index(),
+                                             cfg.Nz)
+            x_loc = (_np.arange(xs[0], xs[1], dtype=_np.float32) + 0.5) * dx - cx
+            y_loc = (_np.arange(ys[0], ys[1], dtype=_np.float32) + 0.5) * dy - cy
+            z_loc = (_np.arange(zs[0], zs[1], dtype=_np.float32) + 0.5) * dz - cz
+            Xl, Yl, Zl = _np.meshgrid(x_loc, y_loc, z_loc, indexing="ij")
+            r2_loc = Xl * Xl + Yl * Yl + Zl * Zl
+            mask_local = (r2_loc < R_star_code ** 2).astype(_np.float32)
+            global_shape = (cfg.Nx, cfg.Ny, cfg.Nz)
+            coord_sharding = NamedSharding(sharding.mesh,
+                                            PartitionSpec("x", "y", "z"))
+            local_dev = jax.local_devices()[0]
+            mask_on_dev = jax.device_put(mask_local, local_dev)
+            sphere_mask = jax.make_array_from_single_device_arrays(
+                shape=global_shape, sharding=coord_sharding,
+                arrays=[mask_on_dev]
+            )
+        else:
+            x_full = (jnp.arange(cfg.Nx, dtype=jnp.float32) + 0.5) * dx - cx
+            y_full = (jnp.arange(cfg.Ny, dtype=jnp.float32) + 0.5) * dy - cy
+            z_full = (jnp.arange(cfg.Nz, dtype=jnp.float32) + 0.5) * dz - cz
+            X, Y, Z = jnp.meshgrid(x_full, y_full, z_full, indexing="ij")
+            r2 = X * X + Y * Y + Z * Z
+            sphere_mask = (r2 < R_star_code ** 2).astype(jnp.float32)
+            if cfg.SPATIAL_DIMENSION == 3:
+                coord_spec = PartitionSpec(*sharding.spec[1:])
+                coord_sharding = NamedSharding(sharding.mesh, coord_spec)
+                sphere_mask = jax.device_put(sphere_mask, coord_sharding)
 
         rho_dot_code = Mdot_code / V_sphere_code
         e_dot_code   = Edot_code / V_sphere_code
@@ -171,6 +195,87 @@ def run_simulation_distributed(
             print(f"  Mdot = {Mdot_cgs:.3e} g/s = {Mdot_code:.3e} code/code_t")
             print(f"  Edot = {Edot_cgs:.3e} erg/s = {Edot_code:.3e} code")
             print(f"  Injection cells: {n_inj}")
+
+    # === Optional external static-potential gravity (M82 disk setup) ===
+    # Apply a position-dependent (g_x, g_y, g_z) to U each step as an
+    # operator-split source. The acceleration field is precomputed once
+    # from Miyamoto-Nagai (stellar) + NFW (halo) and cached on-device.
+    ext_grav_state = None
+    if getattr(cfg, "m82_use_external_gravity", False):
+        if cfg.SPATIAL_DIMENSION != 3:
+            raise ValueError("m82_use_external_gravity requires 3D.")
+        from hydro.external_gravity import combined_acceleration
+        from jax.sharding import PartitionSpec
+        from utils.distributed import compute_local_slice
+        import numpy as _np
+        dx, dy, dz = cfg.Lx / cfg.Nx, cfg.Ly / cfg.Ny, cfg.Lz / cfg.Nz
+        cx, cy, cz = 0.5 * cfg.Lx, 0.5 * cfg.Ly, 0.5 * cfg.Lz
+        global_shape = (cfg.Nx, cfg.Ny, cfg.Nz)
+        coord_sharding = NamedSharding(sharding.mesh,
+                                        PartitionSpec("x", "y", "z"))
+        if jax.process_count() > 1:
+            xs, ys, zs = compute_local_slice(cfg.Nx, cfg.Ny,
+                                             sharding.mesh, jax.process_index(),
+                                             cfg.Nz)
+            x_loc = (_np.arange(xs[0], xs[1], dtype=_np.float32) + 0.5) * dx - cx
+            y_loc = (_np.arange(ys[0], ys[1], dtype=_np.float32) + 0.5) * dy - cy
+            z_loc = (_np.arange(zs[0], zs[1], dtype=_np.float32) + 0.5) * dz - cz
+            Xl, Yl, Zl = _np.meshgrid(x_loc, y_loc, z_loc, indexing="ij")
+            gx_loc, gy_loc, gz_loc = combined_acceleration(
+                Xl, Yl, Zl,
+                cfg.m82_stellar_MN_M, cfg.m82_stellar_MN_a_kpc,
+                cfg.m82_stellar_MN_b_kpc,
+                cfg.m82_halo_NFW_M_vir, cfg.m82_halo_NFW_c,
+            )
+            local_dev = jax.local_devices()[0]
+            def _assemble(local_arr):
+                d = jax.device_put(_np.asarray(local_arr), local_dev)
+                return jax.make_array_from_single_device_arrays(
+                    shape=global_shape, sharding=coord_sharding, arrays=[d]
+                )
+            gx = _assemble(gx_loc); gy = _assemble(gy_loc); gz = _assemble(gz_loc)
+        else:
+            x_full = (jnp.arange(cfg.Nx, dtype=jnp.float32) + 0.5) * dx - cx
+            y_full = (jnp.arange(cfg.Ny, dtype=jnp.float32) + 0.5) * dy - cy
+            z_full = (jnp.arange(cfg.Nz, dtype=jnp.float32) + 0.5) * dz - cz
+            X, Y, Z = jnp.meshgrid(x_full, y_full, z_full, indexing="ij")
+            gx, gy, gz = combined_acceleration(
+                X, Y, Z,
+                cfg.m82_stellar_MN_M, cfg.m82_stellar_MN_a_kpc, cfg.m82_stellar_MN_b_kpc,
+                cfg.m82_halo_NFW_M_vir, cfg.m82_halo_NFW_c,
+            )
+            coord_spec = PartitionSpec(*sharding.spec[1:])
+            coord_sharding = NamedSharding(sharding.mesh, coord_spec)
+            gx = jax.device_put(gx, coord_sharding)
+            gy = jax.device_put(gy, coord_sharding)
+            gz = jax.device_put(gz, coord_sharding)
+
+        @jax.jit
+        def _ext_grav_apply(U, dt):
+            rho = U[0]
+            mx, my, mz = U[1], U[2], U[3]
+            # Momentum: d_t (rho v) = rho g
+            new_mx = mx + dt * rho * gx
+            new_my = my + dt * rho * gy
+            new_mz = mz + dt * rho * gz
+            # Energy: d_t E = (rho v) . g  using the half-updated momentum
+            #         (midpoint) for second-order in time.
+            mx_mid = 0.5 * (mx + new_mx)
+            my_mid = 0.5 * (my + new_my)
+            mz_mid = 0.5 * (mz + new_mz)
+            new_E = U[-1] + dt * (mx_mid * gx + my_mid * gy + mz_mid * gz)
+            U_new = U.at[1].set(new_mx)
+            U_new = U_new.at[2].set(new_my)
+            U_new = U_new.at[3].set(new_mz)
+            U_new = U_new.at[-1].set(new_E)
+            return U_new
+
+        ext_grav_state = {"apply": _ext_grav_apply}
+        if is_main_process:
+            print(f"✓ External M82 gravity: "
+                  f"MN(M={cfg.m82_stellar_MN_M}, a={cfg.m82_stellar_MN_a_kpc}, "
+                  f"b={cfg.m82_stellar_MN_b_kpc}) + "
+                  f"NFW(M200={cfg.m82_halo_NFW_M_vir}, c={cfg.m82_halo_NFW_c})")
 
     # === Optional radiative cooling (Townsend 2009 + S&D93 CIE) ===
     cooling_solver = None
@@ -279,6 +384,10 @@ def run_simulation_distributed(
         # Soft thermostat — leaves rho, momentum untouched.
         if cfg.isothermal_cs2 > 0.0:
             U_sharded = _isothermal_project(U_sharded, cfg.isothermal_cs2, cfg.gamma)
+
+        # Operator-split external static-potential gravity (M82 disk).
+        if ext_grav_state is not None:
+            U_sharded = ext_grav_state["apply"](U_sharded, dt)
 
         # Operator-split CC85 central source: Mdot/Edot inside R_*.
         if cc85_state is not None:

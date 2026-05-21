@@ -56,21 +56,21 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Same layout as above but showing the relative temperature perturbation δT/T_eq — the V&T (2025) Figure 9 analogue. Same colorbar range across panels for easy comparison between solvers and resolutions.*
 
-![CC85 M82 starburst wind — log n_H at t = 60 Myr](figures/cc85_wind_density.png)
+![M82 disk + CC85 starburst wind — log n_H at t = 60 Myr](figures/m82_wind_density.png)
 
-*3D Chevalier-Clegg (1985) thermally driven wind with M82 nuclear-region loading (SFR = 12 M⊙/yr, η_M = 1, η_E = 0.6 → Ṁ = 12 M⊙/yr, Ė ≈ 2.3 × 10⁴² erg/s, asymptotic v_∞ ≈ 776 km/s). Box 10 × 10 × 20 kpc, central injection sphere R_⋆ = 300 pc, hot CGM ambient (n = 10⁻⁴ cm⁻³, T = 10⁶ K), Sutherland & Dopita (1993) CIE cooling integrated with Townsend (2009). x–z slice through y = Ly/2 of log₁₀ n_H at t = 60 Myr. Resolution scan Nx ∈ {128, 256, 512}; the 512 panel is a placeholder for a run still in flight.*
+*3D M82-like starburst wind following the Schneider, Robertson & Thompson (2018) CC85 setup: rotating exponential isothermal gas disk (M_gas = 2.5 × 10⁹ M⊙, R_d = 1.6 kpc, R_trunc = 4.5 kpc, T = 10⁴ K) in vertical hydrostatic equilibrium within a static Miyamoto-Nagai stellar disk (M⋆ = 10¹⁰ M⊙, a = 0.8 kpc, b = 0.15 kpc) + NFW halo (M_vir = 5 × 10¹¹ M⊙, c = 20) potential, plus CC85 central spherical injection (R_⋆ = 300 pc; SFR = 12 M⊙/yr, η_M = 0.3, η_E = 0.6 → Ṁ = 3.6 M⊙/yr, Ė ≈ 2.3 × 10⁴² erg/s, v_∞ ≈ 1400 km/s). Hot CGM ambient (n = 10⁻⁴ cm⁻³, T = 10⁶ K) fills the rest of the 10 × 10 × 20 kpc box; Sutherland & Dopita (1993) CIE cooling integrated with Townsend (2009). x–z slice through y = Ly/2 of log₁₀ n_H at t = 60 Myr. Resolution scan Nx ∈ {128, 256, 512}; the 512 panel is a placeholder for a multi-node run still in flight.*
 
-![CC85 M82 wind — radial velocity](figures/cc85_wind_vradial.png)
+![M82 wind — radial velocity](figures/m82_wind_vradial.png)
 
-*Same slice and snapshot, showing radial velocity v_r (km/s) with a diverging colormap. Positive (red) is outflow from the box center; the inner injection region accelerates the wind to the asymptotic CC85 velocity (~776 km/s) and the entrained ambient gas dominates the outer regions.*
+*Same slice and snapshot, showing radial velocity v_r (km/s) with a diverging colormap. Positive (red) is outflow above the midplane and below the midplane the same sign convention reads as inflow toward the launching region from the diffuse CGM. The cone-like bi-conical outflow above and below the dense rotating disk is clearly visible.*
 
-![CC85 M82 wind — log T](figures/cc85_wind_temperature.png)
+![M82 wind — log T](figures/m82_wind_temperature.png)
 
-*Same slice and snapshot, showing log₁₀ T (K). The injection region maintains the launched hot wind at T > 10⁷ K, with the surrounding shocked CGM and the inflow regions visible at intermediate temperatures.*
+*Same slice and snapshot, showing log₁₀ T (K). The injection region launches gas at T > 10⁷ K which adiabatically expands and cools above and below the disk. The dense cold disk (T = 10⁴ K floor of the S&D93 cooling table) is the central blue band.*
 
-![CC85 M82 wind — radial profiles](figures/cc85_wind_radial_profiles.png)
+![M82 wind — radial profiles](figures/m82_wind_radial_profiles.png)
 
-*Spherically-averaged radial profiles of n_H, v_rad, and T at t = 60 Myr for each resolution. Computed by 3D binning in radius from the box center. Useful for direct comparison against the analytic CC85 solution (which predicts power-law n ∝ r⁻², constant v ∝ v_∞ outside R_⋆, and adiabatic T ∝ r^(−4/3) in the steady wind).*
+*Spherically-averaged radial profiles of n_H, v_rad, and T at t = 60 Myr for each resolution. Computed by 3D binning in radius from the box center. Useful for direct comparison against the analytic CC85 solution (n ∝ r⁻², roughly constant v ∝ v_∞ outside R_⋆, and adiabatic T ∝ r⁻⁴ᐟ³ in the steady wind) and Schneider+ 2018 CGOLS Figure 4.*
 
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
