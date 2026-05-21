@@ -91,10 +91,11 @@ def _plot_grid(field_key, label, outpath_stem, runs):
     # loaded panels, so the colormap captures the bulk of the dynamic range
     # without being dragged by tail outliers in the tenuous upper atmosphere
     # (where rho_eq -> 0 and small numerical noise becomes huge relative).
-    all_data = np.concatenate([r[field_key].ravel() for r in runs.values()])
-    lo, hi = np.percentile(all_data, [2, 98])
-    vmag = max(abs(lo), abs(hi))
-    vmin, vmax = -vmag, vmag
+    # Fixed tight symmetric range that brings out the weak buoyancy
+    # structure of the saturated convective layer. The largest mixing-
+    # driven cells get saturated, which is fine — the bulk of the box
+    # carries the visual signal we care about.
+    vmin, vmax = -0.08, 0.08
 
     # Single row, LHLLC only (HLLC is unstable for this stratified setup).
     fig, axes = plt.subplots(1, 4, figsize=(13, 8), sharex=True, sharey=True,
