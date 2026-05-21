@@ -172,6 +172,9 @@ class Config:
     ou_config: Optional[OUDriverConfig] = None
     ou_seed: int = 7                                 # PRNG seed for OU evolve()
 
+    # ---------------- Gresho vortex (low-Mach test) ----------------
+    gresho_Mmax: float = 0.01
+
     # ---------------- Solar convection (polytropic atmosphere) ----------------
     solar_rho0: float = 1.0          # density at the bottom of the box
     solar_p0: float = 1.0            # pressure at the bottom of the box
