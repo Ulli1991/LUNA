@@ -54,12 +54,17 @@ def _snapshot_at_index(run_dir, idx):
     return p if os.path.isdir(p) else None
 
 
-# t_end=1000, time_bet_snaps = t_end/20 = 50  -> t=100 is snapdir_002.
-_SNAP_IDX = 2
+# t_end=1000, time_bet_snaps = t_end/20 = 50  -> t=1000 is snapdir_020.
+_SNAP_IDX = 20
 
 
 def _load_run(solver, Nx, snapshots_root):
-    run_dir = os.path.join(snapshots_root, f"solar_vt_{solver}_Nx{Nx}")
+    # Prefer the CFL=0.1 production dirs; fall back to the older default.
+    cfl_dir = os.path.join(snapshots_root, f"solar_vt_{solver}_Nx{Nx}_cfl0.1")
+    if os.path.isdir(cfl_dir):
+        run_dir = cfl_dir
+    else:
+        run_dir = os.path.join(snapshots_root, f"solar_vt_{solver}_Nx{Nx}")
     snapdir = _snapshot_at_index(run_dir, _SNAP_IDX)
     if snapdir is None:
         return None
@@ -91,32 +96,30 @@ def _plot_grid(field_key, label, outpath_stem, runs):
     vmag = max(abs(lo), abs(hi))
     vmin, vmax = -vmag, vmag
 
-    fig, axes = plt.subplots(2, 3, figsize=(9, 12), sharex=True, sharey=True,
+    # Single row, LHLLC only (HLLC is unstable for this stratified setup).
+    fig, axes = plt.subplots(1, 4, figsize=(13, 8), sharex=True, sharey=True,
                              constrained_layout=True)
     cmap = plt.get_cmap("RdBu_r")
-    solvers = ["hllc", "lhllc"]
-    resolutions = [1024, 2048, 4096]
+    resolutions = [512, 1024, 2048, 4096]
     im = None
-    for i_row, sol in enumerate(solvers):
-        for j_col, Nx in enumerate(resolutions):
-            ax = axes[i_row, j_col]
-            run = runs.get((sol, Nx))
-            if run is None:
-                ax.text(0.5, 0.5, f"(no data yet)\n{sol.upper()} Nx={Nx}",
-                        ha="center", va="center", transform=ax.transAxes,
-                        fontsize=12, color="0.4")
-                ax.set_xticks([]); ax.set_yticks([])
-                continue
-            data = run[field_key].T          # transpose so y is vertical
-            extent = [0, run["Lx"], 0, run["Ly"]]
-            im = ax.imshow(data, origin="lower", extent=extent,
-                           cmap=cmap, vmin=vmin, vmax=vmax, aspect="equal",
-                           interpolation="nearest")
-            ax.set_title(f"{sol.upper()}  Nx={Nx}  t={run['t']:.0f}", fontsize=11)
-            if i_row == 1:
-                ax.set_xlabel("x")
-            if j_col == 0:
-                ax.set_ylabel("y")
+    for j_col, Nx in enumerate(resolutions):
+        ax = axes[j_col]
+        run = runs.get(("lhllc", Nx))
+        if run is None:
+            ax.text(0.5, 0.5, f"(no data yet)\nLHLLC Nx={Nx}",
+                    ha="center", va="center", transform=ax.transAxes,
+                    fontsize=12, color="0.4")
+            ax.set_xticks([]); ax.set_yticks([])
+            continue
+        data = run[field_key].T
+        extent = [0, run["Lx"], 0, run["Ly"]]
+        im = ax.imshow(data, origin="lower", extent=extent,
+                       cmap=cmap, vmin=vmin, vmax=vmax, aspect="equal",
+                       interpolation="nearest")
+        ax.set_title(f"L-HLLC  Nx={Nx}  t={run['t']:.0f}", fontsize=11)
+        ax.set_xlabel("x")
+        if j_col == 0:
+            ax.set_ylabel("y")
 
     if im is not None:
         cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.85,
@@ -133,8 +136,9 @@ def _plot_grid(field_key, label, outpath_stem, runs):
 def main():
     snapshots_root = "snapshots"
     runs = {}
-    for sol in ("hllc", "lhllc"):
-        for Nx in (1024, 2048, 4096):
+    # LHLLC only — HLLC is unstable for this stratified low-Mach setup.
+    for sol in ("lhllc",):
+        for Nx in (512, 1024, 2048, 4096):
             run = _load_run(sol, Nx, snapshots_root)
             if run is not None:
                 runs[(sol, Nx)] = run

@@ -48,13 +48,13 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Subsonic (M_rms = 0.3) driven isothermal turbulence at t ≈ 4 (≈1.2 turnover times): density slice through z = L/2 for a resolution sweep Nx³ ∈ {128³, 256³, 512³, 1024³}. Solenoidal-only OU forcing (Federrath/Schmidt 2010) on a 1³ periodic box, k_min=1, k_max=2 driving range, identical PRNG seed at every Nx so the driven realisation matches. EOS: LUNA solves γ=5/3 Euler internally for HLLC robustness, but the runner enforces p = c_s² ρ as an operator-split post-step projection (soft isothermal thermostat) — no spurious compressive heating accumulates. The 1024³ run is on a 2-node × 4-GPU schedule slot.*
 
-![V&T solar convection — δρ/ρ_eq](figures/solar_vt_drho_grid.png)
+![V&T solar convection — δρ at t=1000](figures/solar_vt_drho_grid.png)
 
-*2D Velasco-Romero & Teyssier (2025) 3-layer polytropic atmosphere with a buoyant Gaussian bubble, well-balanced MUSCL-Hancock + MonCen, gravity along −y. Top row HLLC, bottom row L-HLLC, columns Nx ∈ {1024, 2048, 4096}. Final-snapshot relative density perturbation δρ/ρ_eq with a diverging colormap. The Nx=4096 columns are placeholders for runs still in flight.*
+*2D Velasco-Romero & Teyssier (2025) 3-layer polytropic atmosphere with a buoyant Gaussian bubble (δρ/ρ_eq = −0.012, r_b = 0.5), well-balanced MUSCL-Hancock + MonCen + L-HLLC at CFL = 0.1, gravity along −y. Resolution scan Nx ∈ {512, 1024, 2048, 4096} at t = 1000 (saturated convective state, well past V&T's early-phase KE peak at t ≈ 100). Absolute density perturbation δρ = ρ − ρ_eq with a symmetric diverging colormap (2–98 percentile of the loaded panels). HLLC was removed from this scan: HLLC NaN's around t ≈ 150–280 in this stratified low-Mach regime independent of CFL choice; L-HLLC's low-Mach fix (Velasco-Romero & Teyssier 2025) is what makes the integration stable.*
 
-![V&T solar convection — δT/T_eq](figures/solar_vt_dT_grid.png)
+![V&T solar convection — δT at t=1000](figures/solar_vt_dT_grid.png)
 
-*Same layout as above but showing the relative temperature perturbation δT/T_eq — the V&T (2025) Figure 9 analogue. Same colorbar range across panels for easy comparison between solvers and resolutions.*
+*Same setup and snapshot as above but showing the absolute temperature perturbation δT = T − T_eq — the V&T (2025) Figure 9 analogue. Symmetric diverging colormap. Empty panels are placeholders for runs still in flight.*
 
 ![M82 disk + CC85 starburst wind — log n_H at t = 60 Myr](figures/m82_wind_density.png)
 
