@@ -111,9 +111,10 @@ def m82_disk_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     # Build sigma_R first, then convert to rho_0(R) by dividing by H_eff.
     # Use a simple scale-height approximation H_iso = cs / Omega_z, where
     # Omega_z^2 ~ -d2Phi/dz2 at z=0 ~ G M / (a+b)^3 (MN at z=0 small-z limit).
-    a_b = a_MN + b_MN
+    # MN vertical-oscillation frequency at (R=0, z=0):
+    #   omega_z^2 = d2Phi/dz2 = G*M / (b * (a+b)^2)
     from hydro.external_gravity import G_CODE
-    omega_z2 = G_CODE * M_disk_MN / (a_b ** 3) + 1e-30
+    omega_z2 = G_CODE * M_disk_MN / (b_MN * (a_MN + b_MN) ** 2) + 1e-30
     H_iso = jnp.sqrt(cs2 / omega_z2)               # scale height in kpc
 
     # Surface density with truncation

@@ -32,7 +32,7 @@ import jax.numpy as jnp
 
 
 # Gravitational constant in Arepo code units (kpc, 1e10 Msun, km/s).
-G_CODE = 43.0071
+G_CODE = 43007.1
 
 # Critical density at z=0 in Arepo code units (1e10 Msun / kpc^3).
 RHO_CRIT_CODE = 1.4e-8
