@@ -138,7 +138,6 @@ def run_simulation_distributed(
         # Build the sphere mask. Must be multi-process aware: each rank only
         # builds its local slice (otherwise the full-domain construction +
         # device_put deadlocks in multi-process mode when arrays are large).
-        from jax.sharding import PartitionSpec
         import numpy as _np
         from utils.distributed import compute_local_slice
         dx, dy, dz = cfg.Lx / cfg.Nx, cfg.Ly / cfg.Ny, cfg.Lz / cfg.Nz
@@ -213,7 +212,6 @@ def run_simulation_distributed(
         if cfg.SPATIAL_DIMENSION != 3:
             raise ValueError("m82_use_external_gravity requires 3D.")
         from hydro.external_gravity import combined_acceleration
-        from jax.sharding import PartitionSpec
         from utils.distributed import compute_local_slice
         import numpy as _np
         dx, dy, dz = cfg.Lx / cfg.Nx, cfg.Ly / cfg.Ny, cfg.Lz / cfg.Nz
