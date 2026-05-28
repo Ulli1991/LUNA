@@ -27,13 +27,8 @@ from utils.distributed import (
     compute_local_slice,
     create_sharded_array_from_local
 )
-from time_integration.sharded_integrators_modular import (
-    create_rk2_modular_step,
-    create_muscl_hancock_modular_step,
-    create_rk4_modular_step,
-)
+from time_integration.integrators import create_muscl_hancock_modular_step
 from utils.halo_exchange_auto import pad_with_halo_auto
-from hydro.divergence import flux_divergence_from_padded
 
 
 def initialize_jax_distributed(enable_x64: bool = False):
@@ -323,80 +318,55 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
     #   step_fn(U, dt)   -> U_new
     # All three share the same modular pattern (Python orchestration of
     # small @jax.jit subfunctions) — the one that works multi-node.
-    if cfg.TIME_SOLVER == 0:
-        compute_dt_fn, step_fn = create_rk2_modular_step(
-            pad_halo_fn, flux_divergence_from_padded,
-            cfg.gamma, cfg.ORDER, cfg.LIMITER,
-            grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
-            sharding=sharding,
-        )
-        integrator_name = "RK2"
-    elif cfg.TIME_SOLVER == 1:
-        if getattr(cfg, "use_well_balanced", False):
-            # Build hydrostatic equilibrium U_eq sharded the same way as U
-            from ic_generation.ic import equilibrium_state
-            from time_integration.wb_integrator import create_wb_muscl_hancock_step
-            from utils.distributed import compute_local_slice
-            if jax.process_count() > 1:
-                local_slices = compute_local_slice(
-                    cfg.Nx, cfg.Ny, mesh, jax.process_index(), cfg.Nz
-                )
-                U_eq_local = equilibrium_state(
-                    cfg, x_slice=local_slices[0], y_slice=local_slices[1],
-                    z_slice=local_slices[2],
-                )
-                if cfg.SPATIAL_DIMENSION == 2:
-                    u_eq_global_shape = (4, cfg.Nx, cfg.Ny)
-                else:
-                    u_eq_global_shape = (5, cfg.Nx, cfg.Ny, cfg.Nz)
-                U_eq = create_sharded_array_from_local(
-                    U_eq_local, u_eq_global_shape, mesh, cfg.SPATIAL_DIMENSION
-                )
-            else:
-                # Single-process multi-GPU: generate the global U_eq once,
-                # then device_put with the live sharding so it splits across
-                # devices the same way the runtime's U does.
-                U_eq_global = equilibrium_state(cfg)
-                U_eq = jax.device_put(U_eq_global, sharding)
-            compute_dt_fn, step_fn = create_wb_muscl_hancock_step(
-                pad_halo_fn, flux_divergence_from_padded,
-                cfg.gamma, cfg.ORDER, cfg.LIMITER,
-                grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
-                U_eq=U_eq,
-                gravity_z=cfg.gravity_z,
-                sharding=sharding,
-                riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
+    # MUSCL-Hancock is the only supported integrator. Optional well-balanced
+    # gravity path uses the same scheme with an equilibrium-flux subtraction.
+    if getattr(cfg, "use_well_balanced", False):
+        from ic_generation.ic import equilibrium_state
+        from time_integration.wb_integrator import create_wb_muscl_hancock_step
+        from utils.distributed import compute_local_slice
+        if jax.process_count() > 1:
+            local_slices = compute_local_slice(
+                cfg.Nx, cfg.Ny, mesh, jax.process_index(), cfg.Nz
             )
-            integrator_name = (
-                f"WB-MUSCL-Hancock "
-                f"({getattr(cfg, 'riemann_solver', 'hllc').upper()}, "
-                f"g_z={cfg.gravity_z})"
+            U_eq_local = equilibrium_state(
+                cfg, x_slice=local_slices[0], y_slice=local_slices[1],
+                z_slice=local_slices[2],
+            )
+            if cfg.SPATIAL_DIMENSION == 2:
+                u_eq_global_shape = (4, cfg.Nx, cfg.Ny)
+            else:
+                u_eq_global_shape = (5, cfg.Nx, cfg.Ny, cfg.Nz)
+            U_eq = create_sharded_array_from_local(
+                U_eq_local, u_eq_global_shape, mesh, cfg.SPATIAL_DIMENSION
             )
         else:
-            compute_dt_fn, step_fn = create_muscl_hancock_modular_step(
-                pad_halo_fn, flux_divergence_from_padded,
-                cfg.gamma, cfg.ORDER, cfg.LIMITER,
-                grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-                cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
-                sharding=sharding,
-                riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
-            )
-            integrator_name = f"MUSCL-Hancock ({getattr(cfg, 'riemann_solver', 'hllc').upper()})"
-    elif cfg.TIME_SOLVER == 2:
-        compute_dt_fn, step_fn = create_rk4_modular_step(
-            pad_halo_fn, flux_divergence_from_padded,
+            U_eq_global = equilibrium_state(cfg)
+            U_eq = jax.device_put(U_eq_global, sharding)
+        compute_dt_fn, step_fn = create_wb_muscl_hancock_step(
+            pad_halo_fn,
+            cfg.gamma, cfg.ORDER, cfg.LIMITER,
+            grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
+            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
+            U_eq=U_eq,
+            gravity_z=cfg.gravity_z,
+            sharding=sharding,
+            riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
+        )
+        integrator_name = (
+            f"WB-MUSCL-Hancock "
+            f"({getattr(cfg, 'riemann_solver', 'hllc').upper()}, "
+            f"g_z={cfg.gravity_z})"
+        )
+    else:
+        compute_dt_fn, step_fn = create_muscl_hancock_modular_step(
+            pad_halo_fn,
             cfg.gamma, cfg.ORDER, cfg.LIMITER,
             grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
             cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
             sharding=sharding,
+            riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
         )
-        integrator_name = "RK4"
-    else:
-        if is_main_process:
-            print(f"ERROR: TIME_SOLVER={cfg.TIME_SOLVER} not supported")
-        sys.exit(1)
+        integrator_name = f"MUSCL-Hancock ({getattr(cfg, 'riemann_solver', 'hllc').upper()})"
 
     if is_main_process:
         print(f"Using {integrator_name} time integration")

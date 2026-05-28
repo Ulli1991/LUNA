@@ -82,10 +82,9 @@ class Config:
     # ---------------- Time Integration ----------------
     CFL: float = 0.8
 
-    # 0 = RK2
-    # 1 = Predictor Corrector (Hancock)
-    # 2 = RK4
-    TIME_SOLVER: int = 2
+    # Only MUSCL-Hancock (predictor-corrector, 2nd-order) is supported.
+    # Field retained for backward compatibility of run scripts.
+    TIME_SOLVER: int = 1
 
     # ---------------- Riemann Solver ----------------
     # Reconstruction order:
@@ -99,10 +98,6 @@ class Config:
     # 1 = MonCen
     # 2 = VanLeer
     LIMITER: int = 0
-
-    # Smooth limiters for autodiff (makes limiters differentiable)
-    use_smooth_limiters: bool = False
-    smooth_limiter_sharpness: float = 10.0
 
     # Soundwave IC variant. True = single right-going acoustic eigenmode (matches
     # AthenaK's linear_wave). False = u=0 superposition of left+right waves.

@@ -27,7 +27,7 @@ import jax
 import jax.numpy as jnp
 
 
-def create_wb_muscl_hancock_step(pad_halo_fn, flux_div_fn, gamma, order, limiter,
+def create_wb_muscl_hancock_step(pad_halo_fn, gamma, order, limiter,
                                  dx, dy, dz, inv_dx, inv_dy, inv_dz,
                                  boundary, spatial_dim, CFL,
                                  U_eq,
