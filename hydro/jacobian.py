@@ -211,35 +211,26 @@ def apply_primitive_jacobian_3d(W, dWx, dWy, dWz, gamma):
     drho_dz, dvx_dz, dvy_dz, dvz_dz, dP_dz = dWz
 
     # Sound speed squared (only c² is needed in Jacobian)
-    c2 = gamma * P / rho
+    rho_c2 = gamma * P
     inv_rho = 1.0 / rho
 
-    # X-direction contribution
-    Ax_dWx_rho = vx * drho_dx + rho * dvx_dx
-    Ax_dWx_vx = vx * dvx_dx + inv_rho * dP_dx
-    Ax_dWx_vy = vx * dvy_dx
-    Ax_dWx_vz = vx * dvz_dx
-    Ax_dWx_P = rho * c2 * dvx_dx + vx * dP_dx
-
-    # Y-direction contribution
-    Ay_dWy_rho = vy * drho_dy + rho * dvy_dy
-    Ay_dWy_vx = vy * dvx_dy
-    Ay_dWy_vy = vy * dvy_dy + inv_rho * dP_dy
-    Ay_dWy_vz = vy * dvz_dy
-    Ay_dWy_P = rho * c2 * dvy_dy + vy * dP_dy
-
-    # Z-direction contribution
-    Az_dWz_rho = vz * drho_dz + rho * dvz_dz
-    Az_dWz_vx = vz * dvx_dz
-    Az_dWz_vy = vz * dvy_dz
-    Az_dWz_vz = vz * dvz_dz + inv_rho * dP_dz
-    Az_dWz_P = rho * c2 * dvz_dz + vz * dP_dz
-
-    # Sum all contributions
-    result_rho = Ax_dWx_rho + Ay_dWy_rho + Az_dWz_rho
-    result_vx = Ax_dWx_vx + Ay_dWy_vx + Az_dWz_vx
-    result_vy = Ax_dWx_vy + Ay_dWy_vy + Az_dWz_vy
-    result_vz = Ax_dWx_vz + Ay_dWy_vz + Az_dWz_vz
-    result_P = Ax_dWx_P + Ay_dWy_P + Az_dWz_P
+    # Fused per-component expressions — no 15 named direction-x-component
+    # intermediates kept alive simultaneously. XLA can choose to fuse the
+    # whole stack body into a single elementwise kernel.
+    result_rho = (vx * drho_dx + rho * dvx_dx
+                  + vy * drho_dy + rho * dvy_dy
+                  + vz * drho_dz + rho * dvz_dz)
+    result_vx = (vx * dvx_dx + inv_rho * dP_dx
+                 + vy * dvx_dy
+                 + vz * dvx_dz)
+    result_vy = (vx * dvy_dx
+                 + vy * dvy_dy + inv_rho * dP_dy
+                 + vz * dvy_dz)
+    result_vz = (vx * dvz_dx
+                 + vy * dvz_dy
+                 + vz * dvz_dz + inv_rho * dP_dz)
+    result_P = (rho_c2 * dvx_dx + vx * dP_dx
+                + rho_c2 * dvy_dy + vy * dP_dy
+                + rho_c2 * dvz_dz + vz * dP_dz)
 
     return jnp.stack([result_rho, result_vx, result_vy, result_vz, result_P])

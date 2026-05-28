@@ -317,3 +317,9 @@ def apply_cooling(U, dt_code, cfg, solver: TownsendCoolingSolver):
     u_int_new = u_int_cgs_new / cfg.units.UnitPressure_in_cgs
     E_new = u_int_new + kin
     return U.at[4].set(E_new)
+
+
+# ----------------------------------------------------------------------
+# Runner-side setup helper
+# ----------------------------------------------------------------------
+

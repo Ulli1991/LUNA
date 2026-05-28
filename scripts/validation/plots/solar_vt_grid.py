@@ -54,17 +54,21 @@ def _snapshot_at_index(run_dir, idx):
     return p if os.path.isdir(p) else None
 
 
-# t_end=1000, time_bet_snaps = t_end/20 = 50  -> t=1000 is snapdir_020.
-_SNAP_IDX = 20
+# t_end=1000, time_bet_snaps = t_end/20 = 50  -> t=50 is snapdir_001
+# (last common snapshot across all LHLLC CFL=0.025 resolutions before NaN).
+_SNAP_IDX = 1
 
 
 def _load_run(solver, Nx, snapshots_root):
-    # Prefer the CFL=0.1 production dirs; fall back to the older default.
-    cfl_dir = os.path.join(snapshots_root, f"solar_vt_{solver}_Nx{Nx}_cfl0.1")
-    if os.path.isdir(cfl_dir):
-        run_dir = cfl_dir
+    # Prefer CFL=0.025 (current production); fall back to older CFL=0.1
+    # then the legacy default.
+    for suffix in ("_cfl0.025", "_cfl0.1", ""):
+        cand = os.path.join(snapshots_root, f"solar_vt_{solver}_Nx{Nx}{suffix}")
+        if os.path.isdir(cand):
+            run_dir = cand
+            break
     else:
-        run_dir = os.path.join(snapshots_root, f"solar_vt_{solver}_Nx{Nx}")
+        return None
     snapdir = _snapshot_at_index(run_dir, _SNAP_IDX)
     if snapdir is None:
         return None
@@ -106,7 +110,7 @@ def _plot_grid(field_key, label, outpath_stem, runs):
     fig, axes = plt.subplots(1, 4, figsize=(13, 8), sharex=True, sharey=True,
                              constrained_layout=True)
     cmap = plt.get_cmap("RdBu_r")
-    resolutions = [512, 1024, 2048, 4096]
+    resolutions = [256, 512, 1024, 2048]
     im = None
     for j_col, Nx in enumerate(resolutions):
         ax = axes[j_col]
@@ -144,7 +148,7 @@ def main():
     runs = {}
     # LHLLC only — HLLC is unstable for this stratified low-Mach setup.
     for sol in ("lhllc",):
-        for Nx in (512, 1024, 2048, 4096):
+        for Nx in (256, 512, 1024, 2048):
             run = _load_run(sol, Nx, snapshots_root)
             if run is not None:
                 runs[(sol, Nx)] = run
