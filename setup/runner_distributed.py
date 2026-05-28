@@ -45,6 +45,28 @@ def _isothermal_project(U, cs2_iso, gamma):
     return _isothermal_project_jit(U, jnp.float32(cs2_iso), jnp.float32(gamma - 1.0))
 
 
+@jax.jit
+def _diag_reductions(U, gamma):
+    """Single-pass GPU reductions for periodic-diagnostic prints + history.
+
+    Returns (min_rho, min_P, max_speed, max_mach, sum_rho, sum_E).
+    Cost: one elementwise pass + 6 reduce-min/max/sum, dominated by the
+    reduction collective in multi-process mode (~5e-7 s/cell/process).
+    """
+    rho = U[0]
+    Nvar = U.shape[0]
+    vx = U[1] / rho
+    vy = jnp.where(Nvar >= 4, U[2] / rho, 0.0)
+    vz = jnp.where(Nvar >= 5, U[3] / rho, 0.0)
+    speed2 = vx * vx + vy * vy + vz * vz
+    KE = 0.5 * rho * speed2
+    P = (gamma - 1.0) * (U[-1] - KE)
+    cs2 = gamma * P / rho
+    mach2 = speed2 / cs2
+    return (jnp.min(rho), jnp.min(P), jnp.sqrt(jnp.max(speed2)),
+            jnp.sqrt(jnp.max(mach2)), jnp.sum(rho), jnp.sum(U[-1]))
+
+
 def run_simulation_distributed(
     U_sharded: Array,
     t_start: float,
@@ -141,9 +163,42 @@ def run_simulation_distributed(
     # Total cells in global grid
     total_cells = grid.total_cells
 
+    # History file: Athena++-style log of conserved totals + extrema per
+    # diag_interval. Lets you tell which step a NaN'd run actually went
+    # wrong, offline, without rerunning.
+    hist_path = os.path.join(cfg.output_dir, "history.csv")
+    if is_main_process and cfg.enable_diagnostics:
+        os.makedirs(cfg.output_dir, exist_ok=True)
+        if not os.path.exists(hist_path) or not cfg.restart:
+            with open(hist_path, "w") as fh:
+                fh.write("# step,t,dt,min_rho,min_P,max_speed,max_Mach,sum_rho,sum_E\n")
+
     # Main time loop. Runner controls dt:
     #     dt = min(dt_CFL, t_end - t, next_snapshot_time - t)
     # so the step lands exactly on each snapshot time -> no snapshots skipped.
+    # Helper: apply step_fn + all operator-split source terms in order.
+    # Returns the new U and the new forcing OU state (a, key). Pure — takes
+    # the previous-iteration forcing state, returns the new one. Used in
+    # the retry-on-NaN loop below.
+    def _attempt_step(U_in, dt, forcing_a, forcing_key):
+        U_new = step_fn(U_in, dt)
+        new_a, new_key = forcing_a, forcing_key
+        if forcing_state is not None:
+            U_new, new_a, new_key = forcing_state["apply"](
+                U_new, forcing_a, forcing_key, dt)
+        if cfg.isothermal_cs2 > 0.0:
+            U_new = _isothermal_project(U_new, cfg.isothermal_cs2, cfg.gamma)
+        if ext_grav_state is not None:
+            U_new = ext_grav_state["apply"](U_new, dt)
+        if cc85_state is not None:
+            U_new = cc85_state["apply"](U_new, dt)
+        if cooling_solver is not None:
+            from hydro.cooling import apply_cooling
+            U_new = apply_cooling(U_new, dt, cfg, cooling_solver)
+        return U_new, new_a, new_key
+
+    MAX_HALVINGS = 8           # retry up to 256× smaller dt before giving up
+
     while t < cfg.t_end:
         t_snapshot_local = (snapshot_times[snapshot_idx]
                             if snapshot_idx < num_snapshots
@@ -159,40 +214,85 @@ def run_simulation_distributed(
             dt = dt_cfl
             new_t = t + dt
 
-        U_sharded = step_fn(U_sharded, dt)
+        # Snapshot pre-step state for potential retry-on-NaN.
+        U_pre = U_sharded
+        forcing_a_pre = forcing_state["a"] if forcing_state is not None else None
+        forcing_key_pre = forcing_state["key"] if forcing_state is not None else None
 
-        # Operator-split OU forcing
+        # Retry loop: attempt step at progressively smaller dt until success
+        # or MAX_HALVINGS exhausted. Free liveness check: compute_dt on the
+        # candidate state — NaN propagates through cons_to_prim so dt_check
+        # will be NaN if the step blew up. No extra reduction needed.
+        dt_try = dt
+        halvings = 0
+        success = False
+        while True:
+            U_try, fa_try, fk_try = _attempt_step(
+                U_pre, dt_try, forcing_a_pre, forcing_key_pre)
+            dt_check = float(compute_dt_fn(U_try))
+            healthy = (dt_check > 0.0) and (dt_check < float('inf'))
+            if healthy:
+                success = True
+                break
+            if halvings >= MAX_HALVINGS:
+                break
+            halvings += 1
+            dt_try *= 0.5
+            if is_main_process:
+                print(f"⚠ NaN/non-finite at step {step+1}, t={t:.6e}; "
+                      f"retry #{halvings} with dt={dt_try:.3e}")
+
+        if not success:
+            if is_main_process:
+                print(f"\n{'!'*60}")
+                print(f"!!! NaN PERSISTS after {MAX_HALVINGS} halvings at step "
+                      f"{step+1}, t={t:.6e}, dt={dt_try:.3e} !!!")
+                print(f"{'!'*60}\n")
+            if cfg.enable_checkpointing:
+                try:
+                    write_checkpoint_distributed(
+                        U_pre, cfg, t, step, cfg.checkpoint_dir)
+                    if is_main_process:
+                        print(f"💾 Emergency checkpoint written to {cfg.checkpoint_dir}")
+                except Exception as e:
+                    if is_main_process:
+                        print(f"(checkpoint dump failed: {e})")
+            raise RuntimeError(
+                f"NaN persists at step {step+1}, t={t:.6e} after "
+                f"{MAX_HALVINGS} CFL halvings (dt={dt_try:.3e})"
+            )
+
+        # Commit the successful attempt
+        U_sharded = U_try
         if forcing_state is not None:
-            U_sharded, forcing_state["a"], forcing_state["key"] = forcing_state["apply"](
-                U_sharded, forcing_state["a"], forcing_state["key"], dt)
-
-        # Isothermal-EOS projection: overwrite E so p = cs2_iso * rho.
-        # Soft thermostat — leaves rho, momentum untouched.
-        if cfg.isothermal_cs2 > 0.0:
-            U_sharded = _isothermal_project(U_sharded, cfg.isothermal_cs2, cfg.gamma)
-
-        # Operator-split external static-potential gravity (M82 disk).
-        if ext_grav_state is not None:
-            U_sharded = ext_grav_state["apply"](U_sharded, dt)
-
-        # Operator-split CC85 central source: Mdot/Edot inside R_*.
-        if cc85_state is not None:
-            U_sharded = cc85_state["apply"](U_sharded, dt)
-
-        # Operator-split radiative cooling (Townsend exact integration).
-        if cooling_solver is not None:
-            from hydro.cooling import apply_cooling
-            U_sharded = apply_cooling(U_sharded, dt, cfg, cooling_solver)
+            forcing_state["a"] = fa_try
+            forcing_state["key"] = fk_try
+        if dt_try < dt:
+            # We took a smaller dt than planned; advance t by actual amount
+            new_t = t + dt_try
+        dt = dt_try
 
         t = new_t
         step += 1
 
+        # === Periodic diagnostics + history line ===
+        # One GPU reduction every diag_interval steps. ~negligible cost.
+        if cfg.enable_diagnostics and step % cfg.diag_interval == 0:
+            (min_rho, min_P, max_speed, max_mach,
+             sum_rho, sum_E) = _diag_reductions(U_sharded, cfg.gamma)
+            mr = float(min_rho); mp = float(min_P)
+            ms = float(max_speed); mM = float(max_mach)
+            sr = float(sum_rho); sE = float(sum_E)
+            if is_main_process:
+                print(f"📊 step={step:>7}  t={t:.5e}  min_rho={mr:.3e}  "
+                      f"min_P={mp:.3e}  max_|v|={ms:.3e}  max_M={mM:.3e}")
+                with open(hist_path, "a") as fh:
+                    fh.write(f"{step},{t:.9e},{dt:.9e},{mr:.9e},{mp:.9e},"
+                             f"{ms:.9e},{mM:.9e},{sr:.9e},{sE:.9e}\n")
+
         # Validation and progress (only on process 0)
         if is_main_process:
             if step % cfg.output_cadence == 0 or step == 1:
-                # Note: Diagnostics removed for performance (was 2nd function call per timestep)
-                # if cfg.enable_diagnostics:
-                #     validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=step, time=t)
 
                 current_time = pytime.time()
                 elapsed_since_last = current_time - last_perf_time

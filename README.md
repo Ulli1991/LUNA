@@ -203,6 +203,20 @@ JAX automatically:
 
 ---
 
+## Production usage
+
+For long-running production campaigns:
+
+- **NaN abort guard**: the time loop checks for non-finite state after every step (free piggyback on `compute_dt`). On detection it retries the step with halved CFL up to **8 times** (i.e., `dt → dt/256`). If the state is still bad it dumps an emergency checkpoint (`cfg.enable_checkpointing` is default-on) and raises `RuntimeError` so SLURM exits non-zero. No more silent multi-hour NaN'd runs.
+- **Periodic diagnostics**: every `cfg.diag_interval` steps the runner prints `min(rho), min(P), max(|v|), max(M)` and appends a row to `<output_dir>/history.csv` (Athena++-style `.hst` analog) for offline analysis.
+- **Determinism**: validated submit scripts in the repo root export `XLA_FLAGS="--xla_gpu_deterministic_ops=true"`. Together with `enable_x64=True` (set in run scripts) this gives bitwise-reproducible runs at fixed sharding.
+- **Source terms** live in `setup/source_*.py` (`source_ou_forcing`, `source_cc85`, `source_external_gravity`, `source_cooling`). Each returns a `{"apply": fn(U, dt)}` callable that the runner operator-splits after the hydro step. Adding a new source term means writing one `setup/source_X.py` and one line in `runner_distributed.py`.
+- **Multi-node**: the validated pattern (`submit_multi_test_clean.sh` + descendants like `submit_m82_multi.sh`, `submit_kh_multi.sh`) uses `--mem=500000`, `--constraint=gpu`, `--gres=gpu:4`, `JAX_COORDINATOR_PORT=12345`. Lessons from earlier multi-node debugging:
+  - Build all sharded auxiliary arrays via the KH-IC pattern (local-slice + `make_array_from_single_device_arrays`); naïve full-array `device_put` deadlocks multi-process.
+  - Pass sharded arrays as JIT *arguments*, not as Python closures — XLA tries to inline closure-captured sharded arrays as MLIR constants and crashes with "Fetching value for jax.Array that spans non-addressable devices".
+
+---
+
 ## Performance
 
 ### Single-GPU Optimization

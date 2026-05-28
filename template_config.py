@@ -121,9 +121,14 @@ class Config:
     # Print memory usage during run
     check_memory: bool = True
 
-    # Enable physics diagnostics (min_rho, min_p, NaN/Inf checks)
-    # Disable for maximum performance (10-20% speedup)
+    # Periodic in-loop physics diagnostics + NaN abort guard. Both run as
+    # single GPU-side reductions every `diag_interval`/`nan_check_interval`
+    # steps, negligible cost compared to the step itself. On NaN detected
+    # the runner dumps a checkpoint and raises RuntimeError so SLURM exits
+    # non-zero — no more silent multi-hour NaN'd runs.
     enable_diagnostics: bool = True
+    diag_interval: int = 100
+    nan_check_interval: int = 100
 
     # Production mode: disables ALL performance-killing features
     # - Disables validation checks in time loop
@@ -142,8 +147,10 @@ class Config:
     # Directory for checkpoint files
     checkpoint_dir: str = "checkpoints"
 
-    # Enable automatic checkpointing during simulation
-    enable_checkpointing: bool = False
+    # Automatic checkpointing during simulation. Default ON so that
+    # (a) wall-clock checkpoints land for long runs, and (b) the NaN abort
+    # guard can dump an emergency checkpoint before raising.
+    enable_checkpointing: bool = True
 
     # Wall-clock time interval between checkpoints (seconds)
     # Set to 0 to disable periodic checkpointing

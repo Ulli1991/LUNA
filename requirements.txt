@@ -1,0 +1,16 @@
+# LUNA Python dependencies (pinned to the versions used for paper figures).
+#
+# JAX/jaxlib: GPU build comes from the CUDA wheel index — see install
+# instructions in README.md. The pinned versions below match the
+# environment at /raven/u/uli/jax-env where all paper-figure runs were
+# produced. JAX 0.8.x changed several sharding APIs vs 0.4.x; the runner
+# (setup/runner_distributed.py) uses the 0.8.x conventions.
+jax==0.8.1
+jaxlib==0.8.1
+
+# Snapshot / checkpoint I/O
+h5py==3.15.1
+
+# Numerics + plotting (validation harness only — not needed at runtime)
+numpy==2.3.5
+matplotlib==3.10.7
