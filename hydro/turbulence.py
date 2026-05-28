@@ -206,24 +206,31 @@ class OUDriver:
                   cell centers of the *local* shard).
 
         Returns Fx, Fy, Fz with that same shape.
+
+        Memory-friendly: scan over modes so the per-rank peak is just three
+        spatial arrays + the scalar phase, never (M, *spatial). At 1024^3 /
+        8 GPUs with ~30 modes the old materialised-phase version asked for
+        ~32 GB per rank, which is the OOM we kept hitting.
         """
-        # phase: (M, *spatial)
-        phase = (self.k_vec[:, 0][:, None, None, None] * X[None]
-                 + self.k_vec[:, 1][:, None, None, None] * Y[None]
-                 + self.k_vec[:, 2][:, None, None, None] * Z[None])
-        # Use cos/sin instead of complex exp to keep memory down.
-        c = jnp.cos(phase)
-        s = jnp.sin(phase)
-        # F(x) = 2 sum_k (Re(a_k) cos(k.x) - Im(a_k) sin(k.x))
         ar = jnp.real(a)  # (M, 3)
         ai = jnp.imag(a)
-        # contract mode axis
-        Fx = 2.0 * jnp.einsum("m...,m->...", c, ar[:, 0]) \
-             - 2.0 * jnp.einsum("m...,m->...", s, ai[:, 0])
-        Fy = 2.0 * jnp.einsum("m...,m->...", c, ar[:, 1]) \
-             - 2.0 * jnp.einsum("m...,m->...", s, ai[:, 1])
-        Fz = 2.0 * jnp.einsum("m...,m->...", c, ar[:, 2]) \
-             - 2.0 * jnp.einsum("m...,m->...", s, ai[:, 2])
+
+        def step(carry, mk_ak):
+            Fx, Fy, Fz = carry
+            k_vec, a_r, a_i = mk_ak
+            phase = k_vec[0] * X + k_vec[1] * Y + k_vec[2] * Z
+            c = jnp.cos(phase)
+            s = jnp.sin(phase)
+            Fx = Fx + 2.0 * (a_r[0] * c - a_i[0] * s)
+            Fy = Fy + 2.0 * (a_r[1] * c - a_i[1] * s)
+            Fz = Fz + 2.0 * (a_r[2] * c - a_i[2] * s)
+            return (Fx, Fy, Fz), None
+
+        zero = jnp.zeros_like(X)
+        (Fx, Fy, Fz), _ = jax.lax.scan(
+            step, (zero, zero, zero),
+            (self.k_vec, ar, ai)
+        )
         return Fx, Fy, Fz
 
     # ------------------------------------------------------------------

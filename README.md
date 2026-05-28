@@ -64,9 +64,9 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *3D M82-like starburst wind following the Schneider, Robertson & Thompson (2018) CC85 setup: rotating exponential isothermal gas disk (M_gas = 2.5 × 10⁹ M⊙, R_d = 1.6 kpc, R_trunc = 4.5 kpc, T = 10⁴ K) in vertical hydrostatic equilibrium within a static Miyamoto-Nagai stellar disk (M⋆ = 10¹⁰ M⊙, a = 0.8 kpc, b = 0.15 kpc) + NFW halo (M_vir = 5 × 10¹¹ M⊙, c = 20) potential, plus CC85 central spherical injection (R_⋆ = 300 pc; SFR = 12 M⊙/yr, η_M = 0.3, η_E = 0.6 → Ṁ = 3.6 M⊙/yr, Ė ≈ 2.3 × 10⁴² erg/s, v_∞ ≈ 1400 km/s). Hot CGM ambient (n = 10⁻⁴ cm⁻³, T = 10⁶ K) fills the rest of the 10 × 10 × 20 kpc box; Sutherland & Dopita (1993) CIE cooling integrated with Townsend (2009). x–z slice through y = Ly/2 of log₁₀ n_H at t = 60 Myr. Resolution scan Nx ∈ {128, 256, 512}; the 512 panel is a placeholder for a multi-node run still in flight.*
 
-![M82 wind — radial velocity](figures/m82_wind_vradial.png)
+![M82 wind — vertical velocity](figures/m82_wind_vz.png)
 
-*Same slice and snapshot, showing radial velocity v_r (km/s) with a diverging colormap. Positive (red) is outflow above the midplane and below the midplane the same sign convention reads as inflow toward the launching region from the diffuse CGM. The cone-like bi-conical outflow above and below the dense rotating disk is clearly visible.*
+*Same slice and snapshot, showing vertical velocity v_z (km/s) with a diverging colormap. Red is moving upward (+z), blue downward (−z). The bi-conical outflow shows red above the midplane and blue below; surrounding low-magnitude regions are the CGM responding to the wind.*
 
 ![M82 wind — log T](figures/m82_wind_temperature.png)
 

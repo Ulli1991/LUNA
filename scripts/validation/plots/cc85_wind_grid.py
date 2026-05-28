@@ -63,15 +63,10 @@ def _load_run(Nx, snapshots_root):
     n_H = rho_cgs / (_MU * _PROTON_MASS)
     log_n = np.log10(np.maximum(n_H, 1e-12))
 
-    # Radial velocity (in the y=Ly/2 plane, centered on box midpoint)
+    # Vertical velocity (z-component) — straightforward sign convention
+    # (positive = upward, negative = downward, regardless of position).
     Lx = snap["Lx"]; Lz = snap["Lz"]
-    dx = Lx / Nx_; dz = Lz / Nz_
-    x_cc = (np.arange(Nx_) + 0.5) * dx - 0.5 * Lx
-    z_cc = (np.arange(Nz_) + 0.5) * dz - 0.5 * Lz
-    X, Z = np.meshgrid(x_cc, z_cc, indexing="ij")
-    R = np.sqrt(X**2 + Z**2)
-    R_safe = np.where(R > 0, R, 1.0)
-    v_r = (vx_s * X + vz_s * Z) / R_safe         # km/s (UnitVel = km/s)
+    v_z = vz_s
 
     # log10 T [K]
     P_cgs = P_s * UnitPressure_cgs
@@ -80,7 +75,7 @@ def _load_run(Nx, snapshots_root):
 
     return {
         "log_n": log_n,
-        "v_r":   v_r,
+        "v_z":   v_z,
         "log_T": log_T,
         "t":     snap["t"],
         "Lx":    Lx,
@@ -205,7 +200,7 @@ def main(snapshots_root="snapshots"):
 
     # Auto-percentile color ranges from the union of loaded data
     all_logn = np.concatenate([r["log_n"].ravel() for r in runs.values()])
-    all_vr   = np.concatenate([r["v_r"].ravel()   for r in runs.values()])
+    all_vr   = np.concatenate([r["v_z"].ravel()   for r in runs.values()])
     all_logT = np.concatenate([r["log_T"].ravel() for r in runs.values()])
     n_lo, n_hi = np.percentile(all_logn, [2, 99])
     vr_mag = np.percentile(np.abs(all_vr), 99)
@@ -214,9 +209,9 @@ def main(snapshots_root="snapshots"):
     _plot_grid("log_n", "inferno", n_lo, n_hi,
                r"$\log_{10}\, n_{\rm H}\ [{\rm cm}^{-3}]$",
                "figures/m82_wind_density", runs)
-    _plot_grid("v_r", "RdBu_r", -vr_mag, vr_mag,
-               r"$v_{\rm rad}\ [{\rm km\,s^{-1}}]$",
-               "figures/m82_wind_vradial", runs, diverging=True)
+    _plot_grid("v_z", "RdBu_r", -vr_mag, vr_mag,
+               r"$v_z\ [{\rm km\,s^{-1}}]$",
+               "figures/m82_wind_vz", runs, diverging=True)
     _plot_grid("log_T", "plasma", T_lo, T_hi,
                r"$\log_{10}\, T\ [{\rm K}]$",
                "figures/m82_wind_temperature", runs)

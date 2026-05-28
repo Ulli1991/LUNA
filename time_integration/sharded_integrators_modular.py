@@ -304,60 +304,62 @@ def create_muscl_hancock_modular_step(pad_halo_fn, flux_div_fn, gamma, order, li
                 return -dFdx
 
             else:  # 3D
+                # Memory-optimized: compute each direction's flux + accumulate
+                # into dU sequentially, so direction-specific intermediates
+                # (Wr_*, Wl_*, WL_*, WR_*, F*) only live during their own block.
+                # Numerically identical to the previous code — just reordered.
                 Wc = W_pad[:, 1:-1, 1:-1, 1:-1]
 
-                # MUSCL-Hancock predictor (Jacobian form): W_half = Wc - ½dt·A·∇W
-                dWx_scaled = dWx * inv_dx
-                dWy_scaled = dWy * inv_dy
-                dWz_scaled = dWz * inv_dz
-                A_dW = apply_primitive_jacobian_3d(Wc, dWx_scaled, dWy_scaled, dWz_scaled, gamma)
+                # MUSCL-Hancock predictor (Jacobian form): W_half = Wc - ½dt·A·∇W.
+                # Inline the scaled slopes to avoid persistent intermediates.
+                A_dW = apply_primitive_jacobian_3d(
+                    Wc, dWx * inv_dx, dWy * inv_dy, dWz * inv_dz, gamma)
                 W_half = Wc - 0.5 * dt * A_dW
 
-                half_dWx = 0.5 * dWx
-                half_dWy = 0.5 * dWy
-                half_dWz = 0.5 * dWz
-
-                Wr_x = W_half + half_dWx
-                Wl_x = W_half - half_dWx
-                Wr_y = W_half + half_dWy
-                Wl_y = W_half - half_dWy
-                Wr_z = W_half + half_dWz
-                Wl_z = W_half - half_dWz
-
+                # ---- X direction ----
+                Wr_x = W_half + 0.5 * dWx
+                Wl_x = W_half - 0.5 * dWx
                 if boundary == 0:
                     WL_x_bc = Wr_x[:, -1:, :, :]
                     WR_x_bc = Wl_x[:, 0:1, :, :]
-                    WL_y_bc = Wr_y[:, :, -1:, :]
-                    WR_y_bc = Wl_y[:, :, 0:1, :]
-                    WL_z_bc = Wr_z[:, :, :, -1:]
-                    WR_z_bc = Wl_z[:, :, :, 0:1]
                 else:
                     WL_x_bc = W_pad[:, 0:1, 1:-1, 1:-1]
                     WR_x_bc = W_pad[:, -1:, 1:-1, 1:-1]
-                    WL_y_bc = W_pad[:, 1:-1, 0:1, 1:-1]
-                    WR_y_bc = W_pad[:, 1:-1, -1:, 1:-1]
-                    WL_z_bc = W_pad[:, 1:-1, 1:-1, 0:1]
-                    WR_z_bc = W_pad[:, 1:-1, 1:-1, -1:]
-
-                # X-direction reconstruction
                 WL_x = jnp.concatenate([WL_x_bc, Wr_x], axis=1)
                 WR_x = jnp.concatenate([Wl_x, WR_x_bc], axis=1)
                 Fx = hllc_flux_primitive(WL_x, WR_x, axis=0, gamma=gamma)
-                dFdx = (Fx[:, 1:, :, :] - Fx[:, :-1, :, :]) * inv_dx
+                # Accumulator starts as -dFdx = (Fx[:-1] - Fx[1:]) / dx
+                dU = (Fx[:, :-1, :, :] - Fx[:, 1:, :, :]) * inv_dx
 
-                # Y-direction reconstruction
+                # ---- Y direction ----
+                Wr_y = W_half + 0.5 * dWy
+                Wl_y = W_half - 0.5 * dWy
+                if boundary == 0:
+                    WL_y_bc = Wr_y[:, :, -1:, :]
+                    WR_y_bc = Wl_y[:, :, 0:1, :]
+                else:
+                    WL_y_bc = W_pad[:, 1:-1, 0:1, 1:-1]
+                    WR_y_bc = W_pad[:, 1:-1, -1:, 1:-1]
                 WL_y = jnp.concatenate([WL_y_bc, Wr_y], axis=2)
                 WR_y = jnp.concatenate([Wl_y, WR_y_bc], axis=2)
                 Fy = hllc_flux_primitive(WL_y, WR_y, axis=1, gamma=gamma)
-                dFdy = (Fy[:, :, 1:, :] - Fy[:, :, :-1, :]) * inv_dy
+                dU = dU + (Fy[:, :, :-1, :] - Fy[:, :, 1:, :]) * inv_dy
 
-                # Z-direction reconstruction
+                # ---- Z direction ----
+                Wr_z = W_half + 0.5 * dWz
+                Wl_z = W_half - 0.5 * dWz
+                if boundary == 0:
+                    WL_z_bc = Wr_z[:, :, :, -1:]
+                    WR_z_bc = Wl_z[:, :, :, 0:1]
+                else:
+                    WL_z_bc = W_pad[:, 1:-1, 1:-1, 0:1]
+                    WR_z_bc = W_pad[:, 1:-1, 1:-1, -1:]
                 WL_z = jnp.concatenate([WL_z_bc, Wr_z], axis=3)
                 WR_z = jnp.concatenate([Wl_z, WR_z_bc], axis=3)
                 Fz = hllc_flux_primitive(WL_z, WR_z, axis=2, gamma=gamma)
-                dFdz = (Fz[:, :, :, 1:] - Fz[:, :, :, :-1]) * inv_dz
+                dU = dU + (Fz[:, :, :, :-1] - Fz[:, :, :, 1:]) * inv_dz
 
-                return -(dFdx + dFdy + dFdz)
+                return dU
 
         # Select based on order (static Python branching — order is a closure constant)
         if order == 0:
