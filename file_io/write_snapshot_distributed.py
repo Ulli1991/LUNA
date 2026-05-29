@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 from utils.distributed import compute_local_slice, create_device_mesh
 
+
 def write_snapshot_distributed(U_sharded, cfg, t, step, mesh=None):
     """
     Save the simulation state from sharded arrays to HDF5 files.
@@ -81,8 +82,7 @@ def write_snapshot_distributed(U_sharded, cfg, t, step, mesh=None):
         # true multi-process (where each process has one shard).
         global_shard_id = process_id * len(local_shards) + shard_idx
         snapshot_filename = os.path.join(
-            snapshot_dir,
-            f"{cfg.base_name}_{step:03d}.{global_shard_id}.hdf5"
+            snapshot_dir, f"{cfg.base_name}_{step:03d}.{global_shard_id}.hdf5"
         )
 
         with h5py.File(snapshot_filename, "w") as f:
@@ -151,4 +151,6 @@ def write_snapshot_distributed(U_sharded, cfg, t, step, mesh=None):
                 units_grp.attrs["UnitPressure_in_cgs"] = cfg.units.UnitPressure_in_cgs
                 units_grp.attrs["UnitEnergy_in_cgs"] = cfg.units.UnitEnergy_in_cgs
 
-        print(f"Process {process_id} shard {shard_idx}: saved {os.path.basename(snapshot_filename)}")
+        print(
+            f"Process {process_id} shard {shard_idx}: saved {os.path.basename(snapshot_filename)}"
+        )

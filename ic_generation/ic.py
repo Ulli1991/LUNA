@@ -1,35 +1,37 @@
 # ic.py
-from .sod import sod_shock
-from .woodward_colella import woodward_colella
-from .shu_osher import shu_osher
-from .soundwave import soundwave
-from .soundwave_advected import soundwave_advected
-from .einfeldt_strong_rarefaction import einfeldt_strong_rarefaction
-from .einfeldt_shear_rarefaction import einfeldt_shear_rarefaction
-from .einfeldt_transverse_rarefaction import einfeldt_transverse_rarefaction
 from .advection_square import advection_square
-from .rotation_slotted_disk import rotation_slotted_disk
-from .soundwave_advected2d import soundwave_advected2d
-from .kh import kelvin_helmholtz
+from .cc85_wind_3d import cc85_wind_3d
 from .double_mach_reflection import double_mach_reflection
-from .sod3d import sod_shock_3d
-from .sedov3d import sedov_blast_3d
-from .kh3d import kelvin_helmholtz_3d
-from .soundwave3d import soundwave_3d
 from .driven_turbulence_3d import driven_turbulence_3d
-from .solar_convection_3d import (
-    solar_convection_3d, solar_convection_3d_equilibrium,
-)
+from .einfeldt_shear_rarefaction import einfeldt_shear_rarefaction
+from .einfeldt_strong_rarefaction import einfeldt_strong_rarefaction
+from .einfeldt_transverse_rarefaction import einfeldt_transverse_rarefaction
+from .gresho_vortex import gresho_vortex
+from .kh import kelvin_helmholtz
+from .kh3d import kelvin_helmholtz_3d
+from .m82_disk_3d import m82_disk_3d
+from .rotation_slotted_disk import rotation_slotted_disk
+from .sedov3d import sedov_blast_3d
+from .shu_osher import shu_osher
+from .sod import sod_shock
+from .sod3d import sod_shock_3d
 from .solar_convection_2d import (
-    solar_convection_2d, solar_convection_2d_equilibrium,
+    solar_convection_2d,
+    solar_convection_2d_equilibrium,
+)
+from .solar_convection_3d import (
+    solar_convection_3d,
+    solar_convection_3d_equilibrium,
 )
 from .solar_convection_vt_2d import (
-    solar_convection_vt_2d, solar_convection_vt_2d_equilibrium,
+    solar_convection_vt_2d,
+    solar_convection_vt_2d_equilibrium,
 )
-from .cc85_wind_3d import cc85_wind_3d
-from .m82_disk_3d import m82_disk_3d
-from .gresho_vortex import gresho_vortex
-
+from .soundwave import soundwave
+from .soundwave3d import soundwave_3d
+from .soundwave_advected import soundwave_advected
+from .soundwave_advected2d import soundwave_advected2d
+from .woodward_colella import woodward_colella
 
 # test_problem name -> (ic_function, ndim).
 # Every IC function accepts the slice kwargs matching its dimensionality
@@ -37,32 +39,32 @@ from .gresho_vortex import gresho_vortex
 # IC functions don't have to know about them.
 _IC_REGISTRY = {
     # 1D
-    "Sod-Shock":            (sod_shock, 1),
-    "Woodward-Colella":     (woodward_colella, 1),
-    "Shu-Osher":            (shu_osher, 1),
-    "Soundwave":            (soundwave, 1),
-    "Soundwave-Advected":   (soundwave_advected, 1),
-    "Einfeldt-Strong":      (einfeldt_strong_rarefaction, 1),
-    "Einfeldt-Shear":       (einfeldt_shear_rarefaction, 1),
-    "Einfeldt-Transverse":  (einfeldt_transverse_rarefaction, 1),
+    "Sod-Shock": (sod_shock, 1),
+    "Woodward-Colella": (woodward_colella, 1),
+    "Shu-Osher": (shu_osher, 1),
+    "Soundwave": (soundwave, 1),
+    "Soundwave-Advected": (soundwave_advected, 1),
+    "Einfeldt-Strong": (einfeldt_strong_rarefaction, 1),
+    "Einfeldt-Shear": (einfeldt_shear_rarefaction, 1),
+    "Einfeldt-Transverse": (einfeldt_transverse_rarefaction, 1),
     # 2D
-    "Square-Advected":         (advection_square, 2),
-    "Rotate-Slotted-Disk":     (rotation_slotted_disk, 2),
-    "Soundwave-Advected-2D":   (soundwave_advected2d, 2),
-    "Kelvin-Helmholtz":        (kelvin_helmholtz, 2),
-    "Double-Mach-Reflection":  (double_mach_reflection, 2),
+    "Square-Advected": (advection_square, 2),
+    "Rotate-Slotted-Disk": (rotation_slotted_disk, 2),
+    "Soundwave-Advected-2D": (soundwave_advected2d, 2),
+    "Kelvin-Helmholtz": (kelvin_helmholtz, 2),
+    "Double-Mach-Reflection": (double_mach_reflection, 2),
     # 3D
-    "Sod-Shock-3D":         (sod_shock_3d, 3),
-    "Sedov-Blast-3D":       (sedov_blast_3d, 3),
-    "Kelvin-Helmholtz-3D":  (kelvin_helmholtz_3d, 3),
-    "Soundwave-3D":         (soundwave_3d, 3),
+    "Sod-Shock-3D": (sod_shock_3d, 3),
+    "Sedov-Blast-3D": (sedov_blast_3d, 3),
+    "Kelvin-Helmholtz-3D": (kelvin_helmholtz_3d, 3),
+    "Soundwave-3D": (soundwave_3d, 3),
     "Driven-Turbulence-3D": (driven_turbulence_3d, 3),
-    "Solar-Convection-3D":  (solar_convection_3d, 3),
-    "Solar-Convection-2D":  (solar_convection_2d, 2),
+    "Solar-Convection-3D": (solar_convection_3d, 3),
+    "Solar-Convection-2D": (solar_convection_2d, 2),
     "Solar-Convection-VT-2D": (solar_convection_vt_2d, 2),
-    "CC85-Wind-3D":           (cc85_wind_3d, 3),
-    "M82-Disk-3D":            (m82_disk_3d, 3),
-    "Gresho-Vortex-2D":       (gresho_vortex, 2),
+    "CC85-Wind-3D": (cc85_wind_3d, 3),
+    "M82-Disk-3D": (m82_disk_3d, 3),
+    "Gresho-Vortex-2D": (gresho_vortex, 2),
 }
 
 
@@ -71,8 +73,8 @@ _IC_REGISTRY = {
 # same signature as the IC function but returning U_eq (hydrostatic
 # equilibrium state). Problems that don't define HSE simply aren't listed.
 _EQ_REGISTRY = {
-    "Solar-Convection-3D":    solar_convection_3d_equilibrium,
-    "Solar-Convection-2D":    solar_convection_2d_equilibrium,
+    "Solar-Convection-3D": solar_convection_3d_equilibrium,
+    "Solar-Convection-2D": solar_convection_2d_equilibrium,
     "Solar-Convection-VT-2D": solar_convection_vt_2d_equilibrium,
 }
 

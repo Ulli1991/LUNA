@@ -15,8 +15,6 @@ Provides two formulations of the Hancock predictor advance:
 """
 
 import jax.numpy as jnp
-from jax import jit
-from functools import partial
 
 
 def primitive_flux_1d(W, gamma):
@@ -26,11 +24,13 @@ def primitive_flux_1d(W, gamma):
     """
     rho, vx, P = W
     E = P / (gamma - 1.0) + 0.5 * rho * vx * vx
-    return jnp.stack([
-        rho * vx,
-        rho * vx * vx + P,
-        (E + P) * vx,
-    ])
+    return jnp.stack(
+        [
+            rho * vx,
+            rho * vx * vx + P,
+            (E + P) * vx,
+        ]
+    )
 
 
 def primitive_flux_2d(W, gamma, axis):
@@ -41,19 +41,23 @@ def primitive_flux_2d(W, gamma, axis):
     rho, vx, vy, P = W
     E = P / (gamma - 1.0) + 0.5 * rho * (vx * vx + vy * vy)
     if axis == 0:  # x-direction
-        return jnp.stack([
-            rho * vx,
-            rho * vx * vx + P,
-            rho * vx * vy,
-            (E + P) * vx,
-        ])
+        return jnp.stack(
+            [
+                rho * vx,
+                rho * vx * vx + P,
+                rho * vx * vy,
+                (E + P) * vx,
+            ]
+        )
     else:  # y-direction
-        return jnp.stack([
-            rho * vy,
-            rho * vx * vy,
-            rho * vy * vy + P,
-            (E + P) * vy,
-        ])
+        return jnp.stack(
+            [
+                rho * vy,
+                rho * vx * vy,
+                rho * vy * vy + P,
+                (E + P) * vy,
+            ]
+        )
 
 
 def primitive_flux_3d(W, gamma, axis):
@@ -64,29 +68,35 @@ def primitive_flux_3d(W, gamma, axis):
     rho, vx, vy, vz, P = W
     E = P / (gamma - 1.0) + 0.5 * rho * (vx * vx + vy * vy + vz * vz)
     if axis == 0:
-        return jnp.stack([
-            rho * vx,
-            rho * vx * vx + P,
-            rho * vx * vy,
-            rho * vx * vz,
-            (E + P) * vx,
-        ])
+        return jnp.stack(
+            [
+                rho * vx,
+                rho * vx * vx + P,
+                rho * vx * vy,
+                rho * vx * vz,
+                (E + P) * vx,
+            ]
+        )
     elif axis == 1:
-        return jnp.stack([
-            rho * vy,
-            rho * vx * vy,
-            rho * vy * vy + P,
-            rho * vy * vz,
-            (E + P) * vy,
-        ])
+        return jnp.stack(
+            [
+                rho * vy,
+                rho * vx * vy,
+                rho * vy * vy + P,
+                rho * vy * vz,
+                (E + P) * vy,
+            ]
+        )
     else:  # axis == 2
-        return jnp.stack([
-            rho * vz,
-            rho * vx * vz,
-            rho * vy * vz,
-            rho * vz * vz + P,
-            (E + P) * vz,
-        ])
+        return jnp.stack(
+            [
+                rho * vz,
+                rho * vx * vz,
+                rho * vy * vz,
+                rho * vz * vz + P,
+                (E + P) * vz,
+            ]
+        )
 
 
 def apply_primitive_jacobian_1d(W, dW, gamma):
@@ -217,20 +227,14 @@ def apply_primitive_jacobian_3d(W, dWx, dWy, dWz, gamma):
     # Fused per-component expressions — no 15 named direction-x-component
     # intermediates kept alive simultaneously. XLA can choose to fuse the
     # whole stack body into a single elementwise kernel.
-    result_rho = (vx * drho_dx + rho * dvx_dx
-                  + vy * drho_dy + rho * dvy_dy
-                  + vz * drho_dz + rho * dvz_dz)
-    result_vx = (vx * dvx_dx + inv_rho * dP_dx
-                 + vy * dvx_dy
-                 + vz * dvx_dz)
-    result_vy = (vx * dvy_dx
-                 + vy * dvy_dy + inv_rho * dP_dy
-                 + vz * dvy_dz)
-    result_vz = (vx * dvz_dx
-                 + vy * dvz_dy
-                 + vz * dvz_dz + inv_rho * dP_dz)
-    result_P = (rho_c2 * dvx_dx + vx * dP_dx
-                + rho_c2 * dvy_dy + vy * dP_dy
-                + rho_c2 * dvz_dz + vz * dP_dz)
+    result_rho = (
+        vx * drho_dx + rho * dvx_dx + vy * drho_dy + rho * dvy_dy + vz * drho_dz + rho * dvz_dz
+    )
+    result_vx = vx * dvx_dx + inv_rho * dP_dx + vy * dvx_dy + vz * dvx_dz
+    result_vy = vx * dvy_dx + vy * dvy_dy + inv_rho * dP_dy + vz * dvy_dz
+    result_vz = vx * dvz_dx + vy * dvz_dy + vz * dvz_dz + inv_rho * dP_dz
+    result_P = (
+        rho_c2 * dvx_dx + vx * dP_dx + rho_c2 * dvy_dy + vy * dP_dy + rho_c2 * dvz_dz + vz * dP_dz
+    )
 
     return jnp.stack([result_rho, result_vx, result_vy, result_vz, result_P])

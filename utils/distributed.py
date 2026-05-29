@@ -3,11 +3,13 @@ Distributed computing utilities for JAX multi-node execution.
 
 Functions for creating device meshes, sharding arrays, and gathering results.
 """
+
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from jax.experimental import mesh_utils
 from jax.experimental.multihost_utils import process_allgather
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 
 
 def compute_local_slice(Nx, Ny, mesh, process_index, Nz=1):
@@ -128,7 +130,9 @@ def create_device_mesh(n_devices, spatial_dimension, decomposition="auto", Nx=No
             elif Nx is not None and Ny is not None:
                 # Medium GPU count: check if slab keeps enough cells per GPU
                 cells_per_gpu_slab = (Nx // n_devices) * Ny
-                cells_per_gpu_block = (Nx // int(jnp.sqrt(n_devices))) * (Ny // int(jnp.sqrt(n_devices)))
+                cells_per_gpu_block = (Nx // int(jnp.sqrt(n_devices))) * (
+                    Ny // int(jnp.sqrt(n_devices))
+                )
                 # Use slab if it gives > 1M cells per GPU or > 512 cells per dimension
                 if (Nx // n_devices) >= 512 or cells_per_gpu_slab >= 1_000_000:
                     decomposition = "slab"
@@ -148,7 +152,7 @@ def create_device_mesh(n_devices, spatial_dimension, decomposition="auto", Nx=No
     if spatial_dimension == 1:
         # 1D problem: only 1D decomposition possible
         devices = mesh_utils.create_device_mesh((n_devices,))
-        mesh = Mesh(devices, ('x',))
+        mesh = Mesh(devices, ("x",))
         grid_shape = (n_devices,)
 
     elif spatial_dimension == 2:
@@ -156,7 +160,7 @@ def create_device_mesh(n_devices, spatial_dimension, decomposition="auto", Nx=No
             # 1D slab decomposition: all devices along one axis
             # This minimizes communication messages (2 neighbors per GPU)
             devices = mesh_utils.create_device_mesh((n_devices, 1))
-            mesh = Mesh(devices, ('x', 'y'))
+            mesh = Mesh(devices, ("x", "y"))
             grid_shape = (n_devices, 1)
         else:  # "block"
             # 2D block decomposition: spread devices in 2D grid
@@ -167,14 +171,14 @@ def create_device_mesh(n_devices, spatial_dimension, decomposition="auto", Nx=No
             ny_proc = n_devices // nx_proc
 
             devices = mesh_utils.create_device_mesh((nx_proc, ny_proc))
-            mesh = Mesh(devices, ('x', 'y'))
+            mesh = Mesh(devices, ("x", "y"))
             grid_shape = (nx_proc, ny_proc)
 
     elif spatial_dimension == 3:
         if decomposition == "slab":
             # 1D pencil decomposition for 3D
             devices = mesh_utils.create_device_mesh((n_devices, 1, 1))
-            mesh = Mesh(devices, ('x', 'y', 'z'))
+            mesh = Mesh(devices, ("x", "y", "z"))
             grid_shape = (n_devices, 1, 1)
         else:  # "block"
             # 2D slab or 3D block decomposition
@@ -187,11 +191,11 @@ def create_device_mesh(n_devices, spatial_dimension, decomposition="auto", Nx=No
                     nx_proc -= 1
                 ny_proc = n_devices // nx_proc
                 devices = mesh_utils.create_device_mesh((nx_proc, ny_proc, 1))
-                mesh = Mesh(devices, ('x', 'y', 'z'))
+                mesh = Mesh(devices, ("x", "y", "z"))
                 grid_shape = (nx_proc, ny_proc, 1)
             else:
                 # 3D block decomposition (only for very large P)
-                nz_proc = int(n_devices ** (1/3))
+                nz_proc = int(n_devices ** (1 / 3))
                 while n_devices % (nz_proc * nz_proc * nz_proc) != 0 and nz_proc > 1:
                     nz_proc -= 1
                 remaining = n_devices // nz_proc
@@ -201,7 +205,7 @@ def create_device_mesh(n_devices, spatial_dimension, decomposition="auto", Nx=No
                 ny_proc = remaining // nx_proc
 
                 devices = mesh_utils.create_device_mesh((nx_proc, ny_proc, nz_proc))
-                mesh = Mesh(devices, ('x', 'y', 'z'))
+                mesh = Mesh(devices, ("x", "y", "z"))
                 grid_shape = (nx_proc, ny_proc, nz_proc)
     else:
         raise NotImplementedError(f"Spatial dimension {spatial_dimension} not implemented")
@@ -232,11 +236,11 @@ def create_sharded_array_from_local(U_local, global_shape, mesh, spatial_dimensi
     """
     # Create sharding spec
     if spatial_dimension == 1:
-        sharding = NamedSharding(mesh, P(None, 'x'))
+        sharding = NamedSharding(mesh, P(None, "x"))
     elif spatial_dimension == 2:
-        sharding = NamedSharding(mesh, P(None, 'x', 'y'))
+        sharding = NamedSharding(mesh, P(None, "x", "y"))
     else:
-        sharding = NamedSharding(mesh, P(None, 'x', 'y', 'z'))
+        sharding = NamedSharding(mesh, P(None, "x", "y", "z"))
 
     # Put local array on local device
     local_device = jax.local_devices()[0]
@@ -245,9 +249,7 @@ def create_sharded_array_from_local(U_local, global_shape, mesh, spatial_dimensi
     # Create global sharded array from local pieces
     # This uses JAX's make_array_from_single_device_arrays
     U_sharded = jax.make_array_from_single_device_arrays(
-        shape=global_shape,
-        sharding=sharding,
-        arrays=[U_local_on_device]
+        shape=global_shape, sharding=sharding, arrays=[U_local_on_device]
     )
 
     return U_sharded
@@ -272,11 +274,11 @@ def shard_array_to_devices(U_global, mesh, spatial_dimension):
         Sharded array distributed across devices
     """
     if spatial_dimension == 1:
-        sharding = NamedSharding(mesh, P(None, 'x'))
+        sharding = NamedSharding(mesh, P(None, "x"))
     elif spatial_dimension == 2:
-        sharding = NamedSharding(mesh, P(None, 'x', 'y'))
+        sharding = NamedSharding(mesh, P(None, "x", "y"))
     else:
-        sharding = NamedSharding(mesh, P(None, 'x', 'y', 'z'))
+        sharding = NamedSharding(mesh, P(None, "x", "y", "z"))
 
     # Shard the array
     U_sharded = jax.device_put(U_global, sharding)

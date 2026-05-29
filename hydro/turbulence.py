@@ -19,8 +19,8 @@ References
 Federrath, Roman-Duval, Klessen, Schmidt, Mac Low (2010) A&A 512, A81.
 Schmidt, Federrath, Klessen (2008) PRL 101, 194505.
 """
+
 from dataclasses import dataclass, field
-from functools import partial
 from typing import Tuple
 
 import jax
@@ -35,13 +35,14 @@ class OUDriverConfig:
     All wavenumbers are in units of 2 pi / L (so k=1 is the first nonzero
     Fourier mode along a box edge of length L).
     """
+
     k_min: float = 1.0
     k_max: float = 3.0
-    solenoidal_weight: float = 0.5     # zeta in Federrath et al. (1.0 sol, 0.0 comp)
+    solenoidal_weight: float = 0.5  # zeta in Federrath et al. (1.0 sol, 0.0 comp)
     autocorrelation_time: float = 1.0  # T_ac in code time units
-    rms_acceleration: float = 1.0      # target RMS of |F| in code units
-    seed: int = 42                     # base PRNG seed (per-mode keys derived)
-    spectrum: str = "parabolic"        # "parabolic" or "flat"
+    rms_acceleration: float = 1.0  # target RMS of |F| in code units
+    seed: int = 42  # base PRNG seed (per-mode keys derived)
+    spectrum: str = "parabolic"  # "parabolic" or "flat"
 
     # Box lengths captured at build time (not part of the steady state).
     Lx: float = 1.0
@@ -86,9 +87,7 @@ def _enumerate_modes(cfg: OUDriverConfig):
                 ns.append((nx, ny, nz, rad))
 
     if not ns:
-        raise ValueError(
-            f"No driving modes found for k_min={cfg.k_min}, k_max={cfg.k_max}"
-        )
+        raise ValueError(f"No driving modes found for k_min={cfg.k_min}, k_max={cfg.k_max}")
 
     n_arr = np.array([(a, b, c) for (a, b, c, _) in ns], dtype=np.int32)
     rad = np.array([r for (_, _, _, r) in ns], dtype=np.float64)
@@ -110,9 +109,11 @@ def _enumerate_modes(cfg: OUDriverConfig):
     # Physical wavevector (2 pi / L for each axis).
     two_pi = 2.0 * np.pi
     k_vec = np.column_stack(
-        [two_pi * n_arr[:, 0] / cfg.Lx,
-         two_pi * n_arr[:, 1] / cfg.Ly,
-         two_pi * n_arr[:, 2] / cfg.Lz]
+        [
+            two_pi * n_arr[:, 0] / cfg.Lx,
+            two_pi * n_arr[:, 1] / cfg.Ly,
+            two_pi * n_arr[:, 2] / cfg.Lz,
+        ]
     )
     k_mag = np.linalg.norm(k_vec, axis=1)
 
@@ -138,10 +139,10 @@ class OUDriver:
     """OU turbulent driver. Build once at setup, then evolve the state."""
 
     cfg: OUDriverConfig
-    k_vec: jnp.ndarray = field(init=False)        # (M, 3) physical wavenumbers
-    k_mag: jnp.ndarray = field(init=False)        # (M,)
-    P: jnp.ndarray = field(init=False)            # (M, 3, 3) projection tensor
-    weight: jnp.ndarray = field(init=False)       # (M,) normalized to <|F|^2>=1
+    k_vec: jnp.ndarray = field(init=False)  # (M, 3) physical wavenumbers
+    k_mag: jnp.ndarray = field(init=False)  # (M,)
+    P: jnp.ndarray = field(init=False)  # (M, 3, 3) projection tensor
+    weight: jnp.ndarray = field(init=False)  # (M,) normalized to <|F|^2>=1
     n_modes: int = field(init=False)
 
     def __post_init__(self):
@@ -158,14 +159,14 @@ class OUDriver:
         norm_sum = 2.0 * float(np.sum(tr_P * w_np))
         if norm_sum <= 0.0:
             raise ValueError("Mode projection sum is non-positive; check zeta")
-        scale = (self.cfg.rms_acceleration ** 2) / norm_sum
-        sigma2 = w_np * scale          # per-mode amplitude variance
+        scale = (self.cfg.rms_acceleration**2) / norm_sum
+        sigma2 = w_np * scale  # per-mode amplitude variance
         sigma = np.sqrt(sigma2)
 
         self.k_vec = jnp.asarray(k_vec_np, dtype=jnp.float32)
         self.k_mag = jnp.asarray(k_mag_np, dtype=jnp.float32)
         self.P = jnp.asarray(P_np, dtype=jnp.float32)
-        self.weight = jnp.asarray(sigma, dtype=jnp.float32)   # std dev per mode
+        self.weight = jnp.asarray(sigma, dtype=jnp.float32)  # std dev per mode
         self.n_modes = int(k_vec_np.shape[0])
 
     # ------------------------------------------------------------------
@@ -198,8 +199,9 @@ class OUDriver:
     # ------------------------------------------------------------------
     # Real-space force field
     # ------------------------------------------------------------------
-    def force_field(self, a: jax.Array, X: jax.Array, Y: jax.Array, Z: jax.Array
-                    ) -> Tuple[jax.Array, jax.Array, jax.Array]:
+    def force_field(
+        self, a: jax.Array, X: jax.Array, Y: jax.Array, Z: jax.Array
+    ) -> Tuple[jax.Array, jax.Array, jax.Array]:
         """Evaluate F(x) = 2 Re sum_k a_k exp(i k . x).
 
         X, Y, Z : real-space coordinates with the same shape (typically the
@@ -227,17 +229,15 @@ class OUDriver:
             return (Fx, Fy, Fz), None
 
         zero = jnp.zeros_like(X)
-        (Fx, Fy, Fz), _ = jax.lax.scan(
-            step, (zero, zero, zero),
-            (self.k_vec, ar, ai)
-        )
+        (Fx, Fy, Fz), _ = jax.lax.scan(step, (zero, zero, zero), (self.k_vec, ar, ai))
         return Fx, Fy, Fz
 
     # ------------------------------------------------------------------
     # Application to a 3D conservative state
     # ------------------------------------------------------------------
-    def apply(self, U: jax.Array, a: jax.Array, dt: float,
-              X: jax.Array, Y: jax.Array, Z: jax.Array) -> jax.Array:
+    def apply(
+        self, U: jax.Array, a: jax.Array, dt: float, X: jax.Array, Y: jax.Array, Z: jax.Array
+    ) -> jax.Array:
         """Apply F as a momentum source to U=[rho, rho vx, rho vy, rho vz, E].
 
         Increments momentum by rho F dt and total energy by (rho v) . F dt
@@ -253,8 +253,9 @@ class OUDriver:
         dmz = rho * Fz * dt
 
         # E_new - E_old = (mx*Fx + my*Fy + mz*Fz)*dt + 0.5 rho |F|^2 dt^2
-        dE = ((mx * Fx + my * Fy + mz * Fz) * dt
-              + 0.5 * rho * (Fx * Fx + Fy * Fy + Fz * Fz) * dt * dt)
+        dE = (mx * Fx + my * Fy + mz * Fz) * dt + 0.5 * rho * (
+            Fx * Fx + Fy * Fy + Fz * Fz
+        ) * dt * dt
 
         U_new = U.at[1].add(dmx)
         U_new = U_new.at[2].add(dmy)
@@ -278,11 +279,11 @@ def local_cell_centers(cfg, x_slice=None, y_slice=None, z_slice=None):
     z_full = jnp.arange(Nz, dtype=jnp.float32) * dz + 0.5 * dz
 
     if x_slice is not None:
-        x_full = x_full[x_slice[0]:x_slice[1]]
+        x_full = x_full[x_slice[0] : x_slice[1]]
     if y_slice is not None:
-        y_full = y_full[y_slice[0]:y_slice[1]]
+        y_full = y_full[y_slice[0] : y_slice[1]]
     if z_slice is not None:
-        z_full = z_full[z_slice[0]:z_slice[1]]
+        z_full = z_full[z_slice[0] : z_slice[1]]
 
     X, Y, Z = jnp.meshgrid(x_full, y_full, z_full, indexing="ij")
     return X, Y, Z

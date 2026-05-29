@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 
+
 def kelvin_helmholtz(cfg, x_slice=None, y_slice=None):
     """
     Kelvin-Helmholtz instability test problem (2D).
@@ -46,7 +47,7 @@ def kelvin_helmholtz(cfg, x_slice=None, y_slice=None):
     y_full = jnp.linspace(0, Ly, Ny, endpoint=False)
     x_local = x_full[x_start:x_end]
     y_local = y_full[y_start:y_end]
-    X, Y = jnp.meshgrid(x_local, y_local, indexing='ij')
+    X, Y = jnp.meshgrid(x_local, y_local, indexing="ij")
 
     # KH parameters
     U0 = 1.0
@@ -57,15 +58,17 @@ def kelvin_helmholtz(cfg, x_slice=None, y_slice=None):
     rho_low, rho_high = 1.0, 2.0
     delta = (rho_high - rho_low) / rho_low
 
-    rho = 1.0 + 0.5 * delta * (jnp.tanh((Y - Y1)/a) - jnp.tanh((Y - Y2)/a))
-    ux  = -U0 * ((jnp.tanh((Y - Y1)/a) - jnp.tanh((Y - Y2)/a)) - 1.0)
-    uy  = A * jnp.sin(2*jnp.pi*X) * (
-            jnp.exp(-((Y - Y1)**2)/sigma**2) +
-            jnp.exp(-((Y - Y2)**2)/sigma**2))
+    rho = 1.0 + 0.5 * delta * (jnp.tanh((Y - Y1) / a) - jnp.tanh((Y - Y2) / a))
+    ux = -U0 * ((jnp.tanh((Y - Y1) / a) - jnp.tanh((Y - Y2) / a)) - 1.0)
+    uy = (
+        A
+        * jnp.sin(2 * jnp.pi * X)
+        * (jnp.exp(-((Y - Y1) ** 2) / sigma**2) + jnp.exp(-((Y - Y2) ** 2) / sigma**2))
+    )
 
     p = jnp.ones((Nx_local, Ny_local)) * 10.0
     E = p / (gamma - 1.0) + 0.5 * rho * (ux**2 + uy**2)
 
-    U = jnp.stack([rho, rho*ux, rho*uy, E], axis=0)
+    U = jnp.stack([rho, rho * ux, rho * uy, E], axis=0)
 
     return U

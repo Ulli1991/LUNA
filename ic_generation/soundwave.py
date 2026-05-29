@@ -43,9 +43,9 @@ def soundwave(cfg, x_slice=None):
     x = x_full[x_start:x_end]
 
     rho0 = 1.0
-    p0   = 0.6      # with γ=5/3 → cs² = 1, period = Lx
-    amp  = 1.0e-4   # eigenmode amplitude A
-    m    = 1
+    p0 = 0.6  # with γ=5/3 → cs² = 1, period = Lx
+    amp = 1.0e-4  # eigenmode amplitude A
+    m = 1
 
     cs = jnp.sqrt(gamma * p0 / rho0)
     k = 2.0 * jnp.pi * m / Lx
@@ -55,14 +55,14 @@ def soundwave(cfg, x_slice=None):
     if single_mode:
         # Right-going acoustic eigenmode (matches AthenaK linear_wave).
         rho = rho0 + amp * sin_kx
-        u   = amp * cs / rho0 * sin_kx
-        p   = p0 + amp * cs * cs * sin_kx
+        u = amp * cs / rho0 * sin_kx
+        p = p0 + amp * cs * cs * sin_kx
     else:
         # u=0 superposition of left- and right-going acoustic waves of equal
         # amplitude — standing-wave physics, the OLD soundwave setup.
         rho = rho0 + amp * sin_kx
-        u   = jnp.zeros_like(x)
-        p   = p0 + amp * sin_kx
+        u = jnp.zeros_like(x)
+        p = p0 + amp * sin_kx
 
     E = p / (gamma - 1.0) + 0.5 * rho * u * u
     return jnp.stack([rho, rho * u, E], axis=0)

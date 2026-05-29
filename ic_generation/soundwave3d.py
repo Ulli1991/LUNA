@@ -52,7 +52,7 @@ def soundwave_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     x_local = x_full[x_start:x_end]
     y_local = y_full[y_start:y_end]
     z_local = z_full[z_start:z_end]
-    X, Y, Z = jnp.meshgrid(x_local, y_local, z_local, indexing='ij')
+    X, Y, Z = jnp.meshgrid(x_local, y_local, z_local, indexing="ij")
 
     # Background state
     rho0 = 1.0

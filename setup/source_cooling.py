@@ -3,7 +3,8 @@
 Builds a TownsendCoolingSolver from cfg, suitable for use as an
 operator-split step:  U = apply_cooling(U, dt, cfg, solver).
 """
-from hydro.cooling import sutherland_dopita_cie, TownsendCoolingSolver
+
+from hydro.cooling import TownsendCoolingSolver, sutherland_dopita_cie
 
 
 def setup_cooling(cfg, is_main_process: bool = True):
@@ -19,6 +20,8 @@ def setup_cooling(cfg, is_main_process: bool = True):
     mu = getattr(cfg, "cc85_mu", 0.6)
     solver = TownsendCoolingSolver(table=table, mu=mu)
     if is_main_process:
-        print(f"✓ Cooling enabled: table={cfg.cooling_table}, "
-              f"T range [{table.T.min():.2e}, {table.T.max():.2e}] K, mu={mu}")
+        print(
+            f"✓ Cooling enabled: table={cfg.cooling_table}, "
+            f"T range [{table.T.min():.2e}, {table.T.max():.2e}] K, mu={mu}"
+        )
     return solver

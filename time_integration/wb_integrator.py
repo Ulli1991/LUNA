@@ -23,24 +23,36 @@ Algorithm (per step):
         d(ρ v_vert) += ρ' · g · dt
         d E          += ρ v_vert · g · dt
 """
+
 import jax
 import jax.numpy as jnp
 
 
-def create_wb_muscl_hancock_step(pad_halo_fn, gamma, order, limiter,
-                                 dx, dy, dz, inv_dx, inv_dy, inv_dz,
-                                 boundary, spatial_dim, CFL,
-                                 U_eq,
-                                 gravity_z,
-                                 sharding=None,
-                                 riemann_solver="hllc"):
+def create_wb_muscl_hancock_step(
+    pad_halo_fn,
+    gamma,
+    order,
+    limiter,
+    dx,
+    dy,
+    dz,
+    inv_dx,
+    inv_dy,
+    inv_dz,
+    boundary,
+    spatial_dim,
+    CFL,
+    U_eq,
+    gravity_z,
+    sharding=None,
+    riemann_solver="hllc",
+):
     if spatial_dim not in (2, 3):
-        raise NotImplementedError(
-            "Well-balanced integrator supports 2D and 3D only."
-        )
+        raise NotImplementedError("Well-balanced integrator supports 2D and 3D only.")
 
     from hydro.conversions import cons_to_prim
     from hydro.slopes import compute_slopes_from_padded
+
     if riemann_solver == "lhllc":
         from hydro.fluxes_lhllc import lhllc_flux_primitive as flux_fn
     else:
@@ -62,13 +74,13 @@ def create_wb_muscl_hancock_step(pad_halo_fn, gamma, order, limiter,
         energy_idx = 3
         # primitive: (rho, vx, vy, p), pressure idx 3
         p_idx = 3
-        vert_vel_idx = 2     # vy
+        vert_vel_idx = 2  # vy
     else:
         # U = (rho, mvx, mvy, mvz, E)
         vert_mom_idx = 3
         energy_idx = 4
         p_idx = 4
-        vert_vel_idx = 3     # vz
+        vert_vel_idx = 3  # vz
 
     @jax.jit
     def compute_dt_fn(U):
@@ -77,15 +89,15 @@ def create_wb_muscl_hancock_step(pad_halo_fn, gamma, order, limiter,
         P = W[p_idx]
         cs = jnp.sqrt(gamma * P / rho)
         if spatial_dim == 2:
-            vx = W[1]; vy = W[2]
-            dt_local = CFL * jnp.minimum(
-                dx / (jnp.abs(vx) + cs), dy / (jnp.abs(vy) + cs)
-            )
+            vx = W[1]
+            vy = W[2]
+            dt_local = CFL * jnp.minimum(dx / (jnp.abs(vx) + cs), dy / (jnp.abs(vy) + cs))
         else:
-            vx = W[1]; vy = W[2]; vz = W[3]
+            vx = W[1]
+            vy = W[2]
+            vz = W[3]
             dt_local = CFL * jnp.minimum(
-                jnp.minimum(dx / (jnp.abs(vx) + cs),
-                            dy / (jnp.abs(vy) + cs)),
+                jnp.minimum(dx / (jnp.abs(vx) + cs), dy / (jnp.abs(vy) + cs)),
                 dz / (jnp.abs(vz) + cs),
             )
         return jnp.min(dt_local)
@@ -102,24 +114,23 @@ def create_wb_muscl_hancock_step(pad_halo_fn, gamma, order, limiter,
 
         # Interior cell-center slicing
         if spatial_dim == 2:
-            W_c       = W_pad[:, 1:-1, 1:-1]
-            W_eq_c    = W_eq_pad[:, 1:-1, 1:-1]
+            W_c = W_pad[:, 1:-1, 1:-1]
+            W_eq_c = W_eq_pad[:, 1:-1, 1:-1]
         else:
-            W_c       = W_pad[:, 1:-1, 1:-1, 1:-1]
-            W_eq_c    = W_eq_pad[:, 1:-1, 1:-1, 1:-1]
+            W_c = W_pad[:, 1:-1, 1:-1, 1:-1]
+            W_eq_c = W_eq_pad[:, 1:-1, 1:-1, 1:-1]
         W_prime_c = W_c - W_eq_c
 
         # MUSCL-Hancock predictor on perturbation (Jacobian at full W)
         if spatial_dim == 2:
             A_dW = apply_jacobian(W_c, dWx * inv_dx, dWy * inv_dy, gamma)
         else:
-            A_dW = apply_jacobian(
-                W_c, dWx * inv_dx, dWy * inv_dy, dWz * inv_dz, gamma
-            )
+            A_dW = apply_jacobian(W_c, dWx * inv_dx, dWy * inv_dy, dWz * inv_dz, gamma)
         W_prime_half = W_prime_c - 0.5 * dt * A_dW
 
         # Face-state perturbation reconstructions
-        hx = 0.5 * dWx; hy = 0.5 * dWy
+        hx = 0.5 * dWx
+        hy = 0.5 * dWy
         if spatial_dim == 3:
             hz = 0.5 * dWz
         Wp_r_x = W_prime_half + hx
@@ -134,28 +145,28 @@ def create_wb_muscl_hancock_step(pad_halo_fn, gamma, order, limiter,
         if spatial_dim == 2:
             if boundary == 0:
                 WL_x_bc = Wp_r_x[:, -1:, :]
-                WR_x_bc = Wp_l_x[:,  0:1, :]
+                WR_x_bc = Wp_l_x[:, 0:1, :]
                 WL_y_bc = Wp_r_y[:, :, -1:]
-                WR_y_bc = Wp_l_y[:, :,  0:1]
+                WR_y_bc = Wp_l_y[:, :, 0:1]
             else:
-                WL_x_bc = W_prime_pad[:,  0:1, 1:-1]
-                WR_x_bc = W_prime_pad[:, -1:,  1:-1]
-                WL_y_bc = W_prime_pad[:, 1:-1,  0:1]
+                WL_x_bc = W_prime_pad[:, 0:1, 1:-1]
+                WR_x_bc = W_prime_pad[:, -1:, 1:-1]
+                WL_y_bc = W_prime_pad[:, 1:-1, 0:1]
                 WR_y_bc = W_prime_pad[:, 1:-1, -1:]
         else:
             if boundary == 0:
                 WL_x_bc = Wp_r_x[:, -1:, :, :]
-                WR_x_bc = Wp_l_x[:,  0:1, :, :]
+                WR_x_bc = Wp_l_x[:, 0:1, :, :]
                 WL_y_bc = Wp_r_y[:, :, -1:, :]
-                WR_y_bc = Wp_l_y[:, :,  0:1, :]
+                WR_y_bc = Wp_l_y[:, :, 0:1, :]
                 WL_z_bc = Wp_r_z[:, :, :, -1:]
-                WR_z_bc = Wp_l_z[:, :, :,  0:1]
+                WR_z_bc = Wp_l_z[:, :, :, 0:1]
             else:
-                WL_x_bc = W_prime_pad[:,  0:1, 1:-1, 1:-1]
-                WR_x_bc = W_prime_pad[:, -1:,  1:-1, 1:-1]
-                WL_y_bc = W_prime_pad[:, 1:-1,  0:1, 1:-1]
-                WR_y_bc = W_prime_pad[:, 1:-1, -1:,  1:-1]
-                WL_z_bc = W_prime_pad[:, 1:-1, 1:-1,  0:1]
+                WL_x_bc = W_prime_pad[:, 0:1, 1:-1, 1:-1]
+                WR_x_bc = W_prime_pad[:, -1:, 1:-1, 1:-1]
+                WL_y_bc = W_prime_pad[:, 1:-1, 0:1, 1:-1]
+                WR_y_bc = W_prime_pad[:, 1:-1, -1:, 1:-1]
+                WL_z_bc = W_prime_pad[:, 1:-1, 1:-1, 0:1]
                 WR_z_bc = W_prime_pad[:, 1:-1, 1:-1, -1:]
 
         Wp_L_x = jnp.concatenate([WL_x_bc, Wp_r_x], axis=1)
@@ -168,15 +179,14 @@ def create_wb_muscl_hancock_step(pad_halo_fn, gamma, order, limiter,
 
         # W_eq at faces
         if spatial_dim == 2:
-            W_eq_face_x = W_eq_pad[:, :-1, 1:-1]    # x face: W_eq has same z, take left cell
+            W_eq_face_x = W_eq_pad[:, :-1, 1:-1]  # x face: W_eq has same z, take left cell
             # In 2D vertical = y axis. Vertical-face W_eq is averaged.
             W_eq_face_y = 0.5 * (W_eq_pad[:, 1:-1, :-1] + W_eq_pad[:, 1:-1, 1:])
         else:
             W_eq_face_x = W_eq_pad[:, :-1, 1:-1, 1:-1]
             W_eq_face_y = W_eq_pad[:, 1:-1, :-1, 1:-1]
             # Vertical-face W_eq averaged
-            W_eq_face_z = 0.5 * (W_eq_pad[:, 1:-1, 1:-1, :-1]
-                               + W_eq_pad[:, 1:-1, 1:-1, 1:])
+            W_eq_face_z = 0.5 * (W_eq_pad[:, 1:-1, 1:-1, :-1] + W_eq_pad[:, 1:-1, 1:-1, 1:])
 
         # Full-state face values
         W_L_x = W_eq_face_x + Wp_L_x
@@ -196,11 +206,11 @@ def create_wb_muscl_hancock_step(pad_halo_fn, gamma, order, limiter,
         # Equilibrium-flux subtraction: only normal-momentum slot
         p_eq_face_x = W_eq_face_x[p_idx]
         p_eq_face_y = W_eq_face_y[p_idx]
-        Fx = Fx.at[1].add(-p_eq_face_x)            # x-mom from x-face
-        Fy = Fy.at[2].add(-p_eq_face_y)            # y-mom from y-face
+        Fx = Fx.at[1].add(-p_eq_face_x)  # x-mom from x-face
+        Fy = Fy.at[2].add(-p_eq_face_y)  # y-mom from y-face
         if spatial_dim == 3:
             p_eq_face_z = W_eq_face_z[p_idx]
-            Fz = Fz.at[3].add(-p_eq_face_z)        # z-mom from z-face
+            Fz = Fz.at[3].add(-p_eq_face_z)  # z-mom from z-face
 
         # Divergence of perturbation flux
         if spatial_dim == 2:

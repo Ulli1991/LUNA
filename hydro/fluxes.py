@@ -9,9 +9,10 @@ OPTIMIZATION: Saves one prim↔cons conversion per flux evaluation.
 Expected speedup: ~5-8%
 """
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
-from functools import partial
 
 
 def hllc_flux_primitive_2d(W_L, W_R, axis, gamma):
@@ -58,21 +59,21 @@ def hllc_flux_primitive_2d(W_L, W_R, axis, gamma):
         denom_R = rho_R * (S_R - vn_R)
 
         # Middle speed
-        S_M = (P_R - P_L + denom_L*vn_L - denom_R*vn_R) / (denom_L - denom_R)
+        S_M = (P_R - P_L + denom_L * vn_L - denom_R * vn_R) / (denom_L - denom_R)
 
         # Star states (densities)
         rho_star_L = denom_L / (S_L - S_M)
         rho_star_R = denom_R / (S_R - S_M)
 
         # Energy (need to compute from primitives)
-        ke_L = 0.5 * (vn_L*vn_L + vt_L*vt_L)
-        ke_R = 0.5 * (vn_R*vn_R + vt_R*vt_R)
+        ke_L = 0.5 * (vn_L * vn_L + vt_L * vt_L)
+        ke_R = 0.5 * (vn_R * vn_R + vt_R * vt_R)
         E_L = P_L / gm1 + rho_L * ke_L
         E_R = P_R / gm1 + rho_R * ke_R
 
         # Star energies
-        E_star_L = E_L / rho_L + (S_M - vn_L)*(S_M + P_L/denom_L)
-        E_star_R = E_R / rho_R + (S_M - vn_R)*(S_M + P_R/denom_R)
+        E_star_L = E_L / rho_L + (S_M - vn_L) * (S_M + P_L / denom_L)
+        E_star_R = E_R / rho_R + (S_M - vn_R) * (S_M + P_R / denom_R)
 
         # Momentum (from primitives)
         rho_vn_L = rho_L * vn_L
@@ -84,12 +85,16 @@ def hllc_flux_primitive_2d(W_L, W_R, axis, gamma):
         U_L = jnp.stack([rho_L, rho_vn_L, rho_vt_L, E_L])
         U_R = jnp.stack([rho_R, rho_vn_R, rho_vt_R, E_R])
 
-        U_star_L = jnp.stack([rho_star_L, rho_star_L*S_M, rho_star_L*vt_L, rho_star_L*E_star_L])
-        U_star_R = jnp.stack([rho_star_R, rho_star_R*S_M, rho_star_R*vt_R, rho_star_R*E_star_R])
+        U_star_L = jnp.stack(
+            [rho_star_L, rho_star_L * S_M, rho_star_L * vt_L, rho_star_L * E_star_L]
+        )
+        U_star_R = jnp.stack(
+            [rho_star_R, rho_star_R * S_M, rho_star_R * vt_R, rho_star_R * E_star_R]
+        )
 
         # Fluxes (in conservative form)
-        F_L = jnp.stack([rho_vn_L, rho_vn_L*vn_L + P_L, rho_vn_L*vt_L, (E_L + P_L)*vn_L])
-        F_R = jnp.stack([rho_vn_R, rho_vn_R*vn_R + P_R, rho_vn_R*vt_R, (E_R + P_R)*vn_R])
+        F_L = jnp.stack([rho_vn_L, rho_vn_L * vn_L + P_L, rho_vn_L * vt_L, (E_L + P_L) * vn_L])
+        F_R = jnp.stack([rho_vn_R, rho_vn_R * vn_R + P_R, rho_vn_R * vt_R, (E_R + P_R) * vn_R])
 
     else:  # y-direction flux
         # Normal and tangential velocities
@@ -109,20 +114,20 @@ def hllc_flux_primitive_2d(W_L, W_R, axis, gamma):
         denom_R = rho_R * (S_R - vn_R)
 
         # Middle speed
-        S_M = (P_R - P_L + denom_L*vn_L - denom_R*vn_R) / (denom_L - denom_R)
+        S_M = (P_R - P_L + denom_L * vn_L - denom_R * vn_R) / (denom_L - denom_R)
 
         # Star states
         rho_star_L = denom_L / (S_L - S_M)
         rho_star_R = denom_R / (S_R - S_M)
 
         # Energy
-        ke_L = 0.5 * (vn_L*vn_L + vt_L*vt_L)
-        ke_R = 0.5 * (vn_R*vn_R + vt_R*vt_R)
+        ke_L = 0.5 * (vn_L * vn_L + vt_L * vt_L)
+        ke_R = 0.5 * (vn_R * vn_R + vt_R * vt_R)
         E_L = P_L / gm1 + rho_L * ke_L
         E_R = P_R / gm1 + rho_R * ke_R
 
-        E_star_L = E_L / rho_L + (S_M - vn_L)*(S_M + P_L/denom_L)
-        E_star_R = E_R / rho_R + (S_M - vn_R)*(S_M + P_R/denom_R)
+        E_star_L = E_L / rho_L + (S_M - vn_L) * (S_M + P_L / denom_L)
+        E_star_R = E_R / rho_R + (S_M - vn_R) * (S_M + P_R / denom_R)
 
         # Momentum
         rho_vn_L = rho_L * vn_L
@@ -134,12 +139,16 @@ def hllc_flux_primitive_2d(W_L, W_R, axis, gamma):
         U_L = jnp.stack([rho_L, rho_vt_L, rho_vn_L, E_L])
         U_R = jnp.stack([rho_R, rho_vt_R, rho_vn_R, E_R])
 
-        U_star_L = jnp.stack([rho_star_L, rho_star_L*vt_L, rho_star_L*S_M, rho_star_L*E_star_L])
-        U_star_R = jnp.stack([rho_star_R, rho_star_R*vt_R, rho_star_R*S_M, rho_star_R*E_star_R])
+        U_star_L = jnp.stack(
+            [rho_star_L, rho_star_L * vt_L, rho_star_L * S_M, rho_star_L * E_star_L]
+        )
+        U_star_R = jnp.stack(
+            [rho_star_R, rho_star_R * vt_R, rho_star_R * S_M, rho_star_R * E_star_R]
+        )
 
         # Fluxes (in conservative form, order: [rho*vy, rho*vy*vx, rho*vy*vy+P, (E+P)*vy])
-        F_L = jnp.stack([rho_vn_L, rho_vn_L*vt_L, rho_vn_L*vn_L + P_L, (E_L + P_L)*vn_L])
-        F_R = jnp.stack([rho_vn_R, rho_vn_R*vt_R, rho_vn_R*vn_R + P_R, (E_R + P_R)*vn_R])
+        F_L = jnp.stack([rho_vn_L, rho_vn_L * vt_L, rho_vn_L * vn_L + P_L, (E_L + P_L) * vn_L])
+        F_R = jnp.stack([rho_vn_R, rho_vn_R * vt_R, rho_vn_R * vn_R + P_R, (E_R + P_R) * vn_R])
 
     # HLLC flux selection
     conditions = [
@@ -150,8 +159,8 @@ def hllc_flux_primitive_2d(W_L, W_R, axis, gamma):
 
     choices = [
         F_L,
-        F_L + S_L*(U_star_L - U_L),
-        F_R + S_R*(U_star_R - U_R),
+        F_L + S_L * (U_star_L - U_L),
+        F_R + S_R * (U_star_R - U_R),
     ]
 
     flux = jnp.select(conditions, choices, default=F_R)
@@ -208,21 +217,21 @@ def hllc_flux_primitive_3d(W_L, W_R, axis, gamma):
     denom_R = rho_R * (S_R - vn_R)
 
     # Middle speed
-    S_M = (P_R - P_L + denom_L*vn_L - denom_R*vn_R) / (denom_L - denom_R)
+    S_M = (P_R - P_L + denom_L * vn_L - denom_R * vn_R) / (denom_L - denom_R)
 
     # Star densities
     rho_star_L = denom_L / (S_L - S_M)
     rho_star_R = denom_R / (S_R - S_M)
 
     # Total kinetic energy and total energy
-    ke_L = 0.5 * (vn_L*vn_L + vt1_L*vt1_L + vt2_L*vt2_L)
-    ke_R = 0.5 * (vn_R*vn_R + vt1_R*vt1_R + vt2_R*vt2_R)
+    ke_L = 0.5 * (vn_L * vn_L + vt1_L * vt1_L + vt2_L * vt2_L)
+    ke_R = 0.5 * (vn_R * vn_R + vt1_R * vt1_R + vt2_R * vt2_R)
     E_L = P_L / gm1 + rho_L * ke_L
     E_R = P_R / gm1 + rho_R * ke_R
 
     # Star energies
-    E_star_L = E_L / rho_L + (S_M - vn_L)*(S_M + P_L/denom_L)
-    E_star_R = E_R / rho_R + (S_M - vn_R)*(S_M + P_R/denom_R)
+    E_star_L = E_L / rho_L + (S_M - vn_L) * (S_M + P_L / denom_L)
+    E_star_R = E_R / rho_R + (S_M - vn_R) * (S_M + P_R / denom_R)
 
     # Normal momentum
     rho_vn_L = rho_L * vn_L
@@ -239,18 +248,17 @@ def hllc_flux_primitive_3d(W_L, W_R, axis, gamma):
         f_starL = F_L_i + S_L * (U_star_L_i - U_L_i)
         f_starR = F_R_i + S_R * (U_star_R_i - U_R_i)
         return jnp.where(
-            S_L >= 0, F_L_i,
-            jnp.where(
-                S_M >= 0, f_starL,
-                jnp.where(S_R > 0, f_starR, F_R_i)
-            )
+            S_L >= 0, F_L_i, jnp.where(S_M >= 0, f_starL, jnp.where(S_R > 0, f_starR, F_R_i))
         )
 
     # Component 0: rho
     flux_0 = hllc_component(
-        F_L_i=rho_vn_L, F_R_i=rho_vn_R,
-        U_L_i=rho_L, U_R_i=rho_R,
-        U_star_L_i=rho_star_L, U_star_R_i=rho_star_R,
+        F_L_i=rho_vn_L,
+        F_R_i=rho_vn_R,
+        U_L_i=rho_L,
+        U_R_i=rho_R,
+        U_star_L_i=rho_star_L,
+        U_star_R_i=rho_star_R,
     )
     # Energy (same for all axes)
     F_L_E = (E_L + P_L) * vn_L
@@ -260,53 +268,80 @@ def hllc_flux_primitive_3d(W_L, W_R, axis, gamma):
     flux_E = hllc_component(F_L_E, F_R_E, E_L, E_R, U_star_L_E, U_star_R_E)
 
     # Momentum components depend on which is normal vs tangential.
-    if axis == 0:    # normal = x, tangential = y, z
+    if axis == 0:  # normal = x, tangential = y, z
         flux_mx = hllc_component(
-            rho_vn_L * vx_L + P_L, rho_vn_R * vx_R + P_R,
-            rho_L * vx_L, rho_R * vx_R,
-            rho_star_L * S_M, rho_star_R * S_M,
+            rho_vn_L * vx_L + P_L,
+            rho_vn_R * vx_R + P_R,
+            rho_L * vx_L,
+            rho_R * vx_R,
+            rho_star_L * S_M,
+            rho_star_R * S_M,
         )
         flux_my = hllc_component(
-            rho_vn_L * vy_L, rho_vn_R * vy_R,
-            rho_L * vy_L, rho_R * vy_R,
-            rho_star_L * vt1_L, rho_star_R * vt1_R,
+            rho_vn_L * vy_L,
+            rho_vn_R * vy_R,
+            rho_L * vy_L,
+            rho_R * vy_R,
+            rho_star_L * vt1_L,
+            rho_star_R * vt1_R,
         )
         flux_mz = hllc_component(
-            rho_vn_L * vz_L, rho_vn_R * vz_R,
-            rho_L * vz_L, rho_R * vz_R,
-            rho_star_L * vt2_L, rho_star_R * vt2_R,
+            rho_vn_L * vz_L,
+            rho_vn_R * vz_R,
+            rho_L * vz_L,
+            rho_R * vz_R,
+            rho_star_L * vt2_L,
+            rho_star_R * vt2_R,
         )
     elif axis == 1:  # normal = y, tangential = x, z
         flux_mx = hllc_component(
-            rho_vn_L * vx_L, rho_vn_R * vx_R,
-            rho_L * vx_L, rho_R * vx_R,
-            rho_star_L * vt1_L, rho_star_R * vt1_R,
+            rho_vn_L * vx_L,
+            rho_vn_R * vx_R,
+            rho_L * vx_L,
+            rho_R * vx_R,
+            rho_star_L * vt1_L,
+            rho_star_R * vt1_R,
         )
         flux_my = hllc_component(
-            rho_vn_L * vy_L + P_L, rho_vn_R * vy_R + P_R,
-            rho_L * vy_L, rho_R * vy_R,
-            rho_star_L * S_M, rho_star_R * S_M,
+            rho_vn_L * vy_L + P_L,
+            rho_vn_R * vy_R + P_R,
+            rho_L * vy_L,
+            rho_R * vy_R,
+            rho_star_L * S_M,
+            rho_star_R * S_M,
         )
         flux_mz = hllc_component(
-            rho_vn_L * vz_L, rho_vn_R * vz_R,
-            rho_L * vz_L, rho_R * vz_R,
-            rho_star_L * vt2_L, rho_star_R * vt2_R,
+            rho_vn_L * vz_L,
+            rho_vn_R * vz_R,
+            rho_L * vz_L,
+            rho_R * vz_R,
+            rho_star_L * vt2_L,
+            rho_star_R * vt2_R,
         )
-    else:            # axis == 2: normal = z, tangential = x, y
+    else:  # axis == 2: normal = z, tangential = x, y
         flux_mx = hllc_component(
-            rho_vn_L * vx_L, rho_vn_R * vx_R,
-            rho_L * vx_L, rho_R * vx_R,
-            rho_star_L * vt1_L, rho_star_R * vt1_R,
+            rho_vn_L * vx_L,
+            rho_vn_R * vx_R,
+            rho_L * vx_L,
+            rho_R * vx_R,
+            rho_star_L * vt1_L,
+            rho_star_R * vt1_R,
         )
         flux_my = hllc_component(
-            rho_vn_L * vy_L, rho_vn_R * vy_R,
-            rho_L * vy_L, rho_R * vy_R,
-            rho_star_L * vt2_L, rho_star_R * vt2_R,
+            rho_vn_L * vy_L,
+            rho_vn_R * vy_R,
+            rho_L * vy_L,
+            rho_R * vy_R,
+            rho_star_L * vt2_L,
+            rho_star_R * vt2_R,
         )
         flux_mz = hllc_component(
-            rho_vn_L * vz_L + P_L, rho_vn_R * vz_R + P_R,
-            rho_L * vz_L, rho_R * vz_R,
-            rho_star_L * S_M, rho_star_R * S_M,
+            rho_vn_L * vz_L + P_L,
+            rho_vn_R * vz_R + P_R,
+            rho_L * vz_L,
+            rho_R * vz_R,
+            rho_star_L * S_M,
+            rho_star_R * S_M,
         )
 
     return jnp.stack([flux_0, flux_mx, flux_my, flux_mz, flux_E])
@@ -348,7 +383,7 @@ def hllc_flux_primitive_1d(W_L, W_R, axis, gamma):
     denom_R = rho_R * (S_R - vx_R)
 
     # Middle speed
-    S_M = (P_R - P_L + denom_L*vx_L - denom_R*vx_R) / (denom_L - denom_R)
+    S_M = (P_R - P_L + denom_L * vx_L - denom_R * vx_R) / (denom_L - denom_R)
 
     # Star densities
     rho_star_L = denom_L / (S_L - S_M)
@@ -358,8 +393,8 @@ def hllc_flux_primitive_1d(W_L, W_R, axis, gamma):
     E_L = P_L / gm1 + 0.5 * rho_L * vx_L * vx_L
     E_R = P_R / gm1 + 0.5 * rho_R * vx_R * vx_R
 
-    E_star_L = E_L / rho_L + (S_M - vx_L)*(S_M + P_L/denom_L)
-    E_star_R = E_R / rho_R + (S_M - vx_R)*(S_M + P_R/denom_R)
+    E_star_L = E_L / rho_L + (S_M - vx_L) * (S_M + P_L / denom_L)
+    E_star_R = E_R / rho_R + (S_M - vx_R) * (S_M + P_R / denom_R)
 
     # Momentum
     rho_vx_L = rho_L * vx_L
@@ -369,12 +404,12 @@ def hllc_flux_primitive_1d(W_L, W_R, axis, gamma):
     U_L = jnp.stack([rho_L, rho_vx_L, E_L])
     U_R = jnp.stack([rho_R, rho_vx_R, E_R])
 
-    U_star_L = jnp.stack([rho_star_L, rho_star_L*S_M, rho_star_L*E_star_L])
-    U_star_R = jnp.stack([rho_star_R, rho_star_R*S_M, rho_star_R*E_star_R])
+    U_star_L = jnp.stack([rho_star_L, rho_star_L * S_M, rho_star_L * E_star_L])
+    U_star_R = jnp.stack([rho_star_R, rho_star_R * S_M, rho_star_R * E_star_R])
 
     # Fluxes
-    F_L = jnp.stack([rho_vx_L, rho_vx_L*vx_L + P_L, (E_L + P_L)*vx_L])
-    F_R = jnp.stack([rho_vx_R, rho_vx_R*vx_R + P_R, (E_R + P_R)*vx_R])
+    F_L = jnp.stack([rho_vx_L, rho_vx_L * vx_L + P_L, (E_L + P_L) * vx_L])
+    F_R = jnp.stack([rho_vx_R, rho_vx_R * vx_R + P_R, (E_R + P_R) * vx_R])
 
     # HLLC selection
     conditions = [
@@ -385,8 +420,8 @@ def hllc_flux_primitive_1d(W_L, W_R, axis, gamma):
 
     choices = [
         F_L,
-        F_L + S_L*(U_star_L - U_L),
-        F_R + S_R*(U_star_R - U_R),
+        F_L + S_L * (U_star_L - U_L),
+        F_R + S_R * (U_star_R - U_R),
     ]
 
     flux = jnp.select(conditions, choices, default=F_R)
@@ -427,4 +462,6 @@ def hllc_flux_primitive(W_L, W_R, axis, gamma):
     elif Nvar == 5:
         return hllc_flux_primitive_3d(W_L, W_R, axis, gamma)
     else:
-        raise ValueError(f"hllc_flux_primitive only supports 1D (3), 2D (4), or 3D (5) vars, got {Nvar}")
+        raise ValueError(
+            f"hllc_flux_primitive only supports 1D (3), 2D (4), or 3D (5) vars, got {Nvar}"
+        )

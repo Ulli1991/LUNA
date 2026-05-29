@@ -25,11 +25,10 @@ Supported components:
     z=0 critical density rho_crit_code = 1.4e-8 (1e10 Msun / kpc^3),
     then r_s = r_200 / c and rho_s from the normalization integral.
 """
+
 from __future__ import annotations
 
-import jax
 import jax.numpy as jnp
-
 
 # Gravitational constant in Arepo code units (kpc, 1e10 Msun, km/s).
 G_CODE = 43007.1
@@ -46,7 +45,7 @@ def _miyamoto_nagai_accel(X, Y, Z, M, a, b):
     zb = jnp.sqrt(Z * Z + b * b)
     a_zb = a + zb
     D = R2 + a_zb * a_zb
-    D32 = D * jnp.sqrt(D)                       # D^(3/2)
+    D32 = D * jnp.sqrt(D)  # D^(3/2)
     inv_D32 = 1.0 / D32
     g_x = -G_CODE * M * X * inv_D32
     g_y = -G_CODE * M * Y * inv_D32
@@ -62,7 +61,7 @@ def _nfw_params_from_M200_c(M_200, c):
     r_s = r_200 / c
     # rho_s from M_200 normalization
     f_c = jnp.log(1.0 + c) - c / (1.0 + c)
-    rho_s = M_200 / (4.0 * jnp.pi * r_s ** 3 * f_c)
+    rho_s = M_200 / (4.0 * jnp.pi * r_s**3 * f_c)
     return r_s, rho_s
 
 
@@ -70,10 +69,10 @@ def _nfw_accel(X, Y, Z, M_200, c):
     """Spherical NFW halo acceleration. Returns (g_x, g_y, g_z)."""
     r_s, rho_s = _nfw_params_from_M200_c(M_200, c)
     r2 = X * X + Y * Y + Z * Z
-    r = jnp.sqrt(r2 + 1e-10)                    # softening to avoid r=0
+    r = jnp.sqrt(r2 + 1e-10)  # softening to avoid r=0
     x = r / r_s
     # M_enclosed = 4 pi rho_s r_s^3 (ln(1+x) - x/(1+x))
-    M_enc = 4.0 * jnp.pi * rho_s * r_s ** 3 * (jnp.log(1.0 + x) - x / (1.0 + x))
+    M_enc = 4.0 * jnp.pi * rho_s * r_s**3 * (jnp.log(1.0 + x) - x / (1.0 + x))
     g_mag = -G_CODE * M_enc / (r2 + 1e-10)
     g_x = g_mag * X / r
     g_y = g_mag * Y / r
@@ -81,8 +80,9 @@ def _nfw_accel(X, Y, Z, M_200, c):
     return g_x, g_y, g_z
 
 
-def combined_acceleration(X, Y, Z, MN_M, MN_a, MN_b, NFW_M200, NFW_c,
-                          center_x=0.0, center_y=0.0, center_z=0.0):
+def combined_acceleration(
+    X, Y, Z, MN_M, MN_a, MN_b, NFW_M200, NFW_c, center_x=0.0, center_y=0.0, center_z=0.0
+):
     """Combined Miyamoto-Nagai disk + NFW halo, centered on (center_*)."""
     Xc = X - center_x
     Yc = Y - center_y
@@ -103,7 +103,7 @@ def vcirc_at_midplane(R, MN_M, MN_a, MN_b, NFW_M200, NFW_c):
     # NFW spherical:
     r_s, rho_s = _nfw_params_from_M200_c(NFW_M200, NFW_c)
     x = R / r_s
-    M_enc = 4.0 * jnp.pi * rho_s * r_s ** 3 * (jnp.log(1.0 + x) - x / (1.0 + x))
+    M_enc = 4.0 * jnp.pi * rho_s * r_s**3 * (jnp.log(1.0 + x) - x / (1.0 + x))
     g_R_nfw = G_CODE * M_enc / (R * R + 1e-10)
-    g_R_tot = g_R_mn + g_R_nfw                 # both pointing toward origin
+    g_R_tot = g_R_mn + g_R_nfw  # both pointing toward origin
     return jnp.sqrt(R * g_R_tot)

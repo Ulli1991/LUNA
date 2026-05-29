@@ -8,22 +8,23 @@ This module handles the main time integration loop including:
 - Performance tracking across processes
 - Validation
 """
+
 import os
 import time as pytime
-from typing import Tuple, Callable
-import numpy as np
+from typing import Callable, Tuple
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
-from jax.sharding import NamedSharding
 from jax.experimental import multihost_utils
+from jax.sharding import NamedSharding
 
-from file_io.write_snapshot_distributed import write_snapshot_distributed
-from file_io.write_checkpoint_distributed import write_checkpoint_distributed
 from file_io.checkpoint_utils import manage_checkpoints
-from hydro.physics_checks import validate_from_diagnostics
-from utils.memory_utils import get_memory_usage
+from file_io.write_checkpoint_distributed import write_checkpoint_distributed
+from file_io.write_snapshot_distributed import write_snapshot_distributed
 from utils.grid_params import GridParams
+from utils.memory_utils import get_memory_usage
 
 
 @jax.jit
@@ -63,8 +64,14 @@ def _diag_reductions(U, gamma):
     P = (gamma - 1.0) * (U[-1] - KE)
     cs2 = gamma * P / rho
     mach2 = speed2 / cs2
-    return (jnp.min(rho), jnp.min(P), jnp.sqrt(jnp.max(speed2)),
-            jnp.sqrt(jnp.max(mach2)), jnp.sum(rho), jnp.sum(U[-1]))
+    return (
+        jnp.min(rho),
+        jnp.min(P),
+        jnp.sqrt(jnp.max(speed2)),
+        jnp.sqrt(jnp.max(mach2)),
+        jnp.sum(rho),
+        jnp.sum(U[-1]),
+    )
 
 
 def run_simulation_distributed(
@@ -75,7 +82,7 @@ def run_simulation_distributed(
     grid: GridParams,
     compute_dt_fn: Callable,
     step_fn: Callable,
-    sharding: NamedSharding
+    sharding: NamedSharding,
 ) -> Tuple[Array, float, int, float]:
     """Execute the main distributed simulation time loop.
 
@@ -87,26 +94,27 @@ def run_simulation_distributed(
     so no snapshots are ever skipped.
     """
     # Cache process info (avoid repeated function calls)
-    is_main_process = (jax.process_index() == 0)
+    is_main_process = jax.process_index() == 0
 
     # Apply sharding constraint to initial array
     U_sharded = jax.lax.with_sharding_constraint(U_sharded, sharding)
 
     # === Operator-split source terms (per-step apply functions) ===
-    from setup.source_ou_forcing import setup_ou_forcing
     from setup.source_cc85 import setup_cc85_source
-    from setup.source_external_gravity import setup_external_gravity
     from setup.source_cooling import setup_cooling
-    forcing_state  = setup_ou_forcing(cfg, sharding, is_main_process)
-    cc85_state     = setup_cc85_source(cfg, sharding, is_main_process)
+    from setup.source_external_gravity import setup_external_gravity
+    from setup.source_ou_forcing import setup_ou_forcing
+
+    forcing_state = setup_ou_forcing(cfg, sharding, is_main_process)
+    cc85_state = setup_cc85_source(cfg, sharding, is_main_process)
     ext_grav_state = setup_external_gravity(cfg, sharding, is_main_process)
     cooling_solver = setup_cooling(cfg, is_main_process)
 
     # === WARMUP COMPILATION ===
     if is_main_process:
-        print("="*60)
+        print("=" * 60)
         print("COMPILING SHARDED FUNCTIONS")
-        print("="*60)
+        print("=" * 60)
         print("Running one step to trigger JIT compilation...")
 
     # Warmup: compile both compute_dt and step. Save the IC and restore it
@@ -118,7 +126,7 @@ def run_simulation_distributed(
     U_pre_warmup = U_sharded
     dt_warmup = compute_dt_fn(U_sharded)
     jax.block_until_ready(dt_warmup)
-    _ = step_fn(U_sharded, dt_warmup)        # trigger JIT compile, discard result
+    _ = step_fn(U_sharded, dt_warmup)  # trigger JIT compile, discard result
     jax.block_until_ready(_)
     U_sharded = jax.lax.with_sharding_constraint(U_pre_warmup, sharding)
     compile_time = pytime.time() - compile_start
@@ -132,6 +140,43 @@ def run_simulation_distributed(
     snapshot_idx = int(np.searchsorted(snapshot_times, t_start)) if cfg.restart else 0
     num_snapshots = len(snapshot_times)
 
+    # Provenance manifest: a single JSON the runner writes once at startup
+    # and appends per-snapshot entries to. Captures git hash, JAX version,
+    # config hash, datetime, hostname — enough to reproduce any snapshot.
+    import json as _json
+    import socket as _socket
+    import subprocess as _subprocess
+    manifest_path = os.path.join(cfg.output_dir, "manifest.json")
+    if is_main_process:
+        os.makedirs(cfg.output_dir, exist_ok=True)
+        try:
+            git_hash = _subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=os.path.dirname(__file__) or ".",
+                stderr=_subprocess.DEVNULL,
+            ).decode().strip()
+        except Exception:
+            git_hash = "unknown"
+        try:
+            jax_ver = jax.__version__
+        except Exception:
+            jax_ver = "unknown"
+        manifest = {
+            "started_utc": pytime.strftime("%Y-%m-%dT%H:%M:%SZ", pytime.gmtime()),
+            "hostname": _socket.gethostname(),
+            "git_hash": git_hash,
+            "jax_version": jax_ver,
+            "test_problem": cfg.test_problem,
+            "Nx": cfg.Nx, "Ny": cfg.Ny, "Nz": cfg.Nz,
+            "Lx": cfg.Lx, "Ly": cfg.Ly, "Lz": cfg.Lz,
+            "gamma": cfg.gamma, "CFL": cfg.CFL,
+            "t_start": float(t_start), "t_end": float(cfg.t_end),
+            "riemann_solver": getattr(cfg, "riemann_solver", "hllc"),
+            "snapshots": [],
+        }
+        if not (cfg.restart and os.path.exists(manifest_path)):
+            with open(manifest_path, "w") as fh:
+                _json.dump(manifest, fh, indent=2)
+
     # Checkpoint timing (wall-clock based)
     last_checkpoint_time = None
 
@@ -143,9 +188,9 @@ def run_simulation_distributed(
 
     # === TIME LOOP ===
     if is_main_process:
-        print("="*60)
+        print("=" * 60)
         print("SIMULATION START")
-        print("="*60)
+        print("=" * 60)
         print(f"Time range: {t_start:.3f} → {cfg.t_end:.3f}")
         if cfg.SPATIAL_DIMENSION == 3:
             print(f"Global grid: {cfg.Nx} x {cfg.Ny} x {cfg.Nz}")
@@ -184,8 +229,7 @@ def run_simulation_distributed(
         U_new = step_fn(U_in, dt)
         new_a, new_key = forcing_a, forcing_key
         if forcing_state is not None:
-            U_new, new_a, new_key = forcing_state["apply"](
-                U_new, forcing_a, forcing_key, dt)
+            U_new, new_a, new_key = forcing_state["apply"](U_new, forcing_a, forcing_key, dt)
         if cfg.isothermal_cs2 > 0.0:
             U_new = _isothermal_project(U_new, cfg.isothermal_cs2, cfg.gamma)
         if ext_grav_state is not None:
@@ -194,22 +238,23 @@ def run_simulation_distributed(
             U_new = cc85_state["apply"](U_new, dt)
         if cooling_solver is not None:
             from hydro.cooling import apply_cooling
+
             U_new = apply_cooling(U_new, dt, cfg, cooling_solver)
         return U_new, new_a, new_key
 
-    MAX_HALVINGS = 8           # retry up to 256× smaller dt before giving up
+    MAX_HALVINGS = 8  # retry up to 256× smaller dt before giving up
 
     while t < cfg.t_end:
-        t_snapshot_local = (snapshot_times[snapshot_idx]
-                            if snapshot_idx < num_snapshots
-                            else float('inf'))
+        t_snapshot_local = (
+            snapshot_times[snapshot_idx] if snapshot_idx < num_snapshots else float("inf")
+        )
 
         dt_cfl = float(compute_dt_fn(U_sharded))
         target = min(cfg.t_end, t_snapshot_local)
         remaining = target - t
         if dt_cfl >= remaining:
             dt = remaining
-            new_t = target          # snap exactly, avoid float roundoff
+            new_t = target  # snap exactly, avoid float roundoff
         else:
             dt = dt_cfl
             new_t = t + dt
@@ -227,10 +272,9 @@ def run_simulation_distributed(
         halvings = 0
         success = False
         while True:
-            U_try, fa_try, fk_try = _attempt_step(
-                U_pre, dt_try, forcing_a_pre, forcing_key_pre)
+            U_try, fa_try, fk_try = _attempt_step(U_pre, dt_try, forcing_a_pre, forcing_key_pre)
             dt_check = float(compute_dt_fn(U_try))
-            healthy = (dt_check > 0.0) and (dt_check < float('inf'))
+            healthy = (dt_check > 0.0) and (dt_check < float("inf"))
             if healthy:
                 success = True
                 break
@@ -239,19 +283,22 @@ def run_simulation_distributed(
             halvings += 1
             dt_try *= 0.5
             if is_main_process:
-                print(f"⚠ NaN/non-finite at step {step+1}, t={t:.6e}; "
-                      f"retry #{halvings} with dt={dt_try:.3e}")
+                print(
+                    f"⚠ NaN/non-finite at step {step+1}, t={t:.6e}; "
+                    f"retry #{halvings} with dt={dt_try:.3e}"
+                )
 
         if not success:
             if is_main_process:
                 print(f"\n{'!'*60}")
-                print(f"!!! NaN PERSISTS after {MAX_HALVINGS} halvings at step "
-                      f"{step+1}, t={t:.6e}, dt={dt_try:.3e} !!!")
+                print(
+                    f"!!! NaN PERSISTS after {MAX_HALVINGS} halvings at step "
+                    f"{step+1}, t={t:.6e}, dt={dt_try:.3e} !!!"
+                )
                 print(f"{'!'*60}\n")
             if cfg.enable_checkpointing:
                 try:
-                    write_checkpoint_distributed(
-                        U_pre, cfg, t, step, cfg.checkpoint_dir)
+                    write_checkpoint_distributed(U_pre, cfg, t, step, cfg.checkpoint_dir)
                     if is_main_process:
                         print(f"💾 Emergency checkpoint written to {cfg.checkpoint_dir}")
                 except Exception as e:
@@ -278,17 +325,31 @@ def run_simulation_distributed(
         # === Periodic diagnostics + history line ===
         # One GPU reduction every diag_interval steps. ~negligible cost.
         if cfg.enable_diagnostics and step % cfg.diag_interval == 0:
-            (min_rho, min_P, max_speed, max_mach,
-             sum_rho, sum_E) = _diag_reductions(U_sharded, cfg.gamma)
-            mr = float(min_rho); mp = float(min_P)
-            ms = float(max_speed); mM = float(max_mach)
-            sr = float(sum_rho); sE = float(sum_E)
+            min_rho, min_P, max_speed, max_mach, sum_rho, sum_E = _diag_reductions(
+                U_sharded, cfg.gamma
+            )
+            mr = float(min_rho)
+            mp = float(min_P)
+            ms = float(max_speed)
+            mM = float(max_mach)
+            sr = float(sum_rho)
+            sE = float(sum_E)
             if is_main_process:
-                print(f"📊 step={step:>7}  t={t:.5e}  min_rho={mr:.3e}  "
-                      f"min_P={mp:.3e}  max_|v|={ms:.3e}  max_M={mM:.3e}")
+                # ETA from elapsed wall time and simulation-time fraction.
+                wall_elapsed = pytime.time() - start_time
+                frac = (t - t_start) / max(cfg.t_end - t_start, 1e-30)
+                eta_s = wall_elapsed * (1.0 - frac) / max(frac, 1e-30)
+                eta_h = eta_s / 3600.0
+                eta_str = f"ETA={eta_h:.1f}h" if eta_h > 1.0 else f"ETA={eta_s/60.0:.1f}m"
+                print(
+                    f"📊 step={step:>7}  t={t:.5e}  min_rho={mr:.3e}  "
+                    f"min_P={mp:.3e}  max_|v|={ms:.3e}  max_M={mM:.3e}  {eta_str}"
+                )
                 with open(hist_path, "a") as fh:
-                    fh.write(f"{step},{t:.9e},{dt:.9e},{mr:.9e},{mp:.9e},"
-                             f"{ms:.9e},{mM:.9e},{sr:.9e},{sE:.9e}\n")
+                    fh.write(
+                        f"{step},{t:.9e},{dt:.9e},{mr:.9e},{mp:.9e},"
+                        f"{ms:.9e},{mM:.9e},{sr:.9e},{sE:.9e}\n"
+                    )
 
         # Validation and progress (only on process 0)
         if is_main_process:
@@ -301,7 +362,9 @@ def run_simulation_distributed(
                 per_device_mem, total_mem = get_memory_usage()
                 if total_mem is not None and len(per_device_mem) > 1:
                     per_dev_str = "/".join([f"{m:.2f}" for m in per_device_mem])
-                    mem_str = f", mem = {total_mem:.2f} GB ({len(per_device_mem)} GPUs: {per_dev_str})"
+                    mem_str = (
+                        f", mem = {total_mem:.2f} GB ({len(per_device_mem)} GPUs: {per_dev_str})"
+                    )
                 elif total_mem is not None:
                     mem_str = f", mem = {total_mem:.2f} GB"
                 else:
@@ -314,7 +377,9 @@ def run_simulation_distributed(
                     cell_updates = total_cells * steps_since_last
                     cells_per_sec = cell_updates / elapsed_since_last
                     mcells_per_sec = cells_per_sec / 1e6
-                    print(f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}, perf = {mcells_per_sec:.2f} Mcells/s{mem_str}")
+                    print(
+                        f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}, perf = {mcells_per_sec:.2f} Mcells/s{mem_str}"
+                    )
                 last_perf_time = current_time
 
         # Save snapshot (all processes participate)
@@ -339,22 +404,38 @@ def run_simulation_distributed(
             # Overhead is minimal compared to the file I/O itself
             multihost_utils.sync_global_devices("snapshot_write")
 
+            # Append snapshot record to manifest.
+            if is_main_process:
+                try:
+                    with open(manifest_path, "r") as fh:
+                        man = _json.load(fh)
+                    man["snapshots"].append({
+                        "idx": int(snapshot_idx),
+                        "t": float(t),
+                        "step": int(step),
+                        "wall_time_s": float(pytime.time() - start_time),
+                    })
+                    with open(manifest_path, "w") as fh:
+                        _json.dump(man, fh, indent=2)
+                except Exception as e:
+                    print(f"(manifest update failed: {e})")
+
             # Update snapshot index
             snapshot_idx += 1
 
             if is_main_process:
-                print(f"✓ All shards saved successfully\n")
+                print("✓ All shards saved successfully\n")
 
-        # Checkpoint (distributed - each process writes its own shard)
+        # Checkpoint (distributed - each process writes its own shard).
+        # Initialize last_checkpoint_time to the start_time on first iteration
+        # so the first wall-time interval has to elapse before a checkpoint
+        # is taken (avoids writing one on step 1).
         if cfg.enable_checkpointing and cfg.checkpoint_wall_time_interval > 0:
-            # All processes independently check wall time (they're synchronized by simulation)
             current_wall_time = pytime.time()
-            should_checkpoint = False
             if last_checkpoint_time is None:
-                should_checkpoint = (step > step_start)
-            else:
-                elapsed_wall_time = current_wall_time - last_checkpoint_time
-                should_checkpoint = (elapsed_wall_time >= cfg.checkpoint_wall_time_interval)
+                last_checkpoint_time = start_time
+            elapsed_wall_time = current_wall_time - last_checkpoint_time
+            should_checkpoint = elapsed_wall_time >= cfg.checkpoint_wall_time_interval
 
             if should_checkpoint:
                 if is_main_process:
@@ -363,7 +444,7 @@ def run_simulation_distributed(
                         elapsed = pytime.time() - last_checkpoint_time
                         print(f"💾 Writing checkpoint (wall-time elapsed: {elapsed:.1f}s)")
                     else:
-                        print(f"💾 Writing first checkpoint")
+                        print("💾 Writing first checkpoint")
                     print(f"   Simulation: t = {t:.5f}, step = {step}")
                     print(f"{'─'*60}")
 
@@ -378,7 +459,7 @@ def run_simulation_distributed(
                 # Cleanup old checkpoints (only process 0 needs to do this)
                 if is_main_process:
                     manage_checkpoints(cfg.checkpoint_dir, cfg.max_checkpoints)
-                    print(f"✓ All checkpoint shards saved successfully\n")
+                    print("✓ All checkpoint shards saved successfully\n")
 
                 # Update checkpoint time
                 last_checkpoint_time = pytime.time()

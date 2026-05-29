@@ -1,6 +1,7 @@
 import h5py
 import jax.numpy as jnp
 
+
 def read_checkpoint(checkpoint_filename):
     """
     Read a checkpoint file and return the complete simulation state for restart.

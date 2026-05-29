@@ -1,6 +1,7 @@
 import os
 import glob
 
+
 def manage_checkpoints(checkpoint_dir, max_checkpoints):
     """
     Delete old checkpoints to keep only the most recent max_checkpoints files.
@@ -59,7 +60,11 @@ def validate_checkpoint_compatibility(checkpoint_data, cfg):
         )
 
     # Check domain size
-    if abs(grid["Lx"] - cfg.Lx) > 1e-10 or abs(grid["Ly"] - cfg.Ly) > 1e-10 or abs(grid["Lz"] - cfg.Lz) > 1e-10:
+    if (
+        abs(grid["Lx"] - cfg.Lx) > 1e-10
+        or abs(grid["Ly"] - cfg.Ly) > 1e-10
+        or abs(grid["Lz"] - cfg.Lz) > 1e-10
+    ):
         raise ValueError(
             f"Domain size mismatch: checkpoint has ({grid['Lx']}, {grid['Ly']}, {grid['Lz']}), "
             f"config has ({cfg.Lx}, {cfg.Ly}, {cfg.Lz})"

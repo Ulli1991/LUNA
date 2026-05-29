@@ -27,17 +27,18 @@ Configuration knobs read off cfg:
     cfg.solar_pert_amp (default 0.0)   small random entropy seed
     cfg.solar_pert_seed (default 11)
 """
+
 import jax.numpy as jnp
 import numpy as np
 
 
 def _polytropic_profile(cfg):
-    rho0  = getattr(cfg, "solar_rho0",  1.0)
-    p0    = getattr(cfg, "solar_p0",    1.0)
+    rho0 = getattr(cfg, "solar_rho0", 1.0)
+    p0 = getattr(cfg, "solar_p0", 1.0)
     Gamma = getattr(cfg, "solar_Gamma", 0.0)
     if Gamma == 0.0:
         Gamma = cfg.gamma
-    g     = -cfg.gravity_z                              # downward magnitude (>0)
+    g = -cfg.gravity_z  # downward magnitude (>0)
     if g <= 0:
         raise ValueError("solar_convection_3d expects cfg.gravity_z < 0 (downward).")
     H = Gamma * p0 / ((Gamma - 1.0) * rho0 * g)
@@ -50,15 +51,15 @@ def _equilibrium_arrays(cfg, z_slice):
     Nz = cfg.Nz
     Lz = cfg.Lz
     dz = Lz / Nz
-    z_start, z_end = (z_slice if z_slice is not None else (0, Nz))
-    z_local = (jnp.arange(z_start, z_end) + 0.5) * dz       # cell-centered
+    z_start, z_end = z_slice if z_slice is not None else (0, Nz)
+    z_local = (jnp.arange(z_start, z_end) + 0.5) * dz  # cell-centered
 
-    base = 1.0 - z_local / H                                 # (Nz_local,)
+    base = 1.0 - z_local / H  # (Nz_local,)
     # Guard against negative base if box too tall — clip to a small positive.
     base = jnp.maximum(base, 1e-8)
     rho_eq = rho0 * base ** (1.0 / (Gamma - 1.0))
-    p_eq   = p0   * base ** (Gamma / (Gamma - 1.0))
-    return rho_eq, p_eq                                       # (Nz_local,)
+    p_eq = p0 * base ** (Gamma / (Gamma - 1.0))
+    return rho_eq, p_eq  # (Nz_local,)
 
 
 def solar_convection_3d_equilibrium(cfg, x_slice=None, y_slice=None, z_slice=None):
@@ -68,18 +69,18 @@ def solar_convection_3d_equilibrium(cfg, x_slice=None, y_slice=None, z_slice=Non
     integrator path.
     """
     Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
-    x_start, x_end = (x_slice if x_slice is not None else (0, Nx))
-    y_start, y_end = (y_slice if y_slice is not None else (0, Ny))
+    x_start, x_end = x_slice if x_slice is not None else (0, Nx)
+    y_start, y_end = y_slice if y_slice is not None else (0, Ny)
     nx_l = x_end - x_start
     ny_l = y_end - y_start
 
-    rho_z, p_z = _equilibrium_arrays(cfg, z_slice)            # (Nz_local,)
+    rho_z, p_z = _equilibrium_arrays(cfg, z_slice)  # (Nz_local,)
     nz_l = rho_z.shape[0]
 
     rho = jnp.broadcast_to(rho_z[None, None, :], (nx_l, ny_l, nz_l)).copy()
-    p   = jnp.broadcast_to(p_z[None, None, :],   (nx_l, ny_l, nz_l)).copy()
+    p = jnp.broadcast_to(p_z[None, None, :], (nx_l, ny_l, nz_l)).copy()
     zeros = jnp.zeros_like(rho)
-    E = p / (cfg.gamma - 1.0)                                 # KE=0
+    E = p / (cfg.gamma - 1.0)  # KE=0
     return jnp.stack([rho, zeros, zeros, zeros, E], axis=0)
 
 
@@ -99,6 +100,6 @@ def solar_convection_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     rng = np.random.default_rng(seed)
     noise = rng.standard_normal(shape).astype(np.float32)
     # Scale by amplitude and equilibrium internal energy at each cell.
-    e_int_eq = U_eq[4] / U_eq[0] - 0.5 * 0.0                   # = p_eq / ((gamma-1)*rho_eq)
-    dE = amp * jnp.asarray(noise) * (U_eq[4])                  # ~amp * E_eq
+    e_int_eq = U_eq[4] / U_eq[0] - 0.5 * 0.0  # = p_eq / ((gamma-1)*rho_eq)
+    dE = amp * jnp.asarray(noise) * (U_eq[4])  # ~amp * E_eq
     return U_eq.at[4].add(dE)

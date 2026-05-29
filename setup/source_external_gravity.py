@@ -8,6 +8,7 @@ slice and assembles via make_array_from_single_device_arrays). The JIT'd
 update function receives (gx, gy, gz) as ARGUMENTS, not closures, so XLA
 does not try to inline the sharded multi-process arrays as MLIR constants.
 """
+
 import jax
 import jax.numpy as jnp
 import numpy as _np
@@ -30,33 +31,47 @@ def setup_external_gravity(cfg, sharding, is_main_process: bool = True):
 
     if jax.process_count() > 1:
         from utils.distributed import compute_local_slice
-        xs, ys, zs = compute_local_slice(
-            cfg.Nx, cfg.Ny, sharding.mesh, jax.process_index(), cfg.Nz)
+
+        xs, ys, zs = compute_local_slice(cfg.Nx, cfg.Ny, sharding.mesh, jax.process_index(), cfg.Nz)
         x_loc = (_np.arange(xs[0], xs[1], dtype=_np.float32) + 0.5) * dx - cx
         y_loc = (_np.arange(ys[0], ys[1], dtype=_np.float32) + 0.5) * dy - cy
         z_loc = (_np.arange(zs[0], zs[1], dtype=_np.float32) + 0.5) * dz - cz
         Xl, Yl, Zl = _np.meshgrid(x_loc, y_loc, z_loc, indexing="ij")
         gx_loc, gy_loc, gz_loc = combined_acceleration(
-            Xl, Yl, Zl,
-            cfg.m82_stellar_MN_M, cfg.m82_stellar_MN_a_kpc,
+            Xl,
+            Yl,
+            Zl,
+            cfg.m82_stellar_MN_M,
+            cfg.m82_stellar_MN_a_kpc,
             cfg.m82_stellar_MN_b_kpc,
-            cfg.m82_halo_NFW_M_vir, cfg.m82_halo_NFW_c,
+            cfg.m82_halo_NFW_M_vir,
+            cfg.m82_halo_NFW_c,
         )
         local_dev = jax.local_devices()[0]
+
         def _assemble(local_arr):
             d = jax.device_put(_np.asarray(local_arr), local_dev)
             return jax.make_array_from_single_device_arrays(
-                shape=global_shape, sharding=coord_sharding, arrays=[d])
-        gx = _assemble(gx_loc); gy = _assemble(gy_loc); gz = _assemble(gz_loc)
+                shape=global_shape, sharding=coord_sharding, arrays=[d]
+            )
+
+        gx = _assemble(gx_loc)
+        gy = _assemble(gy_loc)
+        gz = _assemble(gz_loc)
     else:
         x_full = (jnp.arange(cfg.Nx, dtype=jnp.float32) + 0.5) * dx - cx
         y_full = (jnp.arange(cfg.Ny, dtype=jnp.float32) + 0.5) * dy - cy
         z_full = (jnp.arange(cfg.Nz, dtype=jnp.float32) + 0.5) * dz - cz
         X, Y, Z = jnp.meshgrid(x_full, y_full, z_full, indexing="ij")
         gx, gy, gz = combined_acceleration(
-            X, Y, Z,
-            cfg.m82_stellar_MN_M, cfg.m82_stellar_MN_a_kpc, cfg.m82_stellar_MN_b_kpc,
-            cfg.m82_halo_NFW_M_vir, cfg.m82_halo_NFW_c,
+            X,
+            Y,
+            Z,
+            cfg.m82_stellar_MN_M,
+            cfg.m82_stellar_MN_a_kpc,
+            cfg.m82_stellar_MN_b_kpc,
+            cfg.m82_halo_NFW_M_vir,
+            cfg.m82_halo_NFW_c,
         )
         coord_spec = PartitionSpec(*sharding.spec[1:])
         coord_sharding = NamedSharding(sharding.mesh, coord_spec)
@@ -85,9 +100,11 @@ def setup_external_gravity(cfg, sharding, is_main_process: bool = True):
         return _apply_inner(U, dt, gx, gy, gz)
 
     if is_main_process:
-        print(f"✓ External M82 gravity: "
-              f"MN(M={cfg.m82_stellar_MN_M}, a={cfg.m82_stellar_MN_a_kpc}, "
-              f"b={cfg.m82_stellar_MN_b_kpc}) + "
-              f"NFW(M200={cfg.m82_halo_NFW_M_vir}, c={cfg.m82_halo_NFW_c})")
+        print(
+            f"✓ External M82 gravity: "
+            f"MN(M={cfg.m82_stellar_MN_M}, a={cfg.m82_stellar_MN_a_kpc}, "
+            f"b={cfg.m82_stellar_MN_b_kpc}) + "
+            f"NFW(M200={cfg.m82_halo_NFW_M_vir}, c={cfg.m82_halo_NFW_c})"
+        )
 
     return {"apply": _apply}

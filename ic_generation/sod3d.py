@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 
+
 def sod_shock_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     """
     Sod shock tube test problem in 3D.
@@ -51,7 +52,7 @@ def sod_shock_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
 
     # Only print on main process (when generating full array, not slices)
     if x_slice is None and y_slice is None and z_slice is None:
-        print(f"3D Sod Shock Tube Configuration:")
+        print("3D Sod Shock Tube Configuration:")
         print(f"  X-direction: Nx={Nx}, Lx={Lx:.6f}, dx={dx:.6f}")
         print(f"  Y-direction: Ny={Ny}, Ly={Ly:.6f}, dy={Ly/Ny:.6f}")
         print(f"  Z-direction: Nz={Nz}, Lz={Lz:.6f}, dz={Lz/Nz:.6f}")
@@ -88,30 +89,30 @@ def sod_shock_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     z_local = z_full[z_start:z_end]
 
     # Create meshgrid
-    X, Y, Z = jnp.meshgrid(x_local, y_local, z_local, indexing='ij')
+    X, Y, Z = jnp.meshgrid(x_local, y_local, z_local, indexing="ij")
 
     # Interface at center
     x0 = 0.5 * Lx
 
     # Left and right states (same as 1D Sod)
     rho_L, rho_R = 1.0, 0.125
-    p_L,   p_R   = 1.0, 0.1
-    vx_L,  vx_R  = 0.0, 0.0
-    vy_L,  vy_R  = 0.0, 0.0
-    vz_L,  vz_R  = 0.0, 0.0
+    p_L, p_R = 1.0, 0.1
+    vx_L, vx_R = 0.0, 0.0
+    vy_L, vy_R = 0.0, 0.0
+    vz_L, vz_R = 0.0, 0.0
 
     # Condition based on x-coordinate
     left = X < x0
 
     rho = jnp.where(left, rho_L, rho_R)
-    vx  = jnp.where(left, vx_L,  vx_R)
-    vy  = jnp.where(left, vy_L,  vy_R)
-    vz  = jnp.where(left, vz_L,  vz_R)
-    p   = jnp.where(left, p_L,   p_R)
+    vx = jnp.where(left, vx_L, vx_R)
+    vy = jnp.where(left, vy_L, vy_R)
+    vz = jnp.where(left, vz_L, vz_R)
+    p = jnp.where(left, p_L, p_R)
 
     # Total energy
     E = p / (gamma - 1.0) + 0.5 * rho * (vx**2 + vy**2 + vz**2)
 
     # Conservative vars [rho, rho*vx, rho*vy, rho*vz, E]
-    U = jnp.stack([rho, rho*vx, rho*vy, rho*vz, E], axis=0)
+    U = jnp.stack([rho, rho * vx, rho * vy, rho * vz, E], axis=0)
     return U

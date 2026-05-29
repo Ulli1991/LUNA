@@ -34,8 +34,11 @@ def load_sharded_snapshot(output_dir, base_pattern, snapshot_idx):
     # Find all shards for this snapshot
     pattern = f"{base_pattern}_{snapshot_idx:03d}.*.hdf5"
     shard_files = sorted(
-        [f for f in os.listdir(search_dir)
-         if re.match(f"{base_pattern}_{snapshot_idx:03d}\\.\\d+\\.hdf5", f)]
+        [
+            f
+            for f in os.listdir(search_dir)
+            if re.match(f"{base_pattern}_{snapshot_idx:03d}\\.\\d+\\.hdf5", f)
+        ]
     )
 
     if not shard_files:
@@ -142,7 +145,9 @@ def plot_density2d(output_dir, base_name, process_id=0, num_processes=1):
                 snapshot_indices.add(int(match.group(1)))
 
     # Also check for non-distributed snapshots in main directory
-    all_files = [f for f in os.listdir(output_dir) if f.startswith(base_name) and f.endswith(".hdf5")]
+    all_files = [
+        f for f in os.listdir(output_dir) if f.startswith(base_name) and f.endswith(".hdf5")
+    ]
     for fname in all_files:
         # Match snap_XXX.hdf5 or snap_XXX.Y.hdf5
         match = re.match(f"{base_name}_(\\d+)(?:\\.\\d+)?\\.hdf5", fname)
@@ -156,7 +161,9 @@ def plot_density2d(output_dir, base_name, process_id=0, num_processes=1):
     snapshot_indices = sorted(snapshot_indices)
 
     # Filter snapshots for this process (for parallel plotting)
-    my_snapshot_indices = [idx for i, idx in enumerate(snapshot_indices) if i % num_processes == process_id]
+    my_snapshot_indices = [
+        idx for i, idx in enumerate(snapshot_indices) if i % num_processes == process_id
+    ]
 
     if not my_snapshot_indices:
         if process_id == 0:
@@ -164,8 +171,8 @@ def plot_density2d(output_dir, base_name, process_id=0, num_processes=1):
         return
 
     # Initialize min/max density values
-    min_density = float('inf')
-    max_density = float('-inf')
+    min_density = float("inf")
+    max_density = float("-inf")
 
     png_dir = os.path.join(output_dir, "png")
     # Only create directory from process 0 to avoid race condition
@@ -200,12 +207,20 @@ def plot_density2d(output_dir, base_name, process_id=0, num_processes=1):
             cmap="magma",
             vmin=min_density,  # Dynamically set min/max density from the last snapshot
             vmax=max_density,
-            interpolation='nearest',
+            interpolation="nearest",
         )
 
         # Add time text inside frame
-        ax.text(0.02, 0.95, f"t={t:.3f}", color="white", transform=ax.transAxes,
-                fontsize=12, ha="left", va="top")
+        ax.text(
+            0.02,
+            0.95,
+            f"t={t:.3f}",
+            color="white",
+            transform=ax.transAxes,
+            fontsize=12,
+            ha="left",
+            va="top",
+        )
 
         # Ticks inside, all four sides
         ax.tick_params(direction="in", top=True, right=True)
@@ -222,5 +237,3 @@ def plot_density2d(output_dir, base_name, process_id=0, num_processes=1):
             print(f"Process {process_id}: Saved density plot for snapshot {snap_idx:03d}")
         else:
             print(f"Saved density plot for snapshot {snap_idx:03d}")
-
-

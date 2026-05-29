@@ -17,12 +17,11 @@ in the sonic / supersonic limit (standard HLLC, full upwinding).
 Same input/output signature as hydro.fluxes.hllc_flux_primitive so the
 modular integrator can swap solvers via cfg.riemann_solver.
 """
-import jax
+
 import jax.numpy as jnp
 
 
-def _lhllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R,
-                vt1_L, vt1_R, vt2_L, vt2_R, gamma):
+def _lhllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R, vt1_L, vt1_R, vt2_L, vt2_R, gamma):
     """Compute L-HLLC numerical flux for one face direction.
 
     All inputs are JAX arrays of identical shape (the face grid).
@@ -72,36 +71,40 @@ def _lhllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R,
     # Star-state conservative variables (tangential vt preserved across contact)
     U_L = jnp.stack([rho_L, rho_L * vn_L, rho_L * vt1_L, rho_L * vt2_L, E_L])
     U_R = jnp.stack([rho_R, rho_R * vn_R, rho_R * vt1_R, rho_R * vt2_R, E_R])
-    U_star_L = jnp.stack([rho_star_L,
-                          rho_star_L * S_M,
-                          rho_star_L * vt1_L,
-                          rho_star_L * vt2_L,
-                          E_star_L])
-    U_star_R = jnp.stack([rho_star_R,
-                          rho_star_R * S_M,
-                          rho_star_R * vt1_R,
-                          rho_star_R * vt2_R,
-                          E_star_R])
+    U_star_L = jnp.stack(
+        [rho_star_L, rho_star_L * S_M, rho_star_L * vt1_L, rho_star_L * vt2_L, E_star_L]
+    )
+    U_star_R = jnp.stack(
+        [rho_star_R, rho_star_R * S_M, rho_star_R * vt1_R, rho_star_R * vt2_R, E_star_R]
+    )
 
     # Physical fluxes on the two sides
-    F_L = jnp.stack([rho_L * vn_L,
-                     rho_L * vn_L * vn_L + P_L,
-                     rho_L * vn_L * vt1_L,
-                     rho_L * vn_L * vt2_L,
-                     (E_L + P_L) * vn_L])
-    F_R = jnp.stack([rho_R * vn_R,
-                     rho_R * vn_R * vn_R + P_R,
-                     rho_R * vn_R * vt1_R,
-                     rho_R * vn_R * vt2_R,
-                     (E_R + P_R) * vn_R])
+    F_L = jnp.stack(
+        [
+            rho_L * vn_L,
+            rho_L * vn_L * vn_L + P_L,
+            rho_L * vn_L * vt1_L,
+            rho_L * vn_L * vt2_L,
+            (E_L + P_L) * vn_L,
+        ]
+    )
+    F_R = jnp.stack(
+        [
+            rho_R * vn_R,
+            rho_R * vn_R * vn_R + P_R,
+            rho_R * vn_R * vt1_R,
+            rho_R * vn_R * vt2_R,
+            (E_R + P_R) * vn_R,
+        ]
+    )
 
     # HLLC flux selection on wave-speed signs
     F_star_L = F_L + S_L * (U_star_L - U_L)
     F_star_R = F_R + S_R * (U_star_R - U_R)
-    F = jnp.where(S_L >= 0.0, F_L,
-        jnp.where(S_M >= 0.0, F_star_L,
-        jnp.where(S_R >= 0.0, F_star_R, F_R)))
-    return F   # shape (5, *face_shape)
+    F = jnp.where(
+        S_L >= 0.0, F_L, jnp.where(S_M >= 0.0, F_star_L, jnp.where(S_R >= 0.0, F_star_R, F_R))
+    )
+    return F  # shape (5, *face_shape)
 
 
 def lhllc_flux_primitive_1d(W_L, W_R, axis, gamma):
@@ -109,8 +112,7 @@ def lhllc_flux_primitive_1d(W_L, W_R, axis, gamma):
     rho_L, vx_L, P_L = W_L
     rho_R, vx_R, P_R = W_R
     zeros = jnp.zeros_like(rho_L)
-    F = _lhllc_core(rho_L, rho_R, vx_L, vx_R, P_L, P_R,
-                    zeros, zeros, zeros, zeros, gamma)
+    F = _lhllc_core(rho_L, rho_R, vx_L, vx_R, P_L, P_R, zeros, zeros, zeros, zeros, gamma)
     return jnp.stack([F[0], F[1], F[4]])
 
 
@@ -125,8 +127,7 @@ def lhllc_flux_primitive_2d(W_L, W_R, axis, gamma):
     else:
         vn_L, vt_L = vy_L, vx_L
         vn_R, vt_R = vy_R, vx_R
-    F = _lhllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R,
-                    vt_L, vt_R, zeros, zeros, gamma)
+    F = _lhllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R, vt_L, vt_R, zeros, zeros, gamma)
     # Unpack: F[0]=mass, F[1]=normal momentum, F[2]=vt mom, F[4]=energy
     if axis == 0:
         return jnp.stack([F[0], F[1], F[2], F[4]])
@@ -147,8 +148,7 @@ def lhllc_flux_primitive_3d(W_L, W_R, axis, gamma):
     else:
         vn_L, vt1_L, vt2_L = vz_L, vx_L, vy_L
         vn_R, vt1_R, vt2_R = vz_R, vx_R, vy_R
-    F = _lhllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R,
-                    vt1_L, vt1_R, vt2_L, vt2_R, gamma)
+    F = _lhllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R, vt1_L, vt1_R, vt2_L, vt2_R, gamma)
     # Reorder back to (rho, mvx, mvy, mvz, E)
     if axis == 0:
         return jnp.stack([F[0], F[1], F[2], F[3], F[4]])

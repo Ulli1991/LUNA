@@ -1,7 +1,6 @@
 import jax.numpy as jnp
 from jax import lax
-import jax
-from functools import partial
+
 
 def pad(U, boundary):
     """
@@ -43,7 +42,7 @@ def pad(U, boundary):
         elif ndim == 3:
             pad_width = ((0, 0), (1, 1), (1, 1), (1, 1))
 
-        return jnp.pad(U, pad_width, mode='wrap')
+        return jnp.pad(U, pad_width, mode="wrap")
 
     def zero_grad(U):
         """
@@ -57,7 +56,7 @@ def pad(U, boundary):
         elif ndim == 3:
             pad_width = ((0, 0), (1, 1), (1, 1), (1, 1))
 
-        return jnp.pad(U, pad_width, mode='edge')
+        return jnp.pad(U, pad_width, mode="edge")
 
     def reflective(U):
         """
@@ -138,7 +137,7 @@ def pad(U, boundary):
     # Fixed JAX-boolean tests
     # -------------------------
 
-    is_periodic  = jnp.array(boundary == 0)
+    is_periodic = jnp.array(boundary == 0)
     is_zero_grad = jnp.array(boundary == 1)
 
     # -------------------------
@@ -148,8 +147,5 @@ def pad(U, boundary):
     # Use lax.cond to select the boundary condition
     # Note: boundary=3 (no-pad) is handled above with Python if/else
     return lax.cond(
-        is_periodic,
-        periodic,
-        lambda U: lax.cond(is_zero_grad, zero_grad, reflective, U),
-        U
+        is_periodic, periodic, lambda U: lax.cond(is_zero_grad, zero_grad, reflective, U), U
     )

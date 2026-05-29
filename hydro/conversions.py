@@ -10,9 +10,10 @@ Primitive: W = [rho, vx, vy, P]  (2D)
 where E = total energy density, P = pressure
 """
 
+from functools import partial
+
 import jax.numpy as jnp
 from jax import jit
-from functools import partial
 
 
 @partial(jit, static_argnums=(1,))
@@ -56,7 +57,7 @@ def cons_to_prim(U, gamma):
         vx = U[1] * inv_rho
         vy = U[2] * inv_rho
         E = U[3]
-        ke = 0.5 * rho * (vx*vx + vy*vy)
+        ke = 0.5 * rho * (vx * vx + vy * vy)
         P = gm1 * (E - ke)
         return jnp.stack([rho, vx, vy, P])
 
@@ -65,7 +66,7 @@ def cons_to_prim(U, gamma):
         vy = U[2] * inv_rho
         vz = U[3] * inv_rho
         E = U[4]
-        ke = 0.5 * rho * (vx*vx + vy*vy + vz*vz)
+        ke = 0.5 * rho * (vx * vx + vy * vy + vz * vz)
         P = gm1 * (E - ke)
         return jnp.stack([rho, vx, vy, vz, P])
 
@@ -113,7 +114,7 @@ def prim_to_cons(W, gamma):
         P = W[3]
         rho_vx = rho * vx
         rho_vy = rho * vy
-        ke = 0.5 * rho * (vx*vx + vy*vy)
+        ke = 0.5 * rho * (vx * vx + vy * vy)
         E = P / gm1 + ke
         return jnp.stack([rho, rho_vx, rho_vy, E])
 
@@ -125,6 +126,6 @@ def prim_to_cons(W, gamma):
         rho_vx = rho * vx
         rho_vy = rho * vy
         rho_vz = rho * vz
-        ke = 0.5 * rho * (vx*vx + vy*vy + vz*vz)
+        ke = 0.5 * rho * (vx * vx + vy * vy + vz * vz)
         E = P / gm1 + ke
         return jnp.stack([rho, rho_vx, rho_vy, rho_vz, E])

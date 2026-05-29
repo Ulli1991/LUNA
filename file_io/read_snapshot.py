@@ -6,6 +6,7 @@ dict of stitched, globally-shaped numpy arrays plus metadata.
 
 Single-process snapshots (one .0.hdf5 file) just pass through.
 """
+
 import glob
 import os
 import h5py
@@ -45,17 +46,18 @@ def _stitch_field(shards, field, ndim):
         data = np.asarray(cells[field])
         x_start = int(cells.attrs["x_start"])
         if ndim == 1:
-            out[x_start:x_start + data.shape[0]] = data
+            out[x_start : x_start + data.shape[0]] = data
         elif ndim == 2:
             y_start = int(cells.attrs["y_start"])
-            out[x_start:x_start + data.shape[0],
-                y_start:y_start + data.shape[1]] = data
+            out[x_start : x_start + data.shape[0], y_start : y_start + data.shape[1]] = data
         else:
             y_start = int(cells.attrs["y_start"])
             z_start = int(cells.attrs["z_start"])
-            out[x_start:x_start + data.shape[0],
-                y_start:y_start + data.shape[1],
-                z_start:z_start + data.shape[2]] = data
+            out[
+                x_start : x_start + data.shape[0],
+                y_start : y_start + data.shape[1],
+                z_start : z_start + data.shape[2],
+            ] = data
     return out
 
 

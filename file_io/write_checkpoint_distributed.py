@@ -4,6 +4,7 @@ Distributed checkpoint writing for multi-process JAX simulations.
 Each process writes its own checkpoint shard to a separate file,
 avoiding expensive gather operations.
 """
+
 import os
 from typing import Optional
 import jax
@@ -20,7 +21,7 @@ def write_checkpoint_distributed(
     t: float,
     step: int,
     checkpoint_dir: str = "checkpoints",
-    mesh: Optional[Mesh] = None
+    mesh: Optional[Mesh] = None,
 ) -> Optional[str]:
     """
     Write distributed checkpoint - each process writes its own shard.
@@ -57,9 +58,11 @@ def write_checkpoint_distributed(
     process_id = jax.process_index()
     process_count = jax.process_count()
 
-    # Reconstruct mesh if not provided
+    # Reconstruct mesh if not provided. Single-process multi-GPU uses
+    # jax.device_count() (e.g., 4), multi-process uses process_count.
     if mesh is None:
-        mesh, _ = create_device_mesh(process_count, cfg.SPATIAL_DIMENSION)
+        n_devices = jax.device_count() if process_count == 1 else process_count
+        mesh, _ = create_device_mesh(n_devices, cfg.SPATIAL_DIMENSION)
 
     # Get local addressable shard for this process
     local_shards = U_sharded.addressable_shards
@@ -79,10 +82,7 @@ def write_checkpoint_distributed(
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Build checkpoint filename with process ID
-    checkpoint_filename = os.path.join(
-        checkpoint_dir,
-        f"checkpoint_{step:06d}.{process_id}.hdf5"
-    )
+    checkpoint_filename = os.path.join(checkpoint_dir, f"checkpoint_{step:06d}.{process_id}.hdf5")
 
     # Write checkpoint file (each process writes its own)
     with h5py.File(checkpoint_filename, "w") as f:
@@ -140,6 +140,8 @@ def write_checkpoint_distributed(
             units_grp.attrs["UnitVelocity_in_cm_per_s"] = cfg.units.UnitVelocity_in_cm_per_s
 
     # Print confirmation (each process prints its own)
-    print(f"Process {process_id}: Checkpoint shard saved to {os.path.basename(checkpoint_filename)}")
+    print(
+        f"Process {process_id}: Checkpoint shard saved to {os.path.basename(checkpoint_filename)}"
+    )
 
     return checkpoint_filename

@@ -34,7 +34,7 @@ def kelvin_helmholtz_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     cfg.Lz = Lz
 
     if x_slice is None and y_slice is None and z_slice is None:
-        print(f"3D Kelvin-Helmholtz Configuration:")
+        print("3D Kelvin-Helmholtz Configuration:")
         print(f"  X-Y plane: {Nx} x {Ny}, Lx={Lx}, Ly={Ly}")
         print(f"  Z-direction: Nz={Nz}, Lz={Lz:.6f} (auto, 16 cells, dz={dx:.6f})")
         print(f"  Total cells: {Nx*Ny*Nz:,}")
@@ -62,7 +62,7 @@ def kelvin_helmholtz_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     x_local = x_full[x_start:x_end]
     y_local = y_full[y_start:y_end]
     z_local = z_full[z_start:z_end]
-    X, Y, Z = jnp.meshgrid(x_local, y_local, z_local, indexing='ij')
+    X, Y, Z = jnp.meshgrid(x_local, y_local, z_local, indexing="ij")
 
     # KH parameters (same as 2D)
     U0 = 1.0
@@ -78,15 +78,19 @@ def kelvin_helmholtz_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     vx = -U0 * ((jnp.tanh((Y - Y1) / a) - jnp.tanh((Y - Y2) / a)) - 1.0)
 
     # y-perturbation: seed instability (same as 2D but with z-modulation)
-    vy = A * jnp.sin(2 * jnp.pi * X / Lx) * (
-        jnp.exp(-((Y - Y1)**2) / sigma**2) +
-        jnp.exp(-((Y - Y2)**2) / sigma**2)
+    vy = (
+        A
+        * jnp.sin(2 * jnp.pi * X / Lx)
+        * (jnp.exp(-((Y - Y1) ** 2) / sigma**2) + jnp.exp(-((Y - Y2) ** 2) / sigma**2))
     )
 
     # z-perturbation: seed 3D structure
-    vz = 0.5 * A * jnp.sin(2 * jnp.pi * X / Lx) * jnp.sin(2 * jnp.pi * Z / Lz) * (
-        jnp.exp(-((Y - Y1)**2) / sigma**2) +
-        jnp.exp(-((Y - Y2)**2) / sigma**2)
+    vz = (
+        0.5
+        * A
+        * jnp.sin(2 * jnp.pi * X / Lx)
+        * jnp.sin(2 * jnp.pi * Z / Lz)
+        * (jnp.exp(-((Y - Y1) ** 2) / sigma**2) + jnp.exp(-((Y - Y2) ** 2) / sigma**2))
     )
 
     # Uniform pressure

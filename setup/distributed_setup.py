@@ -7,28 +7,30 @@ This module handles:
 - Initial conditions or checkpoint restart with proper sharding
 - Solver creation for distributed execution
 """
+
 import os
 import sys
-from typing import Tuple, Callable
-import jax
-import jax.numpy as jnp
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
-from jax import Array
+from typing import Callable, Tuple
 
-from file_io.read_checkpoint import read_checkpoint, find_latest_checkpoint
+import jax
+from jax import Array
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
+
 from file_io.checkpoint_utils import validate_checkpoint_compatibility
+from file_io.read_checkpoint import find_latest_checkpoint, read_checkpoint
 from hydro.physics_checks import validate_state
 from ic_generation.ic import initial_conditions
-from utils.memory_utils import print_memory_usage
-from utils.grid_params import GridParams
-from utils.distributed import (
-    create_device_mesh,
-    shard_array_to_devices,
-    compute_local_slice,
-    create_sharded_array_from_local
-)
 from time_integration.integrators import create_muscl_hancock_modular_step
+from utils.distributed import (
+    compute_local_slice,
+    create_device_mesh,
+    create_sharded_array_from_local,
+    shard_array_to_devices,
+)
+from utils.grid_params import GridParams
 from utils.halo_exchange_auto import pad_with_halo_auto
+from utils.memory_utils import print_memory_usage
 
 
 def initialize_jax_distributed(enable_x64: bool = False):
@@ -44,20 +46,20 @@ def initialize_jax_distributed(enable_x64: bool = False):
         performance; flip to True for convergence tests where the
         perturbation amplitude is near the float32 round-off floor.
     """
-    print("="*60)
+    print("=" * 60)
     print("MULTI-NODE SHARDING MODE (1 GPU per process)")
-    print("="*60)
+    print("=" * 60)
 
     try:
         jax.distributed.initialize(
-            coordinator_address=os.environ.get('JAX_COORDINATOR_ADDRESS'),
-            num_processes=int(os.environ.get('SLURM_NTASKS', 1)),
-            process_id=int(os.environ.get('SLURM_PROCID', 0)),
+            coordinator_address=os.environ.get("JAX_COORDINATOR_ADDRESS"),
+            num_processes=int(os.environ.get("SLURM_NTASKS", 1)),
+            process_id=int(os.environ.get("SLURM_PROCID", 0)),
         )
-        print(f"✓ JAX distributed initialized")
+        print("✓ JAX distributed initialized")
         print(f"  Process: {jax.process_index()} / {jax.process_count()}")
     except (RuntimeError, ValueError) as e:
-        print(f"  Running in single-process mode (use SLURM/MPI for multi-node)")
+        print("  Running in single-process mode (use SLURM/MPI for multi-node)")
         print(f"  Error: {e}")
 
     # Configure JAX
@@ -94,24 +96,20 @@ def create_distributed_mesh(cfg) -> Tuple[Mesh, Tuple[int, ...]]:
         Process grid shape (e.g., (2, 4) for 2x4 decomposition)
     """
     # Cache process info
-    is_main_process = (jax.process_index() == 0)
+    is_main_process = jax.process_index() == 0
 
     n_devices = len(jax.devices())
     if n_devices < 1:
-        print(f"ERROR: No devices available!")
+        print("ERROR: No devices available!")
         sys.exit(1)
 
     if is_main_process:
-        print("="*60)
+        print("=" * 60)
         print(f"DOMAIN DECOMPOSITION ({n_devices} devices)")
-        print("="*60)
+        print("=" * 60)
 
     mesh, grid_shape = create_device_mesh(
-        n_devices,
-        cfg.SPATIAL_DIMENSION,
-        decomposition=cfg.DECOMPOSITION,
-        Nx=cfg.Nx,
-        Ny=cfg.Ny
+        n_devices, cfg.SPATIAL_DIMENSION, decomposition=cfg.DECOMPOSITION, Nx=cfg.Nx, Ny=cfg.Ny
     )
 
     if is_main_process:
@@ -145,17 +143,17 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
         Start step
     """
     # Cache process info
-    is_main_process = (jax.process_index() == 0)
+    is_main_process = jax.process_index() == 0
     process_id = jax.process_index()
 
     if is_main_process:
-        print("="*60)
+        print("=" * 60)
 
     if cfg.restart:
         # === RESTART FROM CHECKPOINT ===
         if is_main_process:
             print("RESTART FROM CHECKPOINT")
-            print("="*60)
+            print("=" * 60)
 
         # Find checkpoint file
         if cfg.restart_file is not None:
@@ -188,7 +186,7 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
         # === INITIAL CONDITIONS ===
         if is_main_process:
             print("INITIAL CONDITIONS")
-            print("="*60)
+            print("=" * 60)
 
         t_start = cfg.t_start
         step_start = 0
@@ -206,17 +204,14 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
                 )
             else:
                 x_slice, y_slice, z_slice = compute_local_slice(
-                    cfg.Nx, cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 1,
-                    mesh, process_id
+                    cfg.Nx, cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 1, mesh, process_id
                 )
 
             # Generate only the local portion via the unified IC dispatcher.
             # All IC functions are sharded-aware and accept the relevant slice
             # kwargs for their dimensionality; the dispatcher routes them.
             try:
-                U_local = initial_conditions(
-                    cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice
-                )
+                U_local = initial_conditions(cfg, x_slice=x_slice, y_slice=y_slice, z_slice=z_slice)
             except ValueError as e:
                 if is_main_process:
                     print(f"\n{'='*60}")
@@ -225,7 +220,7 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
                 sys.exit(1)
 
             if is_main_process:
-                print(f"Local shape per process: varies by decomposition")
+                print("Local shape per process: varies by decomposition")
 
             # Create sharded array from local pieces
             # FIX: Use proper number of variables based on spatial dimension
@@ -236,7 +231,9 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
             else:  # 3D
                 global_shape = (5, cfg.Nx, cfg.Ny, cfg.Nz)  # [rho, rho*ux, rho*uy, rho*uz, E]
 
-            U_sharded = create_sharded_array_from_local(U_local, global_shape, mesh, cfg.SPATIAL_DIMENSION)
+            U_sharded = create_sharded_array_from_local(
+                U_local, global_shape, mesh, cfg.SPATIAL_DIMENSION
+            )
 
             if is_main_process:
                 print("✓ Sharded array created from local pieces (no validation for large arrays)")
@@ -262,7 +259,7 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
 
     if is_main_process:
         print(f"✓ Array sharded across {len(jax.devices())} devices")
-        print(f"  Each process keeps only its local shard")
+        print("  Each process keeps only its local shard")
         print()
         print_memory_usage("After initialization: ")
         print()
@@ -270,7 +267,9 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
     return U_sharded, t_start, step_start
 
 
-def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callable, str, NamedSharding]:
+def create_solver_distributed(
+    cfg, grid: GridParams, mesh: Mesh
+) -> Tuple[Callable, str, NamedSharding]:
     """
     Create time stepping function with integrated dt computation for distributed execution.
 
@@ -294,20 +293,20 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
         Sharding specification for arrays
     """
     # Cache process info
-    is_main_process = (jax.process_index() == 0)
+    is_main_process = jax.process_index() == 0
 
     # Create NamedSharding for automatic sharding
     if cfg.SPATIAL_DIMENSION == 1:
-        sharding = NamedSharding(mesh, P(None, 'x'))
+        sharding = NamedSharding(mesh, P(None, "x"))
     elif cfg.SPATIAL_DIMENSION == 2:
-        sharding = NamedSharding(mesh, P(None, 'x', 'y'))
+        sharding = NamedSharding(mesh, P(None, "x", "y"))
     else:  # 3D
-        sharding = NamedSharding(mesh, P(None, 'x', 'y', 'z'))
+        sharding = NamedSharding(mesh, P(None, "x", "y", "z"))
 
     if is_main_process:
-        print(f"Using automatic sharding with NamedSharding")
+        print("Using automatic sharding with NamedSharding")
         print(f"Sharding spec: {sharding.spec}")
-        print(f"Halo exchange: jnp.roll (standard JAX approach)")
+        print("Halo exchange: jnp.roll (standard JAX approach)")
 
     # Use standard JAX halo exchange
     def pad_halo_fn(U, boundary, spatial_dim):
@@ -324,12 +323,13 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
         from ic_generation.ic import equilibrium_state
         from time_integration.wb_integrator import create_wb_muscl_hancock_step
         from utils.distributed import compute_local_slice
+
         if jax.process_count() > 1:
-            local_slices = compute_local_slice(
-                cfg.Nx, cfg.Ny, mesh, jax.process_index(), cfg.Nz
-            )
+            local_slices = compute_local_slice(cfg.Nx, cfg.Ny, mesh, jax.process_index(), cfg.Nz)
             U_eq_local = equilibrium_state(
-                cfg, x_slice=local_slices[0], y_slice=local_slices[1],
+                cfg,
+                x_slice=local_slices[0],
+                y_slice=local_slices[1],
                 z_slice=local_slices[2],
             )
             if cfg.SPATIAL_DIMENSION == 2:
@@ -344,9 +344,18 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
             U_eq = jax.device_put(U_eq_global, sharding)
         compute_dt_fn, step_fn = create_wb_muscl_hancock_step(
             pad_halo_fn,
-            cfg.gamma, cfg.ORDER, cfg.LIMITER,
-            grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
+            cfg.gamma,
+            cfg.ORDER,
+            cfg.LIMITER,
+            grid.dx,
+            grid.dy,
+            grid.dz,
+            grid.inv_dx,
+            grid.inv_dy,
+            grid.inv_dz,
+            cfg.BOUNDARY,
+            cfg.SPATIAL_DIMENSION,
+            cfg.CFL,
             U_eq=U_eq,
             gravity_z=cfg.gravity_z,
             sharding=sharding,
@@ -360,9 +369,18 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
     else:
         compute_dt_fn, step_fn = create_muscl_hancock_modular_step(
             pad_halo_fn,
-            cfg.gamma, cfg.ORDER, cfg.LIMITER,
-            grid.dx, grid.dy, grid.dz, grid.inv_dx, grid.inv_dy, grid.inv_dz,
-            cfg.BOUNDARY, cfg.SPATIAL_DIMENSION, cfg.CFL,
+            cfg.gamma,
+            cfg.ORDER,
+            cfg.LIMITER,
+            grid.dx,
+            grid.dy,
+            grid.dz,
+            grid.inv_dx,
+            grid.inv_dy,
+            grid.inv_dz,
+            cfg.BOUNDARY,
+            cfg.SPATIAL_DIMENSION,
+            cfg.CFL,
             sharding=sharding,
             riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
         )
@@ -370,6 +388,6 @@ def create_solver_distributed(cfg, grid: GridParams, mesh: Mesh) -> Tuple[Callab
 
     if is_main_process:
         print(f"Using {integrator_name} time integration")
-        print(f"Runner controls dt clamping (snapshot times, t_end)")
+        print("Runner controls dt clamping (snapshot times, t_end)")
 
     return compute_dt_fn, step_fn, integrator_name, sharding

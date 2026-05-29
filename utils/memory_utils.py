@@ -4,6 +4,7 @@ Supports GPU (CUDA/ROCm) and CPU memory tracking.
 """
 
 import os
+
 import jax
 
 
@@ -24,12 +25,12 @@ def get_memory_usage():
         devices = jax.local_devices()
 
         # For GPU backends (CUDA/ROCm), query device memory
-        if devices and devices[0].platform in ['gpu', 'cuda', 'rocm']:
+        if devices and devices[0].platform in ["gpu", "cuda", "rocm"]:
             per_device = []
             for device in devices:
                 memory_stats = device.memory_stats()
                 if memory_stats:
-                    bytes_in_use = memory_stats.get('bytes_in_use', 0)
+                    bytes_in_use = memory_stats.get("bytes_in_use", 0)
                     gb_in_use = bytes_in_use / (1024**3)
                     per_device.append(gb_in_use)
                 else:
@@ -41,6 +42,7 @@ def get_memory_usage():
         # Fallback: try system memory
         try:
             import psutil
+
             process = psutil.Process(os.getpid())
             mem_info = process.memory_info()
             gb_in_use = mem_info.rss / (1024**3)
@@ -66,7 +68,9 @@ def print_memory_usage(label=""):
     if per_device is not None and total is not None:
         if len(per_device) > 1:
             per_device_str = ", ".join([f"{mem:.2f}" for mem in per_device])
-            print(f"{label}Memory usage: {total:.2f} GB total across {len(per_device)} GPUs [{per_device_str} GB]")
+            print(
+                f"{label}Memory usage: {total:.2f} GB total across {len(per_device)} GPUs [{per_device_str} GB]"
+            )
         else:
             print(f"{label}Memory usage: {total:.2f} GB")
     else:

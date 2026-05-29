@@ -4,6 +4,7 @@ Halo exchange for automatic sharding (NamedSharding + with_sharding_constraint).
 This version uses operations that JAX can automatically handle across sharded arrays,
 unlike the shard_map version which uses explicit ppermute.
 """
+
 import jax.numpy as jnp
 
 
@@ -63,13 +64,13 @@ def pad_with_halo_1d_auto(U, boundary):
         #   jnp.roll(U, 1, axis=1)[:, -1:]   (which gives U[Nx-2], off-by-one)
         # and the mirror on the right side. That bug shifted both ghost
         # cells by one and corrupted the slopes of cells 0 and Nx-1.
-        U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode='wrap')
+        U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode="wrap")
 
     elif boundary == 1:  # Zero-gradient
-        U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode='edge')
+        U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode="edge")
 
     else:  # Reflective
-        U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode='edge')
+        U_padded = jnp.pad(U, ((0, 0), (1, 1)), mode="edge")
         # Negate x-momentum at boundaries
         U_padded = U_padded.at[1, 0].set(-U_padded[1, 0])
         U_padded = U_padded.at[1, -1].set(-U_padded[1, -1])
@@ -95,15 +96,15 @@ def pad_with_halo_2d_auto(U, boundary):
         Array with ghost cells
     """
     if boundary == 0:  # Periodic — wrap-around (was off-by-one with jnp.roll)
-        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1)), mode='wrap')
+        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1)), mode="wrap")
 
     elif boundary == 1:  # Zero-gradient - use edge mode
         # jnp.pad with 'edge' mode - copies edge values
-        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1)), mode='edge')
+        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1)), mode="edge")
 
     else:  # Reflective - use edge then negate momentum
         # First pad with edge mode
-        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1)), mode='edge')
+        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1)), mode="edge")
 
         # Negate momentum at boundaries
         # Left edge (x-momentum)
@@ -135,13 +136,13 @@ def pad_with_halo_3d_auto(U, boundary):
         Array with ghost cells
     """
     if boundary == 0:  # Periodic — wrap-around (was off-by-one with jnp.roll)
-        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1), (1, 1)), mode='wrap')
+        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1), (1, 1)), mode="wrap")
 
     elif boundary == 1:  # Zero-gradient
-        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1), (1, 1)), mode='edge')
+        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1), (1, 1)), mode="edge")
 
     else:  # Reflective
-        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1), (1, 1)), mode='edge')
+        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1), (1, 1)), mode="edge")
 
         # Negate x-momentum at x-boundaries
         U_padded = U_padded.at[1, 0, :, :].set(-U_padded[1, 0, :, :])

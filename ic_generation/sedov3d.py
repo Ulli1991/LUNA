@@ -1,13 +1,12 @@
 import jax.numpy as jnp
 
-
 # Physical parameters used when cfg.units is enabled.
 # SN-style thermal-bomb injection (top-hat sphere) into a uniform warm-ISM
 # background.
-N_AMBIENT_CGS = 1.0       # particles per cm^3 (mean number density)
-MU = 1.0                  # mean molecular weight in proton masses (atomic H)
-T_AMBIENT_K = 1.0e4       # K
-E_INJECT_ERG = 1.0e51     # supernova energy
+N_AMBIENT_CGS = 1.0  # particles per cm^3 (mean number density)
+MU = 1.0  # mean molecular weight in proton masses (atomic H)
+T_AMBIENT_K = 1.0e4  # K
+E_INJECT_ERG = 1.0e51  # supernova energy
 
 PROTON_MASS_CGS = 1.6726219e-24
 BOLTZMANN_CGS = 1.380649e-16
@@ -49,18 +48,18 @@ def sedov_blast_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
 
     # Background state and injected energy, both in code units.
     if units_on:
-        rho_phys = N_AMBIENT_CGS * MU * PROTON_MASS_CGS                 # g/cm^3
-        p_phys = N_AMBIENT_CGS * BOLTZMANN_CGS * T_AMBIENT_K            # erg/cm^3
+        rho_phys = N_AMBIENT_CGS * MU * PROTON_MASS_CGS  # g/cm^3
+        p_phys = N_AMBIENT_CGS * BOLTZMANN_CGS * T_AMBIENT_K  # erg/cm^3
         rho_bg = rho_phys / cfg.units.UnitDensity_in_cgs
         p_bg = p_phys / cfg.units.UnitPressure_in_cgs
-        E_inject = E_INJECT_ERG / cfg.units.UnitEnergy_in_cgs           # total energy
+        E_inject = E_INJECT_ERG / cfg.units.UnitEnergy_in_cgs  # total energy
     else:
         rho_bg = 1.0
         p_bg = 1e-2
         E_inject = 0.5
 
     if is_global_call:
-        print(f"3D Sedov Blast Configuration:")
+        print("3D Sedov Blast Configuration:")
         print(f"  Domain: [{Lx} x {Ly} x {Lz}]")
         print(f"  Grid: [{Nx} x {Ny} x {Nz}]")
         print(f"  dx={dx:.6e}, dy={dy:.6e}, dz={dz:.6e}")
@@ -103,17 +102,24 @@ def sedov_blast_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
         ii = jnp.arange(x_start, x_end)[:, None, None]
         jj = jnp.arange(y_start, y_end)[None, :, None]
         kk = jnp.arange(z_start, z_end)[None, None, :]
-        in_cube = ((ii >= ix0) & (ii <= ix0 + 1)
-                 & (jj >= iy0) & (jj <= iy0 + 1)
-                 & (kk >= iz0) & (kk <= iz0 + 1))
+        in_cube = (
+            (ii >= ix0)
+            & (ii <= ix0 + 1)
+            & (jj >= iy0)
+            & (jj <= iy0 + 1)
+            & (kk >= iz0)
+            & (kk <= iz0 + 1)
+        )
 
         n_inject = 8
         V_inject = n_inject * dx * dy * dz
         p_inject = (gamma - 1.0) * (E_inject / V_inject)
 
         if is_global_call:
-            print(f"  Sedov inject: central 2x2x2 cube ({n_inject} cells), "
-                  f"V_inject = {V_inject:.4e}")
+            print(
+                f"  Sedov inject: central 2x2x2 cube ({n_inject} cells), "
+                f"V_inject = {V_inject:.4e}"
+            )
             print(f"  p_inject (code) = {p_inject:.4e}")
 
         p = jnp.where(in_cube, p_inject + p_bg, p_bg)

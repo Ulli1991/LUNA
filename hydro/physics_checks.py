@@ -5,7 +5,6 @@ GPU-resident checks with minimal CPU synchronization overhead.
 """
 
 import jax.numpy as jnp
-from jax import jit
 
 
 def compute_physics_diagnostics(U, gamma):

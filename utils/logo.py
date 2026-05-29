@@ -1,48 +1,18 @@
 def print_LUNA_banner():
     # Intro line
     print("Hi there, this is LUNA:\n")
-    print("A differentiable astrophysical MHD code for turbulence, shocks, ISM, and galaxy evolution\n")
+    print(
+        "A differentiable astrophysical MHD code for turbulence, shocks, ISM, and galaxy evolution\n"
+    )
 
     # ASCII letters
-    L = [
-        "#      ",
-        "#      ",
-        "#      ",
-        "#      ",
-        "#      ",
-        "#      ",
-        "#######"
-    ]
+    L = ["#      ", "#      ", "#      ", "#      ", "#      ", "#      ", "#######"]
 
-    U = [
-        "#     #",
-        "#     #",
-        "#     #",
-        "#     #",
-        "#     #",
-        "#     #",
-        " ##### "
-    ]
+    U = ["#     #", "#     #", "#     #", "#     #", "#     #", "#     #", " ##### "]
 
-    N = [
-        "#     #",
-        "##    #",
-        "# #   #",
-        "#  #  #",
-        "#   # #",
-        "#    ##",
-        "#     #"
-    ]
+    N = ["#     #", "##    #", "# #   #", "#  #  #", "#   # #", "#    ##", "#     #"]
 
-    A = [
-        "   #   ",
-        "  # #  ",
-        " #   # ",
-        "#     #",
-        "#######",
-        "#     #",
-        "#     #"
-    ]
+    A = ["   #   ", "  # #  ", " #   # ", "#     #", "#######", "#     #", "#     #"]
 
     # Combine letters row by row
     for row in range(len(L)):
@@ -51,6 +21,7 @@ def print_LUNA_banner():
 
     # Bottom line
     print("\nThis is version 0.1.\n")
+
 
 if __name__ == "__main__":
     print_LUNA_banner()

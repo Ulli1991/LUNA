@@ -2,6 +2,7 @@ import os
 import h5py
 import jax.numpy as jnp
 
+
 def write_checkpoint(U, cfg, t, step, checkpoint_dir="checkpoints"):
     """
     Write a checkpoint file containing complete simulation state for restart.

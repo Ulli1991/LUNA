@@ -5,6 +5,7 @@ coordinate arrays are constructed multi-process-aware (local slice + KH-IC
 assembly) and passed as JIT ARGUMENTS to the apply (not closures) so XLA
 cannot inline them as MLIR constants for multi-process sharded arrays.
 """
+
 import jax
 import jax.numpy as jnp
 import numpy as _np
@@ -20,19 +21,18 @@ def setup_ou_forcing(cfg, sharding, is_main_process: bool = True):
 
     driver = OUDriver(cfg.ou_config)
     dx, dy, dz = cfg.Lx / cfg.Nx, cfg.Ly / cfg.Ny, cfg.Lz / cfg.Nz
-    global_shape = (
-        (cfg.Nx, cfg.Ny, cfg.Nz) if cfg.SPATIAL_DIMENSION == 3
-        else (cfg.Nx, cfg.Ny)
-    )
+    global_shape = (cfg.Nx, cfg.Ny, cfg.Nz) if cfg.SPATIAL_DIMENSION == 3 else (cfg.Nx, cfg.Ny)
     coord_spec = PartitionSpec(*sharding.spec[1:])
     coord_sharding = NamedSharding(sharding.mesh, coord_spec)
 
     if jax.process_count() > 1:
         from utils.distributed import compute_local_slice
+
         xs, ys, zs = compute_local_slice(
             cfg.Nx,
             cfg.Ny if cfg.SPATIAL_DIMENSION >= 2 else 1,
-            sharding.mesh, jax.process_index(),
+            sharding.mesh,
+            jax.process_index(),
             cfg.Nz if cfg.SPATIAL_DIMENSION == 3 else 1,
         )
         x_loc = (_np.arange(xs[0], xs[1], dtype=_np.float32) + 0.5) * dx
@@ -44,11 +44,16 @@ def setup_ou_forcing(cfg, sharding, is_main_process: bool = True):
             Xl, Yl = _np.meshgrid(x_loc, y_loc, indexing="ij")
             Zl = _np.zeros_like(Xl)
         local_dev = jax.local_devices()[0]
+
         def _assemble(local_arr):
             d = jax.device_put(_np.asarray(local_arr), local_dev)
             return jax.make_array_from_single_device_arrays(
-                shape=global_shape, sharding=coord_sharding, arrays=[d])
-        X = _assemble(Xl); Y = _assemble(Yl); Z = _assemble(Zl)
+                shape=global_shape, sharding=coord_sharding, arrays=[d]
+            )
+
+        X = _assemble(Xl)
+        Y = _assemble(Yl)
+        Z = _assemble(Zl)
     else:
         x_full = (jnp.arange(cfg.Nx, dtype=jnp.float32) + 0.5) * dx
         y_full = (jnp.arange(cfg.Ny, dtype=jnp.float32) + 0.5) * dy
@@ -77,10 +82,12 @@ def setup_ou_forcing(cfg, sharding, is_main_process: bool = True):
         return _apply_inner(U, a, key, dt, X, Y, Z)
 
     if is_main_process:
-        print(f"✓ OU driver active: {driver.n_modes} modes "
-              f"(k in [{cfg.ou_config.k_min}, {cfg.ou_config.k_max}]), "
-              f"zeta={cfg.ou_config.solenoidal_weight}, "
-              f"T_ac={cfg.ou_config.autocorrelation_time}, "
-              f"rms_a={cfg.ou_config.rms_acceleration}")
+        print(
+            f"✓ OU driver active: {driver.n_modes} modes "
+            f"(k in [{cfg.ou_config.k_min}, {cfg.ou_config.k_max}]), "
+            f"zeta={cfg.ou_config.solenoidal_weight}, "
+            f"T_ac={cfg.ou_config.autocorrelation_time}, "
+            f"rms_a={cfg.ou_config.rms_acceleration}"
+        )
 
     return {"a": a_state, "key": key, "apply": _apply}

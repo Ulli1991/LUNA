@@ -4,8 +4,8 @@ Grid parameters dataclass.
 This module defines a frozen dataclass that bundles all grid-related parameters
 and pre-computed constants for efficient parameter passing and memory usage.
 """
+
 from dataclasses import dataclass
-import numpy as np
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,7 @@ class GridParams:
     total_cells : int
         Total number of cells in the grid
     """
+
     # Grid dimensions
     Nx: int
     Ny: int
@@ -99,5 +100,5 @@ class GridParams:
             inv_dy=inv_dy,
             inv_dz=inv_dz,
             spatial_dimension=cfg.SPATIAL_DIMENSION,
-            total_cells=total_cells
+            total_cells=total_cells,
         )
