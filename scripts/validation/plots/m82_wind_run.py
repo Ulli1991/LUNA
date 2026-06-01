@@ -92,6 +92,7 @@ def main():
                    + ("_no_grav" if not grav_on else "")
                    + ("_no_cool" if not cool_on else ""),
         enable_x64=use_fp64,
+        enable_checkpointing=False,
     )
 
     print(f"M82 disk + CC85 wind: Nx={Nx}, Ny={Ny}, Nz={Nz}; "

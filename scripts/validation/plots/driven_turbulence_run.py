@@ -79,6 +79,7 @@ def main():
         production_mode=True,
         output_dir=out_dir,
         enable_x64=use_fp64,
+        enable_checkpointing=False,
     )
     print(f"Driven-turbulence run: Nx={Nx}, M_target={M_TARGET}, "
           f"v_rms_target={V_RMS_TARGET:.3f}, T_turnover={T_TURNOVER:.3f}, "

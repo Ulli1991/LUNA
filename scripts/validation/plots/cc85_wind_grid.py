@@ -85,8 +85,8 @@ def _load_run(Nx, snapshots_root):
 
 def _plot_grid(field_key, cmap_name, vmin, vmax, label, outpath_stem, runs,
                diverging=False):
-    resolutions = [128, 256, 512]
-    fig, axes = plt.subplots(1, 3, figsize=(11, 8), constrained_layout=True)
+    resolutions = [128, 256, 512, 1024]
+    fig, axes = plt.subplots(1, 4, figsize=(14, 8), constrained_layout=True)
     cmap = plt.get_cmap(cmap_name)
     SEC_PER_YR = 3.15576e7; MYR = 1e6 * SEC_PER_YR
     UnitTime_s = _KPC / _KM
@@ -186,7 +186,7 @@ def _plot_radial_profiles(runs, snapshots_root="snapshots"):
 
 
 def main(snapshots_root="snapshots"):
-    resolutions = [128, 256, 512]
+    resolutions = [128, 256, 512, 1024]
     runs = {}
     for Nx in resolutions:
         run = _load_run(Nx, snapshots_root)
