@@ -67,6 +67,7 @@ def main():
         # per A100 and triggers an XLA collective-combiner bug. Sedov visualization
         # doesn't need float64 precision.
         enable_x64=False,
+        enable_checkpointing=False,
     )
     print(f"Sedov 3D Arepo run: box={BOX_SIZE_PC} pc, Nx={NX}, t_end={T_END_YR} yr "
           f"= {T_END_CODE:.4e} code")

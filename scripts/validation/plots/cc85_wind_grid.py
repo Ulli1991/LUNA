@@ -215,7 +215,9 @@ def main(snapshots_root="snapshots"):
     _plot_grid("log_T", "plasma", T_lo, T_hi,
                r"$\log_{10}\, T\ [{\rm K}]$",
                "figures/m82_wind_temperature", runs)
-    _plot_radial_profiles(runs, snapshots_root)
+    del runs, all_logn, all_vr, all_logT
+    import gc; gc.collect()
+    _plot_radial_profiles({Nx: None for Nx in resolutions}, snapshots_root)
 
 
 if __name__ == "__main__":
