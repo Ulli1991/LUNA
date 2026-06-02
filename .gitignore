@@ -7,8 +7,9 @@ config.py
 # HDF5 output files
 *.hdf5
 *.png
-# But keep validation figures embedded in the README
+# But keep validation figures embedded in the README and paper-staging copies
 !figures/*.png
+!paper_figures/*.png
 
 # Log files
 *.log
@@ -37,3 +38,6 @@ Thumbs.db
 
 # AthenaK reference simulation outputs (large binary dumps, regenerable)
 reference/
+
+# Paper figure staging: ship the PNGs, not the tex source
+paper_figures/*.tex
