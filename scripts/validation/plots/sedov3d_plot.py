@@ -69,7 +69,7 @@ def load_snapshot(snapdir):
         Nx = int(a["Nx_global"]); Ny = int(a["Ny_global"]); Nz = int(a["Nz_global"])
         Lx = float(a["Lx"]); dx = float(a["dx"]); dy = float(a["dy"]); dz = float(a["dz"])
         t = float(a["time"])
-    rho = np.empty((Nx, Ny, Nz)); vx = np.empty_like(rho)
+    rho = np.empty((Nx, Ny, Nz), dtype=np.float32); vx = np.empty_like(rho)
     vy = np.empty_like(rho); vz = np.empty_like(rho); p = np.empty_like(rho)
     for f in files:
         with h5py.File(f, "r") as h:
@@ -106,10 +106,24 @@ def main():
     snaps_dirs = sorted(glob.glob(os.path.join(OUTDIR, "snapdir_*")))
     if not snaps_dirs:
         raise SystemExit(f"No snapshots in {OUTDIR}")
-    snaps = [load_snapshot(d) for d in snaps_dirs]
 
-    # === Left panel: radial profiles at final snapshot ===
-    final = snaps[-1]
+    # Stream pass 1: compute R_s + t per snap without holding all in memory.
+    # Each 1024^3 fp32 snap is ~21 GB, so holding 11 simultaneously OOMs even
+    # on a full-node 240 GB job. Last snap is kept for the projection + radial
+    # profile panels below.
+    t_yrs_list = []
+    R_sim_list = []
+    final = None
+    for i, d in enumerate(snaps_dirs):
+        s = load_snapshot(d)
+        t_yrs_list.append(s["t"] * UNIT_TIME_S / SEC_PER_YEAR)
+        R_sim_list.append(shock_radius_from_snap(s))
+        if i == len(snaps_dirs) - 1:
+            final = s
+        else:
+            del s
+    t_yrs = np.array(t_yrs_list)
+    R_sim = np.array(R_sim_list)
     ic = final["Nx"]/2 - 0.5   # cell-index of domain centre for even Nx
     cell_center = (ic, ic, ic)
     # Physical centre coords (for v_r calculation only)
@@ -204,8 +218,6 @@ def main():
 
     # === Figure 2: R_s(t) + column density projection ===
     fig, (axR, axS) = plt.subplots(1, 2, figsize=(11, 4.4))
-    t_yrs = np.array([s["t"] * UNIT_TIME_S / SEC_PER_YEAR for s in snaps])
-    R_sim = np.array([shock_radius_from_snap(s) for s in snaps])
     t_dense = np.linspace(max(t_yrs[0], 1.0), t_yrs[-1], 200)
     R_th = np.array([analytic_R_s(t) for t in t_dense])
     axR.loglog(t_yrs[1:], R_sim[1:], "o-", color="C0", label="LUNA peak-ρ location")
