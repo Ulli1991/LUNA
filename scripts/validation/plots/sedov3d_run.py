@@ -62,7 +62,11 @@ def main():
         units=units,
         PLOT_AFTER_SIM=False,
         production_mode=True,
-        output_dir=f"snapshots/sedov3d_arepo_Nx{NX}",
+        output_dir=os.environ.get("LUNA_SEDOV_OUT", f"snapshots/sedov3d_arepo_Nx{NX}"),
+        MESH_SHAPE=(
+            tuple(int(s) for s in os.environ["LUNA_MESH_SHAPE"].split(","))
+            if os.environ.get("LUNA_MESH_SHAPE") else None
+        ),
         # float32 for the 1024^3 multi-node run — float64 + workspace overflows 40 GB
         # per A100 and triggers an XLA collective-combiner bug. Sedov visualization
         # doesn't need float64 precision.

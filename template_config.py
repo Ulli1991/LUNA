@@ -68,6 +68,16 @@ class Config:
     #   - "auto" uses heuristics to choose the best strategy
     DECOMPOSITION: str = "auto"
 
+    # AthenaK-style explicit mesh decomposition. Tuple matching SPATIAL_DIMENSION:
+    #   1D: (nx_proc,)            -- product must equal len(jax.devices())
+    #   2D: (nx_proc, ny_proc)
+    #   3D: (nx_proc, ny_proc, nz_proc)
+    # When set, this overrides DECOMPOSITION entirely and a Mesh of that exact
+    # shape is built. Use this to escape the auto-heuristic's pencil/2D-slab
+    # picks at small device counts when you want balanced 3D blocks (e.g.
+    # (2, 2, 2) at 8 GPUs to halve y/z halo cost for 1024^3 fp32 runs).
+    MESH_SHAPE: tuple = None
+
     Nx: int = 1024
     Ny: int = 1024
     Nz: int = 1024

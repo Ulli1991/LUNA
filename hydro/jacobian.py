@@ -196,6 +196,51 @@ def apply_primitive_jacobian_2d(W, dWx, dWy, gamma):
     return jnp.stack([result_rho, result_vx, result_vy, result_P])
 
 
+def apply_primitive_jacobian_3d_x(W, dWx, gamma):
+    """A_x · ∂_x W contribution to the predictor. Computed alone (no Y/Z
+    slopes needed alive) so the memory-conscious MUSCL-Hancock 3D path
+    can build A_dW direction-by-direction."""
+    rho, vx, vy, vz, P = W
+    drho_dx, dvx_dx, dvy_dx, dvz_dx, dP_dx = dWx
+    rho_c2 = gamma * P
+    inv_rho = 1.0 / rho
+    return jnp.stack([
+        vx * drho_dx + rho * dvx_dx,
+        vx * dvx_dx + inv_rho * dP_dx,
+        vx * dvy_dx,
+        vx * dvz_dx,
+        rho_c2 * dvx_dx + vx * dP_dx,
+    ])
+
+
+def apply_primitive_jacobian_3d_y(W, dWy, gamma):
+    rho, vx, vy, vz, P = W
+    drho_dy, dvx_dy, dvy_dy, dvz_dy, dP_dy = dWy
+    rho_c2 = gamma * P
+    inv_rho = 1.0 / rho
+    return jnp.stack([
+        vy * drho_dy + rho * dvy_dy,
+        vy * dvx_dy,
+        vy * dvy_dy + inv_rho * dP_dy,
+        vy * dvz_dy,
+        rho_c2 * dvy_dy + vy * dP_dy,
+    ])
+
+
+def apply_primitive_jacobian_3d_z(W, dWz, gamma):
+    rho, vx, vy, vz, P = W
+    drho_dz, dvx_dz, dvy_dz, dvz_dz, dP_dz = dWz
+    rho_c2 = gamma * P
+    inv_rho = 1.0 / rho
+    return jnp.stack([
+        vz * drho_dz + rho * dvz_dz,
+        vz * dvx_dz,
+        vz * dvy_dz,
+        vz * dvz_dz + inv_rho * dP_dz,
+        rho_c2 * dvz_dz + vz * dP_dz,
+    ])
+
+
 def apply_primitive_jacobian_3d(W, dWx, dWy, dWz, gamma):
     """
     Compute A_x * dWx + A_y * dWy + A_z * dWz for 3D Euler equations.

@@ -89,7 +89,9 @@ def compute_local_slice(Nx, Ny, mesh, process_index, Nz=1):
         return (x_start, x_end), (y_start, y_end), (z_start, z_end)
 
 
-def create_device_mesh(n_devices, spatial_dimension, decomposition="auto", Nx=None, Ny=None):
+def create_device_mesh(
+    n_devices, spatial_dimension, decomposition="auto", Nx=None, Ny=None, mesh_shape=None
+):
     """
     Create device mesh for the given number of devices with configurable decomposition.
 
@@ -106,6 +108,11 @@ def create_device_mesh(n_devices, spatial_dimension, decomposition="auto", Nx=No
         - "block": 2D/3D decomposition (minimizes surface area)
     Nx, Ny : int, optional
         Grid dimensions (used for auto heuristic)
+    mesh_shape : tuple, optional
+        AthenaK-style explicit per-direction process grid. When supplied,
+        bypasses the heuristic above: the mesh is built from this tuple
+        directly. Length must match spatial_dimension and the product must
+        equal n_devices.
 
     Returns
     -------
@@ -114,6 +121,26 @@ def create_device_mesh(n_devices, spatial_dimension, decomposition="auto", Nx=No
     grid_shape : tuple
         Process grid shape
     """
+    # Explicit mesh shape (AthenaK-style): user picks the per-axis decomposition.
+    if mesh_shape is not None:
+        if len(mesh_shape) != spatial_dimension:
+            raise ValueError(
+                f"mesh_shape {mesh_shape} length must match SPATIAL_DIMENSION={spatial_dimension}"
+            )
+        prod = 1
+        for d in mesh_shape:
+            prod *= d
+        if prod != n_devices:
+            raise ValueError(
+                f"mesh_shape {mesh_shape} product ({prod}) must equal n_devices ({n_devices})"
+            )
+        axis_names = ("x",)[:spatial_dimension] if spatial_dimension == 1 else (
+            ("x", "y") if spatial_dimension == 2 else ("x", "y", "z")
+        )
+        devices = mesh_utils.create_device_mesh(tuple(mesh_shape))
+        mesh = Mesh(devices, axis_names)
+        return mesh, tuple(mesh_shape)
+
     # Auto-select decomposition strategy based on problem size and GPU count
     if decomposition == "auto":
         if spatial_dimension == 1:

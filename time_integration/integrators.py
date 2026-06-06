@@ -11,8 +11,6 @@ The primitive halo exchange (apply_halo_exchange_prim) saves one cons→prim
 on the padded array per step versus the conservative halo path.
 """
 
-import os
-
 import jax
 import jax.numpy as jnp
 
@@ -88,30 +86,18 @@ def create_muscl_hancock_modular_step(
     """
     compute_dt_fn = _make_compute_dt_fn(gamma, CFL, spatial_dim, dx, dy, dz)
 
-    # Separate JIT function for cons→prim conversion
-    @jax.jit
-    def convert_to_prim(U):
-        """Convert conservatives to primitives - separate JIT function."""
-        return cons_to_prim(U, gamma)
-
-    # Separate JIT function for halo exchange
-    @jax.jit
-    def apply_halo_exchange_prim(W):
-        """
-        Apply halo exchange on PRIMITIVES - separate JIT function.
-
-        OPTIMIZATION: Exchange primitives instead of conservatives to avoid
-        double conversion (U→W for dt, then U_pad→W_pad for flux).
-        """
-        return pad_halo_fn(W, boundary, spatial_dim)
-
-    # Pure-physics MUSCL-Hancock + first-order flux divergence both live in
-    # hydro/muscl_hancock.py. This factory just JIT-wraps the call.
     from hydro.muscl_hancock import muscl_hancock_divergence
 
+    # Fused step: cons_to_prim + halo + MUSCL-Hancock + conservative update
+    # all inside one @jax.jit so XLA can eliminate intermediate W and W_pad
+    # materialisations. Previously these were three separate JITs (with the
+    # claim that the halo collective would overlap with surrounding compute),
+    # but JIT boundaries forced 2-3 extra full-shard live arrays per step;
+    # XLA can fuse better here.
     @jax.jit
-    def compute_flux_and_update_from_prim(U, W_pad, dt):
-        """Apply the MUSCL-Hancock (or first-order) step to U using W_pad."""
+    def time_step_muscl_hancock_modular(U, dt):
+        W = cons_to_prim(U, gamma)
+        W_pad = pad_halo_fn(W, boundary, spatial_dim)
         dU = muscl_hancock_divergence(
             W_pad,
             dt,
@@ -128,79 +114,6 @@ def create_muscl_hancock_modular_step(
         U_new = U + dt * dU
         if sharding is not None:
             U_new = jax.lax.with_sharding_constraint(U_new, sharding)
-        return U_new
-
-    # Debug flag: set to True to trace which JIT call hangs (multi-GPU debugging)
-    _debug_sync = bool(os.environ.get("LUNA_DEBUG_SYNC", ""))
-
-    # Main orchestrator function (NOT @jax.jit!)
-    def time_step_muscl_hancock_modular(U, dt):
-        """
-        MUSCL-Hancock time step with MODULAR JIT compilation. Pure: caller
-        supplies dt.
-
-        FLOW:
-        1. U → W (convert once)
-        2. Pad W → W_pad (exchange primitives, not conservatives)
-        3. Compute fluxes directly from W_pad
-        4. Update U
-        """
-        import sys
-
-        if _debug_sync and jax.process_index() == 0:
-            print(
-                f"[DEBUG] Starting time step, U.sharding={U.sharding}", flush=True, file=sys.stderr
-            )
-
-        # Step 1: Convert to primitives (JIT function)
-        W = convert_to_prim(U)
-
-        if _debug_sync:
-            jax.block_until_ready(W)
-            if jax.process_index() == 0:
-                print(
-                    f"[DEBUG] ✓ convert_to_prim done, W.sharding={W.sharding}",
-                    flush=True,
-                    file=sys.stderr,
-                )
-
-        # Step 2: Halo exchange on PRIMITIVES (JIT function with communication)
-        W_pad = apply_halo_exchange_prim(W)
-
-        if _debug_sync:
-            jax.block_until_ready(W_pad)
-            if jax.process_index() == 0:
-                print(
-                    f"[DEBUG] ✓ halo exchange done, W_pad.sharding={W_pad.sharding}",
-                    flush=True,
-                    file=sys.stderr,
-                )
-
-        # Step 5: Flux computation and update from primitives (JIT function)
-        U_new = compute_flux_and_update_from_prim(U, W_pad, dt)
-
-        if _debug_sync:
-            jax.block_until_ready(U_new)
-            if jax.process_index() == 0:
-                print(
-                    f"[DEBUG] ✓ flux+update done, U_new.sharding={U_new.sharding}",
-                    flush=True,
-                    file=sys.stderr,
-                )
-
-        # Force correct sharding to prevent drift between time steps
-        if sharding is not None:
-            U_new = jax.device_put(U_new, sharding)
-
-            if _debug_sync:
-                jax.block_until_ready(U_new)
-                if jax.process_index() == 0:
-                    print(
-                        f"[DEBUG] ✓ resharding done, U_new.sharding={U_new.sharding}",
-                        flush=True,
-                        file=sys.stderr,
-                    )
-
         return U_new
 
     return compute_dt_fn, time_step_muscl_hancock_modular

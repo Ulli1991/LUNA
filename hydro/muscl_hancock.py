@@ -15,9 +15,16 @@ import jax.numpy as jnp
 from hydro.jacobian import (
     apply_primitive_jacobian_1d,
     apply_primitive_jacobian_2d,
-    apply_primitive_jacobian_3d,
+    apply_primitive_jacobian_3d_x,
+    apply_primitive_jacobian_3d_y,
+    apply_primitive_jacobian_3d_z,
 )
-from hydro.slopes import compute_slopes_from_padded
+from hydro.slopes import (
+    compute_slope_x_3d_from_padded,
+    compute_slope_y_3d_from_padded,
+    compute_slope_z_3d_from_padded,
+    compute_slopes_from_padded,
+)
 
 
 def _pick_riemann(riemann_solver: str):
@@ -120,78 +127,110 @@ def _muscl_hancock_2d(W_pad, dt, dWx, dWy, *, gamma, riemann_solver, inv_dx, inv
     return dU
 
 
-def _muscl_hancock_3d(
-    W_pad, dt, dWx, dWy, dWz, *, gamma, riemann_solver, inv_dx, inv_dy, inv_dz, boundary
-):
-    """3D MUSCL-Hancock divergence with axis-sequential accumulation.
+def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_dy, inv_dz, boundary):
+    """3D MUSCL-Hancock divergence, restructured for memory.
 
-    Predictor (W_half) uses all three slopes once up-front. The directional
-    flux contributions are then computed via jax.lax.scan over axis_idx in
-    {0, 1, 2}, which forces XLA to reuse the per-axis intermediate buffers
-    (Wr_*, Wl_*, WL_*, WR_*, F*) across iterations instead of holding all
-    three sets alive simultaneously. Bit-identical to the unrolled version
-    when XLA fuses identically.
+    The previous version held dWx, dWy, dWz alive concurrently (3*N^3
+    slopes) plus their finite-difference intermediates (6*N^3) during the
+    slope-limiter step — over 200 GB of transient slope state at 1024^3
+    fp32. Working set OOMed at 8 GPUs even after fusing all JITs and the
+    Riemann reconstruction.
+
+    New structure:
+      * Predictor (A_dW) is built direction-by-direction. Each direction's
+        slope is computed, contributed to A_dW, then released before the
+        next direction starts. Peak slope state shrinks from 3*N^3 to
+        1*N^3.
+      * Flux phase recomputes each direction's slope inside its own scan
+        branch. lax.scan forces serial execution so Wr/Wl/F_*/dU
+        intermediates are reused across the three iterations. Slope
+        recompute is cheap (2 subtractions + a limiter call) but saves the
+        per-direction transients from being alive after the predictor.
+
+    Per-axis flux is still split into (interior, left bdy, right bdy) so
+    the (Nx+1)-sized WL/WR concatenated arrays are never materialised.
     """
     import jax.lax as lax
 
     flux_fn = _pick_riemann(riemann_solver)
     Wc = W_pad[:, 1:-1, 1:-1, 1:-1]
-    A_dW = apply_primitive_jacobian_3d(Wc, dWx * inv_dx, dWy * inv_dy, dWz * inv_dz, gamma)
-    W_half = Wc - 0.5 * dt * A_dW
 
-    # Per-axis branches — each lifts the original per-direction block
-    # verbatim so the order of floating-point ops is preserved.
-    def _x_branch(W_pad, W_half, dW_axis):
-        Wr = W_half + 0.5 * dW_axis
-        Wl = W_half - 0.5 * dW_axis
+    # ---- Predictor: A_dW = A_x dWx + A_y dWy + A_z dWz, one direction at a time.
+    dWx = compute_slope_x_3d_from_padded(W_pad, limiter)
+    A_dW = apply_primitive_jacobian_3d_x(Wc, dWx * inv_dx, gamma)
+    # dWx is now unreferenced and XLA can release it before the next slope.
+
+    dWy = compute_slope_y_3d_from_padded(W_pad, limiter)
+    A_dW = A_dW + apply_primitive_jacobian_3d_y(Wc, dWy * inv_dy, gamma)
+
+    dWz = compute_slope_z_3d_from_padded(W_pad, limiter)
+    A_dW = A_dW + apply_primitive_jacobian_3d_z(Wc, dWz * inv_dz, gamma)
+
+    W_half = Wc - 0.5 * dt * A_dW
+    # A_dW, dWz no longer needed.
+
+    # ---- Flux phase: per-direction branches, slope recomputed inside each.
+    def _x_contrib(_):
+        dWx_local = compute_slope_x_3d_from_padded(W_pad, limiter)
+        Wr = W_half + 0.5 * dWx_local
+        Wl = W_half - 0.5 * dWx_local
         if boundary == 0:
             WL_bc = Wr[:, -1:, :, :]
             WR_bc = Wl[:, 0:1, :, :]
         else:
             WL_bc = W_pad[:, 0:1, 1:-1, 1:-1]
             WR_bc = W_pad[:, -1:, 1:-1, 1:-1]
-        WL = jnp.concatenate([WL_bc, Wr], axis=1)
-        WR = jnp.concatenate([Wl, WR_bc], axis=1)
-        F = flux_fn(WL, WR, axis=0, gamma=gamma)
-        return (F[:, :-1, :, :] - F[:, 1:, :, :]) * inv_dx
+        F_int = flux_fn(Wr[:, :-1, :, :], Wl[:, 1:, :, :], axis=0, gamma=gamma)
+        F_l = flux_fn(WL_bc, Wl[:, 0:1, :, :], axis=0, gamma=gamma)
+        F_r = flux_fn(Wr[:, -1:, :, :], WR_bc, axis=0, gamma=gamma)
+        return jnp.concatenate(
+            [F_l - F_int[:, 0:1, :, :], F_int[:, :-1, :, :] - F_int[:, 1:, :, :], F_int[:, -1:, :, :] - F_r],
+            axis=1,
+        ) * inv_dx
 
-    def _y_branch(W_pad, W_half, dW_axis):
-        Wr = W_half + 0.5 * dW_axis
-        Wl = W_half - 0.5 * dW_axis
+    def _y_contrib(_):
+        dWy_local = compute_slope_y_3d_from_padded(W_pad, limiter)
+        Wr = W_half + 0.5 * dWy_local
+        Wl = W_half - 0.5 * dWy_local
         if boundary == 0:
             WL_bc = Wr[:, :, -1:, :]
             WR_bc = Wl[:, :, 0:1, :]
         else:
             WL_bc = W_pad[:, 1:-1, 0:1, 1:-1]
             WR_bc = W_pad[:, 1:-1, -1:, 1:-1]
-        WL = jnp.concatenate([WL_bc, Wr], axis=2)
-        WR = jnp.concatenate([Wl, WR_bc], axis=2)
-        F = flux_fn(WL, WR, axis=1, gamma=gamma)
-        return (F[:, :, :-1, :] - F[:, :, 1:, :]) * inv_dy
+        F_int = flux_fn(Wr[:, :, :-1, :], Wl[:, :, 1:, :], axis=1, gamma=gamma)
+        F_l = flux_fn(WL_bc, Wl[:, :, 0:1, :], axis=1, gamma=gamma)
+        F_r = flux_fn(Wr[:, :, -1:, :], WR_bc, axis=1, gamma=gamma)
+        return jnp.concatenate(
+            [F_l - F_int[:, :, 0:1, :], F_int[:, :, :-1, :] - F_int[:, :, 1:, :], F_int[:, :, -1:, :] - F_r],
+            axis=2,
+        ) * inv_dy
 
-    def _z_branch(W_pad, W_half, dW_axis):
-        Wr = W_half + 0.5 * dW_axis
-        Wl = W_half - 0.5 * dW_axis
+    def _z_contrib(_):
+        dWz_local = compute_slope_z_3d_from_padded(W_pad, limiter)
+        Wr = W_half + 0.5 * dWz_local
+        Wl = W_half - 0.5 * dWz_local
         if boundary == 0:
             WL_bc = Wr[:, :, :, -1:]
             WR_bc = Wl[:, :, :, 0:1]
         else:
             WL_bc = W_pad[:, 1:-1, 1:-1, 0:1]
             WR_bc = W_pad[:, 1:-1, 1:-1, -1:]
-        WL = jnp.concatenate([WL_bc, Wr], axis=3)
-        WR = jnp.concatenate([Wl, WR_bc], axis=3)
-        F = flux_fn(WL, WR, axis=2, gamma=gamma)
-        return (F[:, :, :, :-1] - F[:, :, :, 1:]) * inv_dz
-
-    dW_stack = jnp.stack([dWx, dWy, dWz])  # (3, 5, Nx, Ny, Nz)
+        F_int = flux_fn(Wr[:, :, :, :-1], Wl[:, :, :, 1:], axis=2, gamma=gamma)
+        F_l = flux_fn(WL_bc, Wl[:, :, :, 0:1], axis=2, gamma=gamma)
+        F_r = flux_fn(Wr[:, :, :, -1:], WR_bc, axis=2, gamma=gamma)
+        return jnp.concatenate(
+            [F_l - F_int[:, :, :, 0:1], F_int[:, :, :, :-1] - F_int[:, :, :, 1:], F_int[:, :, :, -1:] - F_r],
+            axis=3,
+        ) * inv_dz
 
     def _step(dU_carry, axis_idx):
-        dW_axis = dW_stack[axis_idx]
-        contrib = lax.switch(axis_idx, [_x_branch, _y_branch, _z_branch], W_pad, W_half, dW_axis)
+        contrib = lax.switch(axis_idx, [_x_contrib, _y_contrib, _z_contrib], None)
         return dU_carry + contrib, None
 
-    dU0 = jnp.zeros_like(W_half)
-    dU, _ = lax.scan(_step, dU0, jnp.arange(3))
+    # Seed the scan with the X-direction contribution rather than a zeros
+    # buffer (saves a full N^3 zero seed at 1024^3 fp32).
+    dU, _ = lax.scan(_step, _x_contrib(None), jnp.arange(1, 3))
     return dU
 
 
@@ -229,6 +268,21 @@ def muscl_hancock_divergence(
             inv_dz=inv_dz,
         )
 
+    # 3D path computes its slopes internally direction-by-direction (memory).
+    if spatial_dim == 3:
+        return _muscl_hancock_3d(
+            W_pad,
+            dt,
+            gamma=gamma,
+            limiter=limiter,
+            riemann_solver=riemann_solver,
+            inv_dx=inv_dx,
+            inv_dy=inv_dy,
+            inv_dz=inv_dz,
+            boundary=boundary,
+        )
+
+    # 1D and 2D paths still precompute slopes (small N, memory not critical).
     dWx, dWy, dWz = compute_slopes_from_padded(W_pad, limiter)
 
     if spatial_dim == 1:
@@ -251,20 +305,6 @@ def muscl_hancock_divergence(
             riemann_solver=riemann_solver,
             inv_dx=inv_dx,
             inv_dy=inv_dy,
-            boundary=boundary,
-        )
-    if spatial_dim == 3:
-        return _muscl_hancock_3d(
-            W_pad,
-            dt,
-            dWx,
-            dWy,
-            dWz,
-            gamma=gamma,
-            riemann_solver=riemann_solver,
-            inv_dx=inv_dx,
-            inv_dy=inv_dy,
-            inv_dz=inv_dz,
             boundary=boundary,
         )
     raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")

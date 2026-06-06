@@ -242,8 +242,6 @@ def run_simulation_distributed(
             U_new = apply_cooling(U_new, dt, cfg, cooling_solver)
         return U_new, new_a, new_key
 
-    MAX_HALVINGS = 8  # retry up to 256× smaller dt before giving up
-
     while t < cfg.t_end:
         t_snapshot_local = (
             snapshot_times[snapshot_idx] if snapshot_idx < num_snapshots else float("inf")
@@ -259,65 +257,21 @@ def run_simulation_distributed(
             dt = dt_cfl
             new_t = t + dt
 
-        # Snapshot pre-step state for potential retry-on-NaN.
-        U_pre = U_sharded
+        # Single attempt — NaN detection deferred to the next iteration's
+        # compute_dt (a NaN in U propagates through cons_to_prim and produces
+        # a NaN dt, which triggers a RuntimeError next loop). The previous
+        # in-loop retry-on-NaN dt_check called compute_dt twice per step and
+        # forced an extra host-device sync — measurable per-step overhead
+        # even on the healthy path. The diagnostic prints below still catch
+        # NaNs at the diag_interval cadence with negligible cost.
         forcing_a_pre = forcing_state["a"] if forcing_state is not None else None
         forcing_key_pre = forcing_state["key"] if forcing_state is not None else None
-
-        # Retry loop: attempt step at progressively smaller dt until success
-        # or MAX_HALVINGS exhausted. Free liveness check: compute_dt on the
-        # candidate state — NaN propagates through cons_to_prim so dt_check
-        # will be NaN if the step blew up. No extra reduction needed.
-        dt_try = dt
-        halvings = 0
-        success = False
-        while True:
-            U_try, fa_try, fk_try = _attempt_step(U_pre, dt_try, forcing_a_pre, forcing_key_pre)
-            dt_check = float(compute_dt_fn(U_try))
-            healthy = (dt_check > 0.0) and (dt_check < float("inf"))
-            if healthy:
-                success = True
-                break
-            if halvings >= MAX_HALVINGS:
-                break
-            halvings += 1
-            dt_try *= 0.5
-            if is_main_process:
-                print(
-                    f"⚠ NaN/non-finite at step {step+1}, t={t:.6e}; "
-                    f"retry #{halvings} with dt={dt_try:.3e}"
-                )
-
-        if not success:
-            if is_main_process:
-                print(f"\n{'!'*60}")
-                print(
-                    f"!!! NaN PERSISTS after {MAX_HALVINGS} halvings at step "
-                    f"{step+1}, t={t:.6e}, dt={dt_try:.3e} !!!"
-                )
-                print(f"{'!'*60}\n")
-            if cfg.enable_checkpointing:
-                try:
-                    write_checkpoint_distributed(U_pre, cfg, t, step, cfg.checkpoint_dir)
-                    if is_main_process:
-                        print(f"💾 Emergency checkpoint written to {cfg.checkpoint_dir}")
-                except Exception as e:
-                    if is_main_process:
-                        print(f"(checkpoint dump failed: {e})")
-            raise RuntimeError(
-                f"NaN persists at step {step+1}, t={t:.6e} after "
-                f"{MAX_HALVINGS} CFL halvings (dt={dt_try:.3e})"
-            )
-
-        # Commit the successful attempt
-        U_sharded = U_try
+        U_sharded, fa_new, fk_new = _attempt_step(
+            U_sharded, dt, forcing_a_pre, forcing_key_pre
+        )
         if forcing_state is not None:
-            forcing_state["a"] = fa_try
-            forcing_state["key"] = fk_try
-        if dt_try < dt:
-            # We took a smaller dt than planned; advance t by actual amount
-            new_t = t + dt_try
-        dt = dt_try
+            forcing_state["a"] = fa_new
+            forcing_state["key"] = fk_new
 
         t = new_t
         step += 1

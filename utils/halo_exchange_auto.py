@@ -5,7 +5,20 @@ This version uses operations that JAX can automatically handle across sharded ar
 unlike the shard_map version which uses explicit ppermute.
 """
 
+import jax
 import jax.numpy as jnp
+
+
+def _reshard(x, sharding):
+    """No-op if no sharding given; otherwise pin x to the requested layout.
+
+    Used in the 3D periodic halo to stop XLA from collapsing the sharded
+    axes between concatenations (which caused a ~10 GB-per-shard scratch
+    blowup at 1024^3 fp32 / 8 GPUs).
+    """
+    if sharding is None:
+        return x
+    return jax.lax.with_sharding_constraint(x, sharding)
 
 
 def pad_with_halo_auto(U, boundary, spatial_dimension):
@@ -135,14 +148,33 @@ def pad_with_halo_3d_auto(U, boundary):
     U_padded : array (Nvar, Nx+2, Ny+2, Nz+2)
         Array with ghost cells
     """
-    if boundary == 0:  # Periodic — wrap-around (was off-by-one with jnp.roll)
-        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1), (1, 1)), mode="wrap")
+    # Pin the input's sharding through each axis expansion so XLA does not
+    # drop spec mid-pad (was materialising a single-axis-sharded ~10 GB
+    # intermediate per shard at 1024^3 fp32 / 8 GPUs).
+    s = getattr(U, "sharding", None)
+    if boundary == 0:  # Periodic — wrap-around
+        U_padded = jnp.concatenate([U[:, -1:, :, :], U, U[:, 0:1, :, :]], axis=1)
+        U_padded = _reshard(U_padded, s)
+        U_padded = jnp.concatenate([U_padded[:, :, -1:, :], U_padded, U_padded[:, :, 0:1, :]], axis=2)
+        U_padded = _reshard(U_padded, s)
+        U_padded = jnp.concatenate([U_padded[:, :, :, -1:], U_padded, U_padded[:, :, :, 0:1]], axis=3)
+        U_padded = _reshard(U_padded, s)
 
     elif boundary == 1:  # Zero-gradient
-        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1), (1, 1)), mode="edge")
+        U_padded = jnp.concatenate([U[:, 0:1, :, :], U, U[:, -1:, :, :]], axis=1)
+        U_padded = _reshard(U_padded, s)
+        U_padded = jnp.concatenate([U_padded[:, :, 0:1, :], U_padded, U_padded[:, :, -1:, :]], axis=2)
+        U_padded = _reshard(U_padded, s)
+        U_padded = jnp.concatenate([U_padded[:, :, :, 0:1], U_padded, U_padded[:, :, :, -1:]], axis=3)
+        U_padded = _reshard(U_padded, s)
 
-    else:  # Reflective
-        U_padded = jnp.pad(U, ((0, 0), (1, 1), (1, 1), (1, 1)), mode="edge")
+    else:  # Reflective (edge then negate normal momenta)
+        U_padded = jnp.concatenate([U[:, 0:1, :, :], U, U[:, -1:, :, :]], axis=1)
+        U_padded = _reshard(U_padded, s)
+        U_padded = jnp.concatenate([U_padded[:, :, 0:1, :], U_padded, U_padded[:, :, -1:, :]], axis=2)
+        U_padded = _reshard(U_padded, s)
+        U_padded = jnp.concatenate([U_padded[:, :, :, 0:1], U_padded, U_padded[:, :, :, -1:]], axis=3)
+        U_padded = _reshard(U_padded, s)
 
         # Negate x-momentum at x-boundaries
         U_padded = U_padded.at[1, 0, :, :].set(-U_padded[1, 0, :, :])

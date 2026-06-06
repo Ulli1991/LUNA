@@ -109,7 +109,12 @@ def create_distributed_mesh(cfg) -> Tuple[Mesh, Tuple[int, ...]]:
         print("=" * 60)
 
     mesh, grid_shape = create_device_mesh(
-        n_devices, cfg.SPATIAL_DIMENSION, decomposition=cfg.DECOMPOSITION, Nx=cfg.Nx, Ny=cfg.Ny
+        n_devices,
+        cfg.SPATIAL_DIMENSION,
+        decomposition=cfg.DECOMPOSITION,
+        Nx=cfg.Nx,
+        Ny=cfg.Ny,
+        mesh_shape=getattr(cfg, "MESH_SHAPE", None),
     )
 
     if is_main_process:

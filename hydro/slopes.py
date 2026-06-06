@@ -1,5 +1,4 @@
 import jax.numpy as jnp
-from jax import lax
 
 
 # ------------------- Slope limiters -------------------
@@ -26,22 +25,20 @@ def vanleer(dl, dr):
 
 # ------------------- Slope selection -------------------
 def slope_limiter(dl, dr, limiter):
-    """
-    Apply slope limiter based on limiter type.
-    Uses lax.switch for efficient 3-way branching.
-    """
+    """Apply slope limiter based on (static) limiter type.
 
-    # Wrap limiters for lax.switch
-    def apply_minmod(_):
+    `limiter` is a Python int closure-captured by the JIT factory, so a
+    plain `if`-chain compiles only the selected branch. The previous
+    lax.switch version forced XLA to trace all 3 limiter branches each
+    time the slope was computed, materialising redundant intermediates.
+    """
+    if limiter == 0:
         return minmod(dl, dr)
-
-    def apply_moncen(_):
+    if limiter == 1:
         return moncen(dl, dr)
-
-    def apply_vanleer(_):
+    if limiter == 2:
         return vanleer(dl, dr)
-
-    return lax.switch(limiter, [apply_minmod, apply_moncen, apply_vanleer], None)
+    raise ValueError(f"Unknown limiter: {limiter}")
 
 
 # ------------------- Compute slopes -------------------
@@ -98,6 +95,31 @@ def compute_slopes_from_padded(U_pad, limiter):
     dUz = slope_limiter(dz_B, dz_F, limiter)
 
     return dUx, dUy, dUz
+
+
+def compute_slope_x_3d_from_padded(U_pad, limiter):
+    """Single-direction x-slope from a 3D padded array. Used by the
+    memory-conscious MUSCL-Hancock 3D path that builds the predictor
+    Jacobian product direction by direction so only one slope array
+    is alive at a time (cuts ~40 GB of working set at 1024^3 fp32)."""
+    Qc = U_pad[:, 1:-1, 1:-1, 1:-1]
+    dx_L = Qc - U_pad[:, :-2, 1:-1, 1:-1]
+    dx_R = U_pad[:, 2:, 1:-1, 1:-1] - Qc
+    return slope_limiter(dx_L, dx_R, limiter)
+
+
+def compute_slope_y_3d_from_padded(U_pad, limiter):
+    Qc = U_pad[:, 1:-1, 1:-1, 1:-1]
+    dy_D = Qc - U_pad[:, 1:-1, :-2, 1:-1]
+    dy_U = U_pad[:, 1:-1, 2:, 1:-1] - Qc
+    return slope_limiter(dy_D, dy_U, limiter)
+
+
+def compute_slope_z_3d_from_padded(U_pad, limiter):
+    Qc = U_pad[:, 1:-1, 1:-1, 1:-1]
+    dz_B = Qc - U_pad[:, 1:-1, 1:-1, :-2]
+    dz_F = U_pad[:, 1:-1, 1:-1, 2:] - Qc
+    return slope_limiter(dz_B, dz_F, limiter)
 
 
 def compute_slopes(U, limiter, boundary):
