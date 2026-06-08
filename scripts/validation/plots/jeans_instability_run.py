@@ -62,7 +62,7 @@ def main():
         t_end=t_end,
         time_bet_snaps=t_end / 20,  # 20 snapshots
         # Self-gravity wiring
-        SELF_GRAVITY=True,
+        SELF_GRAVITY=os.environ.get("LUNA_SELF_GRAVITY", "1") == "1",
         GRAVITATIONAL_G=G,
         POISSON_TOL=1e-6,
         POISSON_MAX_CYCLES=15,

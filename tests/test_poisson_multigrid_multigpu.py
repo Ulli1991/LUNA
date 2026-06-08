@@ -121,6 +121,46 @@ def main():
         passed = float(rel_err) < 1e-2
         print(f"{'PASS' if passed else 'FAIL'}: rel err {'<' if passed else '>'} 1e-2")
 
+    # ------------------------------------------------------------------
+    # Now test the GRADIENT computation under shard_map. That's the next
+    # step in the self_grav pipeline. Analytic: gx = -∂Φ/∂x ∝ -sin(kx).
+    # ------------------------------------------------------------------
+    from functools import partial
+    from jax.experimental.shard_map import shard_map
+    from gravity.poisson_bc_shardmap import make_scalar_halo_3d_shardmap
+
+    halo_factory = make_scalar_halo_3d_shardmap(mesh)
+    halo_fn_sm = halo_factory(0)  # periodic
+
+    @partial(jax.jit, static_argnames=())
+    @partial(shard_map, mesh=mesh, in_specs=(spec,), out_specs=spec)
+    def grad_x_shardmap(phi_local):
+        phi_pad = halo_fn_sm(phi_local)
+        return -(phi_pad[2:, 1:-1, 1:-1] - phi_pad[:-2, 1:-1, 1:-1]) * (0.5 / DX)
+
+    gx_num = grad_x_shardmap(phi_num)
+    gx_analytic = -(FOURPIG * AMP / K) * jnp.sin(K * X)
+    gx_anal_sh = jax.device_put(gx_analytic, sharding)
+
+    gx_max_num = jnp.max(jnp.abs(gx_num))
+    gx_max_anal = jnp.max(jnp.abs(gx_anal_sh))
+    gx_diff = jnp.max(jnp.abs(gx_num - gx_anal_sh))
+    gx_rel = gx_diff / gx_max_anal
+    gx_corr = jnp.sum(gx_num * gx_anal_sh) / (
+        jnp.sqrt(jnp.sum(gx_num * gx_num)) * jnp.sqrt(jnp.sum(gx_anal_sh * gx_anal_sh))
+    )
+
+    if is_main:
+        print()
+        print("--- gradient test ---")
+        print(f"max |gx_num|                = {float(gx_max_num):.6e}")
+        print(f"max |gx_analytic|           = {float(gx_max_anal):.6e}")
+        print(f"max |gx_num - gx_analytic|  = {float(gx_diff):.6e}")
+        print(f"max |gx_diff|/|gx|          = {float(gx_rel):.6e}")
+        print(f"corr(gx_num, gx_analytic)   = {float(gx_corr):.6f}")
+        gx_passed = float(gx_rel) < 1e-2
+        print(f"{'PASS' if gx_passed else 'FAIL'}: gradient rel err {'<' if gx_passed else '>'} 1e-2")
+
 
 if __name__ == "__main__":
     main()
