@@ -7,6 +7,7 @@ from .einfeldt_shear_rarefaction import einfeldt_shear_rarefaction
 from .einfeldt_strong_rarefaction import einfeldt_strong_rarefaction
 from .einfeldt_transverse_rarefaction import einfeldt_transverse_rarefaction
 from .gresho_vortex import gresho_vortex
+from .jeans3d import jeans_3d
 from .kh import kelvin_helmholtz
 from .kh3d import kelvin_helmholtz_3d
 from .m82_disk_3d import m82_disk_3d
@@ -65,6 +66,7 @@ _IC_REGISTRY = {
     "CC85-Wind-3D": (cc85_wind_3d, 3),
     "M82-Disk-3D": (m82_disk_3d, 3),
     "Gresho-Vortex-2D": (gresho_vortex, 2),
+    "Jeans-Instability-3D": (jeans_3d, 3),
 }
 
 

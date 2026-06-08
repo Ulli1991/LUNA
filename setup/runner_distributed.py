@@ -104,10 +104,12 @@ def run_simulation_distributed(
     from setup.source_cooling import setup_cooling
     from setup.source_external_gravity import setup_external_gravity
     from setup.source_ou_forcing import setup_ou_forcing
+    from setup.source_self_gravity import setup_self_gravity
 
     forcing_state = setup_ou_forcing(cfg, sharding, is_main_process)
     cc85_state = setup_cc85_source(cfg, sharding, is_main_process)
     ext_grav_state = setup_external_gravity(cfg, sharding, is_main_process)
+    self_grav_state = setup_self_gravity(cfg, sharding, is_main_process)
     cooling_solver = setup_cooling(cfg, is_main_process)
 
     # === WARMUP COMPILATION ===
@@ -234,6 +236,8 @@ def run_simulation_distributed(
             U_new = _isothermal_project(U_new, cfg.isothermal_cs2, cfg.gamma)
         if ext_grav_state is not None:
             U_new = ext_grav_state["apply"](U_new, dt)
+        if self_grav_state is not None:
+            U_new = self_grav_state["apply"](U_new, dt)
         if cc85_state is not None:
             U_new = cc85_state["apply"](U_new, dt)
         if cooling_solver is not None:

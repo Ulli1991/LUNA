@@ -86,6 +86,27 @@ class Config:
     # False keeps the auto-sharded path (KH 2D, solar, etc.).
     USE_SHARDMAP: bool = False
 
+    # Self-gravity (multigrid V-cycle Poisson solve each step, applied as
+    # an operator-split source on momentum + energy). Phase 1: single-
+    # process, periodic + Neumann BC only. See docs/multigrid_poisson_plan.md
+    SELF_GRAVITY: bool = False
+    GRAVITATIONAL_G: float = 1.0          # G in code units (set per problem)
+    # Jeans-instability IC knobs (only used by test_problem='Jeans-Instability-3D')
+    jeans_rho0: float = 1.0
+    jeans_P0: float = 1.0
+    jeans_amp: float = 1.0e-4
+    jeans_kx: float = 0.0                # set to 2π/Lx in the run script
+    jeans_ky: float = 0.0
+    jeans_kz: float = 0.0
+    POISSON_TOL: float = None             # ∞-norm residual stop; None = run all cycles
+    POISSON_MAX_CYCLES: int = 10
+    POISSON_N_PRE: int = 2                # smoother iters on descent
+    POISSON_N_POST: int = 2                # smoother iters on ascent
+    POISSON_N_COARSEST: int = 50          # smoother iters at the coarsest level
+    POISSON_N_LEVELS: int = None          # auto (until per-side < 4)
+    POISSON_FMG_VCYCLES_PER_LEVEL: int = 1
+    POISSON_FMG_EXTRA_VCYCLES: int = 0
+
     Nx: int = 1024
     Ny: int = 1024
     Nz: int = 1024
