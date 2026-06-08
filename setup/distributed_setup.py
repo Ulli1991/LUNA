@@ -308,14 +308,34 @@ def create_solver_distributed(
     else:  # 3D
         sharding = NamedSharding(mesh, P(None, "x", "y", "z"))
 
-    if is_main_process:
-        print("Using automatic sharding with NamedSharding")
-        print(f"Sharding spec: {sharding.spec}")
-        print("Halo exchange: jnp.roll (standard JAX approach)")
+    # Pick the halo exchange path: shard_map (explicit ppermute, opt-in via
+    # cfg.USE_SHARDMAP) or the legacy auto-sharded jnp.pad. shard_map only
+    # supports periodic/zero-grad 3D at the moment (phase 1) and falls back
+    # to the auto path otherwise — so KH 2D, solar (reflective), etc. all
+    # keep working until phase 2/4 of the shard_map plan.
+    use_shardmap = bool(getattr(cfg, "USE_SHARDMAP", False))
+    if use_shardmap and cfg.SPATIAL_DIMENSION == 3 and cfg.BOUNDARY in (0, 1):
+        from utils.halo_exchange_shardmap import make_halo_3d_shardmap
 
-    # Use standard JAX halo exchange
-    def pad_halo_fn(U, boundary, spatial_dim):
-        return pad_with_halo_auto(U, boundary, spatial_dim)
+        pad_halo_fn = make_halo_3d_shardmap(mesh)
+        if is_main_process:
+            print("Using shard_map with explicit per-shard ppermute halos")
+            print(f"Sharding spec: {sharding.spec}")
+    else:
+        if use_shardmap and is_main_process:
+            print(
+                "shard_map requested but not eligible "
+                f"(SPATIAL_DIMENSION={cfg.SPATIAL_DIMENSION}, BOUNDARY={cfg.BOUNDARY}) "
+                "— falling back to auto-sharded jnp.pad."
+            )
+        use_shardmap = False
+        if is_main_process:
+            print("Using automatic sharding with NamedSharding")
+            print(f"Sharding spec: {sharding.spec}")
+            print("Halo exchange: jnp.roll (standard JAX approach)")
+
+        def pad_halo_fn(U, boundary, spatial_dim):
+            return pad_with_halo_auto(U, boundary, spatial_dim)
 
     # Select time integrator. Each factory returns (compute_dt_fn, step_fn):
     #   compute_dt_fn(U) -> dt_cfl   (pure CFL, runner does the clamping)
@@ -388,8 +408,14 @@ def create_solver_distributed(
             cfg.CFL,
             sharding=sharding,
             riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
+            use_shardmap=use_shardmap,
+            mesh=mesh if use_shardmap else None,
         )
-        integrator_name = f"MUSCL-Hancock ({getattr(cfg, 'riemann_solver', 'hllc').upper()})"
+        integrator_name = (
+            f"MUSCL-Hancock ({getattr(cfg, 'riemann_solver', 'hllc').upper()}"
+            + (", shard_map" if use_shardmap else "")
+            + ")"
+        )
 
     if is_main_process:
         print(f"Using {integrator_name} time integration")

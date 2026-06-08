@@ -74,12 +74,22 @@ def create_muscl_hancock_modular_step(
     CFL,
     sharding=None,
     riemann_solver="hllc",
+    use_shardmap=False,
+    mesh=None,
 ):
     """MUSCL-Hancock stepper with MODULAR JIT compilation.
 
     Returns (compute_dt_fn, step_fn) where
         compute_dt_fn(U) -> dt_cfl  (pure CFL, no t_end or snapshot clamping)
         step_fn(U, dt)   -> U_new   (pure step using caller-supplied dt)
+
+    When `use_shardmap=True` the step body is wrapped in
+    `jax.experimental.shard_map.shard_map` so each device runs the full
+    pipeline (cons_to_prim → halo → MUSCL → update) on its own shard,
+    with halos exchanged via explicit `jax.lax.ppermute` inside
+    `pad_halo_fn`. This sidesteps XLA's auto-sharding scratch blow-up
+    at small device counts. Requires `mesh` to be supplied so the
+    shard_map can construct PartitionSpecs.
 
     The runner is responsible for all time-target arithmetic. Physics
     (predictor + reconstruct + flux divergence) lives in hydro/muscl_hancock.py.
@@ -88,14 +98,9 @@ def create_muscl_hancock_modular_step(
 
     from hydro.muscl_hancock import muscl_hancock_divergence
 
-    # Fused step: cons_to_prim + halo + MUSCL-Hancock + conservative update
-    # all inside one @jax.jit so XLA can eliminate intermediate W and W_pad
-    # materialisations. Previously these were three separate JITs (with the
-    # claim that the halo collective would overlap with surrounding compute),
-    # but JIT boundaries forced 2-3 extra full-shard live arrays per step;
-    # XLA can fuse better here.
-    @jax.jit
-    def time_step_muscl_hancock_modular(U, dt):
+    # Inner step (semantics-only — same body whether dispatched per-shard
+    # via shard_map or globally via auto-sharding).
+    def _step_inner(U, dt):
         W = cons_to_prim(U, gamma)
         W_pad = pad_halo_fn(W, boundary, spatial_dim)
         dU = muscl_hancock_divergence(
@@ -112,8 +117,31 @@ def create_muscl_hancock_modular_step(
             order=order,
         )
         U_new = U + dt * dU
-        if sharding is not None:
+        if sharding is not None and not use_shardmap:
             U_new = jax.lax.with_sharding_constraint(U_new, sharding)
         return U_new
+
+    if use_shardmap:
+        if mesh is None:
+            raise ValueError("use_shardmap=True requires `mesh` to be passed in")
+        from jax.experimental.shard_map import shard_map
+        from jax.sharding import PartitionSpec as P
+
+        if spatial_dim == 3:
+            in_spec = P(None, "x", "y", "z")
+        elif spatial_dim == 2:
+            in_spec = P(None, "x", "y")
+        else:
+            in_spec = P(None, "x")
+        time_step_muscl_hancock_modular = jax.jit(
+            shard_map(
+                _step_inner,
+                mesh=mesh,
+                in_specs=(in_spec, P()),
+                out_specs=in_spec,
+            )
+        )
+    else:
+        time_step_muscl_hancock_modular = jax.jit(_step_inner)
 
     return compute_dt_fn, time_step_muscl_hancock_modular

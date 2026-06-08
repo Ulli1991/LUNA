@@ -48,6 +48,10 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Sedov 3D resolution study: spherically-averaged radial profiles at t = 10⁴ yr of number density n [cm⁻³], radial velocity v_r [km/s], pressure P [erg/cm³], and temperature T [K] for every LUNA Sedov run on disk (currently Nx=128³, 256³, 512³). Curves shaded by resolution; dashed line marks the analytic Sedov-Taylor shock radius. As Nx increases the shock peak sharpens toward the Rankine-Hugoniot strong-shock ratio (ρ₂/ρ₁ = 4 for γ=5/3) while the central rarefaction deepens.*
 
+![Sedov 1024³: shard_map vs auto-sharded radial profiles](figures/sedov_shardmap_vs_baseline.png)
+
+*Sedov 3D 1024³ at t = 10⁴ yr on 32 A100s: shard_map (explicit per-shard `jax.lax.ppermute` halos, red dashed) vs the auto-sharded `NamedSharding + jnp.pad` baseline (blue solid). Radial profiles of density, radial velocity, and pressure overlay: shock peak ρ agrees to **+0.13%** and shock radius to **−3.8%** (≈1 radial bin out of 64). Validates the shard_map refactor while it cuts wall-clock from 6 h 52 min (auto-sharded) to **9 min 17 s** on the same hardware (~44× speed-up, dispatch-fix + JIT-fusion + explicit halo).*
+
 ![Driven isothermal turbulence: 2×2 resolution montage](figures/turbulence_panel.png)
 
 *Subsonic (M_rms = 0.3) driven isothermal turbulence at t ≈ 4 (≈1.2 turnover times): density slice through z = L/2 for a resolution sweep Nx³ ∈ {128³, 256³, 512³, 1024³}. Solenoidal-only OU forcing (Federrath/Schmidt 2010) on a 1³ periodic box, k_min=1, k_max=2 driving range, identical PRNG seed at every Nx so the driven realisation matches. EOS: LUNA solves γ=5/3 Euler internally for HLLC robustness, but the runner enforces p = c_s² ρ as an operator-split post-step projection (soft isothermal thermostat) — no spurious compressive heating accumulates. The 1024³ run is on a 2-node × 4-GPU schedule slot.*

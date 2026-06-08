@@ -128,52 +128,53 @@ def _muscl_hancock_2d(W_pad, dt, dWx, dWy, *, gamma, riemann_solver, inv_dx, inv
 
 
 def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_dy, inv_dz, boundary):
-    """3D MUSCL-Hancock divergence, restructured for memory.
+    """3D unsplit MUSCL-Hancock — full transverse predictor, streaming flux phase.
 
-    The previous version held dWx, dWy, dWz alive concurrently (3*N^3
-    slopes) plus their finite-difference intermediates (6*N^3) during the
-    slope-limiter step — over 200 GB of transient slope state at 1024^3
-    fp32. Working set OOMed at 8 GPUs even after fusing all JITs and the
-    Riemann reconstruction.
+    Predictor (A_dW = A_x dWx + A_y dWy + A_z dWz) is built one direction at
+    a time into a running accumulator with `optimization_barrier` between
+    contributions. This forces XLA to commit the partial A_dW and release
+    the previous direction's slope + Jacobian intermediates before computing
+    the next. Slopes are never alive concurrently for the predictor.
 
-    New structure:
-      * Predictor (A_dW) is built direction-by-direction. Each direction's
-        slope is computed, contributed to A_dW, then released before the
-        next direction starts. Peak slope state shrinks from 3*N^3 to
-        1*N^3.
-      * Flux phase recomputes each direction's slope inside its own scan
-        branch. lax.scan forces serial execution so Wr/Wl/F_*/dU
-        intermediates are reused across the three iterations. Slope
-        recompute is cheap (2 subtractions + a limiter call) but saves the
-        per-direction transients from being alive after the predictor.
+    W_half = Wc - 0.5*dt*A_dW carries the full transverse correction (this
+    is the unsplit Colella scheme, NOT dim-split — bit-equivalent to the
+    original triple-slope version up to floating-point reduction order).
 
-    Per-axis flux is still split into (interior, left bdy, right bdy) so
-    the (Nx+1)-sized WL/WR concatenated arrays are never materialised.
+    Flux phase: each direction's sweep is a self-contained closure that
+    recomputes its own slope from W_pad, reconstructs Wr/Wl from W_half,
+    computes fluxes (interior + 2 boundary), and returns its per-direction
+    flux divergence. The three sweep results are summed sequentially with
+    barriers between, so per-direction Wr/Wl/F intermediates from the
+    previous sweep are released before the next starts.
+
+    Per-axis flux split into (interior, left bdy, right bdy) so the
+    (Nx+1)-sized WL/WR concatenated arrays are never materialised.
     """
     import jax.lax as lax
 
     flux_fn = _pick_riemann(riemann_solver)
     Wc = W_pad[:, 1:-1, 1:-1, 1:-1]
 
-    # ---- Predictor: A_dW = A_x dWx + A_y dWy + A_z dWz, one direction at a time.
+    # ---- Predictor: build full A_dW one direction at a time, with barriers.
     dWx = compute_slope_x_3d_from_padded(W_pad, limiter)
     A_dW = apply_primitive_jacobian_3d_x(Wc, dWx * inv_dx, gamma)
-    # dWx is now unreferenced and XLA can release it before the next slope.
+    A_dW = lax.optimization_barrier(A_dW)
 
     dWy = compute_slope_y_3d_from_padded(W_pad, limiter)
     A_dW = A_dW + apply_primitive_jacobian_3d_y(Wc, dWy * inv_dy, gamma)
+    A_dW = lax.optimization_barrier(A_dW)
 
     dWz = compute_slope_z_3d_from_padded(W_pad, limiter)
     A_dW = A_dW + apply_primitive_jacobian_3d_z(Wc, dWz * inv_dz, gamma)
 
     W_half = Wc - 0.5 * dt * A_dW
-    # A_dW, dWz no longer needed.
+    W_half = lax.optimization_barrier(W_half)
 
-    # ---- Flux phase: per-direction branches, slope recomputed inside each.
-    def _x_contrib(_):
-        dWx_local = compute_slope_x_3d_from_padded(W_pad, limiter)
-        Wr = W_half + 0.5 * dWx_local
-        Wl = W_half - 0.5 * dWx_local
+    # ---- Flux phase: per-direction sweeps, slope recomputed inside each.
+    def _x_sweep():
+        dW = compute_slope_x_3d_from_padded(W_pad, limiter)
+        Wr = W_half + 0.5 * dW
+        Wl = W_half - 0.5 * dW
         if boundary == 0:
             WL_bc = Wr[:, -1:, :, :]
             WR_bc = Wl[:, 0:1, :, :]
@@ -188,10 +189,10 @@ def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_
             axis=1,
         ) * inv_dx
 
-    def _y_contrib(_):
-        dWy_local = compute_slope_y_3d_from_padded(W_pad, limiter)
-        Wr = W_half + 0.5 * dWy_local
-        Wl = W_half - 0.5 * dWy_local
+    def _y_sweep():
+        dW = compute_slope_y_3d_from_padded(W_pad, limiter)
+        Wr = W_half + 0.5 * dW
+        Wl = W_half - 0.5 * dW
         if boundary == 0:
             WL_bc = Wr[:, :, -1:, :]
             WR_bc = Wl[:, :, 0:1, :]
@@ -206,10 +207,10 @@ def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_
             axis=2,
         ) * inv_dy
 
-    def _z_contrib(_):
-        dWz_local = compute_slope_z_3d_from_padded(W_pad, limiter)
-        Wr = W_half + 0.5 * dWz_local
-        Wl = W_half - 0.5 * dWz_local
+    def _z_sweep():
+        dW = compute_slope_z_3d_from_padded(W_pad, limiter)
+        Wr = W_half + 0.5 * dW
+        Wl = W_half - 0.5 * dW
         if boundary == 0:
             WL_bc = Wr[:, :, :, -1:]
             WR_bc = Wl[:, :, :, 0:1]
@@ -224,13 +225,11 @@ def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_
             axis=3,
         ) * inv_dz
 
-    def _step(dU_carry, axis_idx):
-        contrib = lax.switch(axis_idx, [_x_contrib, _y_contrib, _z_contrib], None)
-        return dU_carry + contrib, None
-
-    # Seed the scan with the X-direction contribution rather than a zeros
-    # buffer (saves a full N^3 zero seed at 1024^3 fp32).
-    dU, _ = lax.scan(_step, _x_contrib(None), jnp.arange(1, 3))
+    # Strictly sequential: each sweep returns dU contribution, gets summed,
+    # barrier forces materialisation before the next sweep starts.
+    dU = lax.optimization_barrier(_x_sweep())
+    dU = lax.optimization_barrier(dU + _y_sweep())
+    dU = dU + _z_sweep()
     return dU
 
 

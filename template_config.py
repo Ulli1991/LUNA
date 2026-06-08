@@ -78,6 +78,14 @@ class Config:
     # (2, 2, 2) at 8 GPUs to halve y/z halo cost for 1024^3 fp32 runs).
     MESH_SHAPE: tuple = None
 
+    # shard_map opt-in for the 3D MUSCL-Hancock step. When True the
+    # cons_to_prim + halo + flux + update pipeline runs inside a
+    # shard_map body — explicit per-shard ppermute for the halo,
+    # per-shard intermediates only, sidesteps XLA's auto-sharding
+    # working-set blowup at 1024^3 on small device counts. Default
+    # False keeps the auto-sharded path (KH 2D, solar, etc.).
+    USE_SHARDMAP: bool = False
+
     Nx: int = 1024
     Ny: int = 1024
     Nz: int = 1024
