@@ -6,9 +6,15 @@ from .driven_turbulence_3d import driven_turbulence_3d
 from .einfeldt_shear_rarefaction import einfeldt_shear_rarefaction
 from .einfeldt_strong_rarefaction import einfeldt_strong_rarefaction
 from .einfeldt_transverse_rarefaction import einfeldt_transverse_rarefaction
+from .bonnor_ebert3d import bonnor_ebert_3d
+from .evrard3d import evrard_3d
 from .gresho_vortex import gresho_vortex
 from .jeans3d import jeans_3d
 from .kh import kelvin_helmholtz
+from .lane_emden3d import lane_emden_3d
+from .pulsating_polytrope3d import pulsating_polytrope_3d
+from .maclaurin3d import maclaurin_3d
+from .boss_bodenheimer3d import boss_bodenheimer_3d
 from .kh3d import kelvin_helmholtz_3d
 from .m82_disk_3d import m82_disk_3d
 from .rotation_slotted_disk import rotation_slotted_disk
@@ -67,6 +73,12 @@ _IC_REGISTRY = {
     "M82-Disk-3D": (m82_disk_3d, 3),
     "Gresho-Vortex-2D": (gresho_vortex, 2),
     "Jeans-Instability-3D": (jeans_3d, 3),
+    "Evrard-Collapse-3D": (evrard_3d, 3),
+    "Bonnor-Ebert-3D": (bonnor_ebert_3d, 3),
+    "Lane-Emden-3D": (lane_emden_3d, 3),
+    "Pulsating-Polytrope-3D": (pulsating_polytrope_3d, 3),
+    "Maclaurin-Spheroid-3D": (maclaurin_3d, 3),
+    "Boss-Bodenheimer-3D": (boss_bodenheimer_3d, 3),
 }
 
 

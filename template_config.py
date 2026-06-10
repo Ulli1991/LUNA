@@ -98,6 +98,36 @@ class Config:
     jeans_kx: float = 0.0                # set to 2π/Lx in the run script
     jeans_ky: float = 0.0
     jeans_kz: float = 0.0
+    # Evrard collapse IC knobs (test_problem='Evrard-Collapse-3D')
+    evrard_M: float = 1.0
+    evrard_R: float = 1.0
+    evrard_u: float = 0.05
+    evrard_rho_ambient: float = 0.0      # 0 → use default 1e-3 × ρ_cloud_avg
+    # Bonnor-Ebert sphere IC (test_problem='Bonnor-Ebert-3D').
+    # ξ_t = 5 → sub-critical (stable); ξ_t = 10 → super-critical (collapsing).
+    be_xi_t: float = 5.0
+    be_rho_c: float = 1.0                # auto-overridden by geometry
+    be_cs2: float = 1.0
+    be_R: float = 1.0
+    be_rho_ambient: float = 0.0
+    # Lane-Emden polytrope IC (test_problem='Lane-Emden-3D' or 'Pulsating-Polytrope-3D').
+    lane_n: float = 1.5                  # polytropic index (1.5 for γ=5/3)
+    lane_rho_c: float = 1.0
+    lane_R: float = 1.0
+    lane_rho_ambient: float = 0.01       # 1% floor — keeps ambient c_s finite (polytropic P→0 at surface)
+    pulse_amp: float = 0.01              # radial velocity perturbation amplitude
+    # Maclaurin spheroid IC (test_problem='Maclaurin-Spheroid-3D').
+    mac_e: float = 0.5                   # eccentricity
+    mac_a: float = 1.0                   # equatorial semi-major axis
+    mac_rho: float = 1.0
+    mac_rho_ambient: float = 0.0
+    # Boss-Bodenheimer IC (test_problem='Boss-Bodenheimer-3D').
+    bb_M: float = 1.0
+    bb_R: float = 1.0
+    bb_cs2: float = 0.25                 # canonical α = R·cs²/(GM) = 0.25 thermal/grav ratio
+    bb_beta: float = 0.16
+    bb_amp: float = 0.1
+    bb_rho_ambient: float = 0.0
     POISSON_TOL: float = None             # ∞-norm residual stop; None = run all cycles
     POISSON_MAX_CYCLES: int = 10
     POISSON_N_PRE: int = 2                # smoother iters on descent

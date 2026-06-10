@@ -80,6 +80,26 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Spherically-averaged radial profiles of n_H, v_rad, and T at t = 60 Myr for each resolution. Computed by 3D binning in radius from the box center. Useful for direct comparison against the analytic CC85 solution (n ∝ r⁻², roughly constant v ∝ v_∞ outside R_⋆, and adiabatic T ∝ r⁻⁴ᐟ³ in the steady wind) and Schneider+ 2018 CGOLS Figure 4.*
 
+![Evrard collapse: LUNA vs AREPO radial profiles](figures/arepo_vs_luna_evrard.png)
+
+*Self-gravity validation against AREPO (Springel 2010 moving-mesh code) on Evrard's 1988 adiabatic spherical collapse at t = 0.8 (matches Springel 2010 Fig 41 reference time). Both codes run identical ICs in code units (M = R = G = 1, ρ ∝ 1/r, u₀ = 0.05, γ = 5/3) at 64³ initial cells in a periodic L = 4 box. LUNA fixed-grid (dashed) and AREPO moving Voronoi (solid) agree to within plotting precision on ρ, vᵣ, P from r ≈ 0.08 outward — the shock front, the v ≈ −1.4 free-fall region, and the static ambient all coincide. AREPO's adaptive mesh refines to r ≈ 0.005 and captures the post-bounce core at ρ ~ 150 that LUNA's fixed dx = 0.06 grid can't reach, reproducing the central-density underestimation Springel 2010 documented for fixed Cartesian meshes.*
+
+![Bonnor-Ebert sub-critical sphere: LUNA vs AREPO](figures/arepo_vs_luna_be_sub.png)
+
+*Sub-critical isothermal Bonnor-Ebert sphere (ξₜ = 5 < 6.451) at t = 3.0, periodic L = 4, cs² = 1, G = 1. Smoothed cloud/ambient transition over 3 cells (analytic ρ jumps factor ~14 without smoothing). LUNA and AREPO agree on ρ, vᵣ, P throughout — both show outward drift driven by the IC's residual pressure/gravity mismatch at the cloud edge (a periodic-BC artefact, not a solver bug, since AREPO independently reproduces it).*
+
+![Bonnor-Ebert super-critical sphere: LUNA vs AREPO](figures/arepo_vs_luna_be_super.png)
+
+*Super-critical isothermal Bonnor-Ebert sphere (ξₜ = 10 > 6.451) at t = 3.0. Both codes show the same outward-flow profile after the initial collapse–bounce cycle, peaking at vᵣ ≈ 0.3. AREPO's moving mesh extends to smaller r and shows finer post-bounce structure, but the bulk profile matches LUNA to plotting precision.*
+
+![Boss-Bodenheimer 1979: LUNA vs AREPO](figures/arepo_vs_luna_bb79.png)
+
+*Boss & Bodenheimer 1979 rotating isothermal collapse at t = 2.0 (β = 0.16 thermal/grav ratio, m = 2 perturbation amplitude 0.1, cs² = 0.25, γ = 5/3). Radial profiles overlap from r ≳ 0.1 outward; AREPO's adaptive mesh resolves the rotating central core down to r ≈ 0.02 with ρ ~ 1, while LUNA's fixed 64³ grid captures the bulk rotation profile.*
+
+![Boss-Bodenheimer 1979 column density: LUNA vs AREPO](figures/arepo_vs_luna_bb79_projection.png)
+
+*Same BB79 collapse, side-by-side column density along z (the rotation axis) at t = 2.0. Same colormap range, same 64² bin grid. Both codes show the central concentration at (x, y) ≈ (2, 2); AREPO's mesh adapts into the dense core (peak log₁₀Σ ≈ −0.17 vs LUNA's −0.57), while LUNA's fixed grid produces a smoother ambient. AREPO's ambient noise reflects sparse particle coverage where the moving mesh derefined — the real cell density in those regions is much lower than in the centre. Apples-to-apples ICs, same units, code-unit comparison.*
+
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
 - ✅ HLLC Riemann solver with optimized flux computation
