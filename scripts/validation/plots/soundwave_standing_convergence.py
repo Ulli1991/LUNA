@@ -53,7 +53,6 @@ def main():
         gamma=GAMMA,
         t_end=T_END,
         time_bet_snaps=T_END,
-        TIME_SOLVER=1,
         CFL=0.4,
         ORDER=1,
         LIMITER=1,

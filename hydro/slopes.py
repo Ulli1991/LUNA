@@ -42,7 +42,6 @@ def slope_limiter(dl, dr, limiter):
 
 
 # ------------------- Compute slopes -------------------
-from hydro.padding import pad
 
 
 def compute_slopes_from_padded(U_pad, limiter):
@@ -120,15 +119,3 @@ def compute_slope_z_3d_from_padded(U_pad, limiter):
     dz_B = Qc - U_pad[:, 1:-1, 1:-1, :-2]
     dz_F = U_pad[:, 1:-1, 1:-1, 2:] - Qc
     return slope_limiter(dz_B, dz_F, limiter)
-
-
-def compute_slopes(U, limiter, boundary):
-    """
-    Compute slopes in 1D, 2D, or 3D depending on U shape.
-    Pads U first using the selected boundary condition, then computes slopes.
-
-    U: (Nvar, Nx) or (Nvar, Nx, Ny) or (Nvar, Nx, Ny, Nz)
-    Returns slopes for interior cells only.
-    """
-    U_pad = pad(U, boundary)
-    return compute_slopes_from_padded(U_pad, limiter)

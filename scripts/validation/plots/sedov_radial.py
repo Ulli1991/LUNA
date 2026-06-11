@@ -31,7 +31,6 @@ def main():
         Nx=NX, Ny=NX, Nz=NX,
         t_end=T_END,
         gamma=GAMMA,
-        TIME_SOLVER=1,
         ORDER=1,
         PLOT_AFTER_SIM=False,
         production_mode=True,

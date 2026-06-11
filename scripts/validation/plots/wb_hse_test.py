@@ -39,7 +39,6 @@ def main():
         Nx=NX, Ny=NY,
         Lx=LX, Ly=LY,
         gamma=GAMMA,
-        TIME_SOLVER=1,
         ORDER=1,
         LIMITER=0,             # minmod
         CFL=0.4,

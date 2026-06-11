@@ -29,7 +29,6 @@ def main():
         Nx=NX, Ny=NX,
         Lx=1.0, Ly=1.0,
         t_end=T_END,
-        TIME_SOLVER=1,         # MUSCL-Hancock
         ORDER=1,               # PLM
         LIMITER=1,             # MonCen
         CFL=0.4,

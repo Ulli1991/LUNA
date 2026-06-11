@@ -465,3 +465,75 @@ def hllc_flux_primitive(W_L, W_R, axis, gamma):
         raise ValueError(
             f"hllc_flux_primitive only supports 1D (3), 2D (4), or 3D (5) vars, got {Nvar}"
         )
+
+
+def hll_flux_primitive_3d(W_L, W_R, axis, gamma):
+    """HLL Riemann solver for 3D Euler — PRIMITIVE inputs, conservative flux.
+
+    Two-wave solver: no contact wave, so the contact/shear field is smeared
+    relative to HLLC. That extra dissipation is exactly what suppresses the
+    grid-aligned (carbuncle-type) instability in strong, grid-aligned
+    collapse flows. Use as a diagnostic alternative or hybrid fallback.
+
+        F_HLL = F_L                              if S_L ≥ 0
+              = F_R                              if S_R ≤ 0
+              = (S_R F_L − S_L F_R + S_L S_R (U_R − U_L)) / (S_R − S_L)
+    """
+    rho_L, vx_L, vy_L, vz_L, P_L = W_L
+    rho_R, vx_R, vy_R, vz_R, P_R = W_R
+    gm1 = gamma - 1.0
+
+    if axis == 0:
+        vn_L, vn_R = vx_L, vx_R
+    elif axis == 1:
+        vn_L, vn_R = vy_L, vy_R
+    else:
+        vn_L, vn_R = vz_L, vz_R
+
+    c_L = jnp.sqrt(gamma * P_L / rho_L)
+    c_R = jnp.sqrt(gamma * P_R / rho_R)
+    S_L = jnp.minimum(vn_L - c_L, vn_R - c_R)
+    S_R = jnp.maximum(vn_L + c_L, vn_R + c_R)
+
+    ke_L = 0.5 * (vx_L * vx_L + vy_L * vy_L + vz_L * vz_L)
+    ke_R = 0.5 * (vx_R * vx_R + vy_R * vy_R + vz_R * vz_R)
+    E_L = P_L / gm1 + rho_L * ke_L
+    E_R = P_R / gm1 + rho_R * ke_R
+
+    inv_dS = 1.0 / (S_R - S_L)
+
+    def hll_component(F_L_i, F_R_i, U_L_i, U_R_i):
+        f_mid = (S_R * F_L_i - S_L * F_R_i + S_L * S_R * (U_R_i - U_L_i)) * inv_dS
+        return jnp.where(S_L >= 0.0, F_L_i, jnp.where(S_R <= 0.0, F_R_i, f_mid))
+
+    rho_vn_L = rho_L * vn_L
+    rho_vn_R = rho_R * vn_R
+
+    flux_0 = hll_component(rho_vn_L, rho_vn_R, rho_L, rho_R)
+    flux_E = hll_component((E_L + P_L) * vn_L, (E_R + P_R) * vn_R, E_L, E_R)
+
+    flux_mx = hll_component(
+        rho_vn_L * vx_L + (P_L if axis == 0 else 0.0),
+        rho_vn_R * vx_R + (P_R if axis == 0 else 0.0),
+        rho_L * vx_L, rho_R * vx_R,
+    )
+    flux_my = hll_component(
+        rho_vn_L * vy_L + (P_L if axis == 1 else 0.0),
+        rho_vn_R * vy_R + (P_R if axis == 1 else 0.0),
+        rho_L * vy_L, rho_R * vy_R,
+    )
+    flux_mz = hll_component(
+        rho_vn_L * vz_L + (P_L if axis == 2 else 0.0),
+        rho_vn_R * vz_R + (P_R if axis == 2 else 0.0),
+        rho_L * vz_L, rho_R * vz_R,
+    )
+    return jnp.stack([flux_0, flux_mx, flux_my, flux_mz, flux_E])
+
+
+@partial(jax.jit, static_argnums=(2, 3))
+def hll_flux_primitive(W_L, W_R, axis, gamma):
+    """HLL dispatcher (3D only for now — diagnostic use)."""
+    Nvar = W_L.shape[0]
+    if Nvar == 5:
+        return hll_flux_primitive_3d(W_L, W_R, axis, gamma)
+    raise ValueError(f"hll_flux_primitive currently supports 3D (5 vars), got {Nvar}")

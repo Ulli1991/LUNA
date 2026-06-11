@@ -49,7 +49,6 @@ def main():
         gamma=GAMMA,
         t_end=T_END,
         time_bet_snaps=T_END,  # one snapshot at t_end
-        TIME_SOLVER=1,         # MUSCL-Hancock (flux-difference predictor)
         CFL=0.4,
         ORDER=1,
         LIMITER=1,  # MonCen: doesn't clip slopes at smooth extrema (sine peaks)

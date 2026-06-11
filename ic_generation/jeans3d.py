@@ -25,9 +25,14 @@ def jeans_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     rho0 = getattr(cfg, "jeans_rho0", 1.0)
     P0 = getattr(cfg, "jeans_P0", 1.0)
     amp = getattr(cfg, "jeans_amp", 1.0e-4)
-    kx = getattr(cfg, "jeans_kx", 2.0 * jnp.pi / Lx)
+    kx = getattr(cfg, "jeans_kx", 0.0)
     ky = getattr(cfg, "jeans_ky", 0.0)
     kz = getattr(cfg, "jeans_kz", 0.0)
+    # All-zero wavevector means "not set" (the template default). A Jeans IC
+    # without a perturbation mode is never intended, so fall back to the
+    # fundamental along x rather than silently producing a uniform box.
+    if kx == 0.0 and ky == 0.0 and kz == 0.0:
+        kx = 2.0 * jnp.pi / Lx
 
     dx = Lx / Nx; dy = Ly / Ny; dz = Lz / Nz
 

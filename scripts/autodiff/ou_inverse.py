@@ -117,7 +117,10 @@ def _make_simulate(Nx, L, gamma, rho_0, p_0, n_steps, dt, order, limiter,
             U = _apply_ou(U, (Fx, Fy, Fz), dt)
             return (U, a_new), None
 
-        (U_final, _), _ = jax.lax.scan(body, (U, ou_a0), ou_keys)
+        # Checkpoint the body: recompute activations on backward pass
+        # instead of storing them.  ~2× compute, ~N_steps× less memory.
+        body_remat = jax.checkpoint(body)
+        (U_final, _), _ = jax.lax.scan(body_remat, (U, ou_a0), ou_keys)
         return U_final
 
     return simulate
@@ -142,24 +145,34 @@ def adam_step(g, s, lr=1e-2, b1=0.9, b2=0.999, eps=1e-8):
 
 def main():
     Nx = int(os.environ.get("LUNA_OU_NX", "128"))
-    n_steps = int(os.environ.get("LUNA_OU_NSTEPS", "100"))
+    n_steps = int(os.environ.get("LUNA_OU_NSTEPS", "250"))
     n_iter = int(os.environ.get("LUNA_OU_ITER", "80"))
     L = 1.0
     gamma = 5.0 / 3.0
     rho_0 = 1.0
     p_0 = 1.0
     cs = float(np.sqrt(gamma * p_0 / rho_0))
-    dt = 0.4 * (L / Nx) / cs    # CFL-based
+    # Fixed dt must stay CFL-stable for the WHOLE run, not just the IC.
+    # Budget for the velocity the OU forcing will build up: with rms_acc·t_end
+    # ~ 0.5 and shock-steepened local peaks ~3× that, allow v_budget = 2.
+    # 3D unsplit MUSCL-Hancock is stable to CFL ≈ 0.4-0.5; use 0.3 with the
+    # budgeted signal speed. (Previous version used 0.4·dx/cs_initial which
+    # silently crossed the stability bound at step ~50 once the flow spun up
+    # → exponential grid-mode blowup → NaN.)
+    v_budget = 2.0
+    dt = 0.3 * (L / Nx) / (cs + v_budget)
     t_end = n_steps * dt
 
     print(f"Inverse IC in OU-driven turbulence")
     print(f"  Nx={Nx}, params={Nx**3}, n_steps={n_steps}, dt={dt:.3e}, "
           f"t_end={t_end:.3f}, c_s≈{cs:.3f}")
 
-    # OU driver: low-k forcing.
+    # OU driver: subsonic forcing. With rms_acc=2 and the t_end below the
+    # flow reaches Mach ~0.3 — developed motions, still well within the
+    # v_budget used for the fixed dt.
     ou_cfg = OUDriverConfig(
         Lx=L, Ly=L, Lz=L,
-        k_min=1.0, k_max=4.0,    # integer mode numbers (the config converts to 2π/Lx)
+        k_min=1.0, k_max=4.0,
         rms_acceleration=2.0, autocorrelation_time=0.5,
         solenoidal_weight=1.0,
     )

@@ -100,11 +100,11 @@ def run_simulation_distributed(
     U_sharded = jax.lax.with_sharding_constraint(U_sharded, sharding)
 
     # === Operator-split source terms (per-step apply functions) ===
-    from setup.source_cc85 import setup_cc85_source
-    from setup.source_cooling import setup_cooling
-    from setup.source_external_gravity import setup_external_gravity
-    from setup.source_ou_forcing import setup_ou_forcing
-    from setup.source_self_gravity import setup_self_gravity
+    from sources.cc85 import setup_cc85_source
+    from sources.cooling import setup_cooling
+    from sources.external_gravity import setup_external_gravity
+    from sources.ou_forcing import setup_ou_forcing
+    from sources.self_gravity import setup_self_gravity
 
     forcing_state = setup_ou_forcing(cfg, sharding, is_main_process)
     cc85_state = setup_cc85_source(cfg, sharding, is_main_process)

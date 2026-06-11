@@ -41,7 +41,6 @@ COMMON = dict(
     gamma=GAMMA,
     t_end=T_END,
     time_bet_snaps=T_END,
-    TIME_SOLVER=1,    # MUSCL-Hancock for tests A and C; for B (ORDER=0) only space changes
     LIMITER=1,        # MonCen
     PLOT_AFTER_SIM=False,
     production_mode=True,

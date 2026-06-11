@@ -55,18 +55,17 @@ def make_fixed_dirichlet_halo_3d(halo_values):
 
 
 def multipole_dirichlet_halo_values(rho, dx, fourpiG, l_max=0):
-    """Compute Dirichlet halo values from a multipole expansion of the
-    interior mass distribution. Returns a (Nx+2, Ny+2, Nz+2) array; only
-    the face cells carry meaningful values — interior cells are zeros.
+    """LEGACY: samples Φ at ghost-cell centres (-dx/2 outside the box).
 
-    l_max = 0: monopole only,  Φ(r) = −G·M_tot / |r − r_com|.
-    Quadrupole-and-higher could be added but for compact mass distributions
-    in boxes ≳ 4·R the monopole is already accurate at the box face.
+    Kept for backwards compatibility. The improved Guillet-Teyssier 2011
+    recipe uses `multipole_dirichlet_face_values` + the linear-extrap halo
+    factory instead — the boundary then sits at the cell *face* (x=0)
+    rather than drifting toward the ghost (x=-dx/2). Use the *_face_*
+    variant for production runs.
     """
     Nx, Ny, Nz = rho.shape
     G = fourpiG / (4.0 * jnp.pi)
 
-    # Total mass and centre of mass.
     M_total = jnp.sum(rho) * (dx ** 3)
     x = (jnp.arange(Nx, dtype=jnp.float64) + 0.5) * dx
     y = (jnp.arange(Ny, dtype=jnp.float64) + 0.5) * dx
@@ -77,7 +76,6 @@ def multipole_dirichlet_halo_values(rho, dx, fourpiG, l_max=0):
     cy = jnp.sum(rho * Y) * inv_mass
     cz = jnp.sum(rho * Z) * inv_mass
 
-    # Halo cell coordinates: -0.5*dx, 0.5*dx, ..., (Nx-0.5)*dx, (Nx+0.5)*dx.
     xh = (jnp.arange(-1, Nx + 1, dtype=jnp.float64) + 0.5) * dx
     yh = (jnp.arange(-1, Ny + 1, dtype=jnp.float64) + 0.5) * dx
     zh = (jnp.arange(-1, Nz + 1, dtype=jnp.float64) + 0.5) * dx
@@ -85,6 +83,90 @@ def multipole_dirichlet_halo_values(rho, dx, fourpiG, l_max=0):
     r = jnp.sqrt((Xh - cx) ** 2 + (Yh - cy) ** 2 + (Zh - cz) ** 2)
     phi_far = -G * M_total / jnp.maximum(r, 0.5 * dx)
     return phi_far
+
+
+def multipole_dirichlet_face_values(rho, dx, fourpiG, l_max=0):
+    """Guillet-Teyssier 2011 §3 face-centred BC: Φ evaluated at the box
+    face positions (not at ghost cell centres). Pairs with
+    `make_linear_extrap_dirichlet_halo_3d` so the discrete BC lands
+    exactly on the face — which is what gives 2nd-order accuracy.
+
+    Returned array is shape (Nx+2, Ny+2, Nz+2); only the six face
+    slices carry meaningful values (interior/edges/corners are zero
+    and never read by the 7-point stencil).
+    """
+    Nx, Ny, Nz = rho.shape
+    G = fourpiG / (4.0 * jnp.pi)
+
+    # Total mass + COM (positive box coordinates).
+    M_total = jnp.sum(rho) * (dx ** 3)
+    inv_mass = 1.0 / (jnp.sum(rho) + 1e-30)
+    x = (jnp.arange(Nx, dtype=jnp.float64) + 0.5) * dx
+    y = (jnp.arange(Ny, dtype=jnp.float64) + 0.5) * dx
+    z = (jnp.arange(Nz, dtype=jnp.float64) + 0.5) * dx
+    X, Y, Z = jnp.meshgrid(x, y, z, indexing="ij")
+    cx = jnp.sum(rho * X) * inv_mass
+    cy = jnp.sum(rho * Y) * inv_mass
+    cz = jnp.sum(rho * Z) * inv_mass
+
+    Lx, Ly, Lz = Nx * dx, Ny * dx, Nz * dx
+
+    def _phi(rx, ry, rz):
+        r = jnp.sqrt(rx * rx + ry * ry + rz * rz)
+        return -G * M_total / jnp.maximum(r, 0.5 * dx)
+
+    out = jnp.zeros((Nx + 2, Ny + 2, Nz + 2), dtype=jnp.float64)
+
+    # −x and +x faces: Φ at (0, y_j, z_k) and (Lx, y_j, z_k).
+    Yf, Zf = jnp.meshgrid(y, z, indexing="ij")
+    out = out.at[0,      1:Ny + 1, 1:Nz + 1].set(_phi(0.0 - cx, Yf - cy, Zf - cz))
+    out = out.at[Nx + 1, 1:Ny + 1, 1:Nz + 1].set(_phi(Lx  - cx, Yf - cy, Zf - cz))
+
+    # −y and +y faces.
+    Xf, Zf2 = jnp.meshgrid(x, z, indexing="ij")
+    out = out.at[1:Nx + 1, 0,      1:Nz + 1].set(_phi(Xf - cx, 0.0 - cy, Zf2 - cz))
+    out = out.at[1:Nx + 1, Ny + 1, 1:Nz + 1].set(_phi(Xf - cx, Ly  - cy, Zf2 - cz))
+
+    # −z and +z faces.
+    Xf2, Yf2 = jnp.meshgrid(x, y, indexing="ij")
+    out = out.at[1:Nx + 1, 1:Ny + 1, 0     ].set(_phi(Xf2 - cx, Yf2 - cy, 0.0 - cz))
+    out = out.at[1:Nx + 1, 1:Ny + 1, Nz + 1].set(_phi(Xf2 - cx, Yf2 - cy, Lz  - cz))
+
+    return out
+
+
+def make_linear_extrap_dirichlet_halo_3d(phi_face_values):
+    """Halo factory implementing the Guillet-Teyssier 2011 §3 linear-
+    extrapolation Dirichlet BC:
+
+        GHOST = 2 · Φ_face − Φ_first_interior
+
+    `phi_face_values` is the (Nx+2, Ny+2, Nz+2) array produced by
+    `multipole_dirichlet_face_values`. The corners and edges of the
+    halo array are never read by the 7-point stencil so they remain
+    zero. The ghost depends on the current `phi` (the first interior
+    cell along the normal direction), so the halo is *not* fixed —
+    it's recomputed each smoother sweep.
+    """
+    def halo(phi):
+        Nx, Ny, Nz = phi.shape
+        padded = jnp.pad(phi, ((1, 1), (1, 1), (1, 1)),
+                          mode="constant", constant_values=0.0)
+        # 2 · Φ_face − Φ_first_interior, per face.
+        padded = padded.at[0,      1:Ny + 1, 1:Nz + 1].set(
+            2.0 * phi_face_values[0,      1:Ny + 1, 1:Nz + 1] - phi[0,    :, :])
+        padded = padded.at[Nx + 1, 1:Ny + 1, 1:Nz + 1].set(
+            2.0 * phi_face_values[Nx + 1, 1:Ny + 1, 1:Nz + 1] - phi[Nx-1, :, :])
+        padded = padded.at[1:Nx + 1, 0,      1:Nz + 1].set(
+            2.0 * phi_face_values[1:Nx + 1, 0,      1:Nz + 1] - phi[:, 0,    :])
+        padded = padded.at[1:Nx + 1, Ny + 1, 1:Nz + 1].set(
+            2.0 * phi_face_values[1:Nx + 1, Ny + 1, 1:Nz + 1] - phi[:, Ny-1, :])
+        padded = padded.at[1:Nx + 1, 1:Ny + 1, 0     ].set(
+            2.0 * phi_face_values[1:Nx + 1, 1:Ny + 1, 0     ] - phi[:, :, 0   ])
+        padded = padded.at[1:Nx + 1, 1:Ny + 1, Nz + 1].set(
+            2.0 * phi_face_values[1:Nx + 1, 1:Ny + 1, Nz + 1] - phi[:, :, Nz-1])
+        return padded
+    return halo
 
 
 def make_halo_3d(boundary):

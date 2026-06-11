@@ -550,11 +550,20 @@ def _solve_poisson_fmg_isolated(
     rho, dx, fourpiG, n_levels, n_vcycles_per_level, n_extra_vcycles,
     n_pre, n_post, n_coarsest, return_residual,
 ):
-    """FMG with isolated BC. Multipole-Dirichlet halo at each ladder level."""
+    """FMG with isolated BC, Guillet-Teyssier 2011 face-centred recipe.
+
+    At each FMG ladder level we build:
+      • Φ_face values from a multipole expansion of that level's ρ,
+        evaluated at the box face positions (not ghost cell centres).
+      • A halo factory that sets ghost = 2·Φ_face − Φ_first_interior
+        — the 2nd-order linear-extrapolation Dirichlet BC.
+    Coarse-level error subproblems use zero-Dirichlet (no boundary
+    contribution from the error).
+    """
     from gravity.poisson_bc import (
         make_zero_dirichlet_halo_3d,
-        make_fixed_dirichlet_halo_3d,
-        multipole_dirichlet_halo_values,
+        make_linear_extrap_dirichlet_halo_3d,
+        multipole_dirichlet_face_values,
     )
     halo_inner = make_zero_dirichlet_halo_3d()
 
@@ -565,11 +574,11 @@ def _solve_poisson_fmg_isolated(
     rhs_levels = [fourpiG * r for r in rho_levels]
     dx_levels = [dx * (2 ** L) for L in range(n_levels)]
 
-    # Multipole Dirichlet halo at each level: same physical Φ_far(r), just
-    # sampled on that level's grid. Cheap to recompute per level.
+    # Face-centred multipole BC at each level — same physical Φ on the
+    # box faces, sampled on the level's grid.
     halo_tops = [
-        make_fixed_dirichlet_halo_3d(
-            multipole_dirichlet_halo_values(rho_levels[L], dx_levels[L], fourpiG)
+        make_linear_extrap_dirichlet_halo_3d(
+            multipole_dirichlet_face_values(rho_levels[L], dx_levels[L], fourpiG)
         )
         for L in range(n_levels)
     ]

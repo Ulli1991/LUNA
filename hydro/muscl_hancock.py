@@ -1,7 +1,7 @@
 """MUSCL-Hancock flux divergence (first- and second-order).
 
 Provides the per-step flux divergence dU/dt = -∇·F(U) used by the production
-TIME_SOLVER=1 path. The second-order variant adds the MUSCL-Hancock predictor
+integrator. The second-order variant adds the MUSCL-Hancock predictor
 (Jacobian form: W_half = Wc - ½dt·A·∇W) and PLM reconstruction.
 
 Memory-optimized: the 3D second-order branch accumulates per-direction into
@@ -28,9 +28,11 @@ from hydro.slopes import (
 
 
 def _pick_riemann(riemann_solver: str):
-    """Return hllc_flux_primitive callable for the requested solver."""
+    """Return the flux callable for the requested solver."""
     if riemann_solver == "lhllc":
         from hydro.fluxes_lhllc import lhllc_flux_primitive as flux_fn
+    elif riemann_solver == "hll":
+        from hydro.fluxes import hll_flux_primitive as flux_fn
     else:
         from hydro.fluxes import hllc_flux_primitive as flux_fn
     return flux_fn

@@ -53,7 +53,7 @@ def test_uniform_ball():
     rel_err = np.abs(phi[mask] - phi_an[mask]) / np.abs(phi_an[mask])
     print(f"  uniform ball: max rel err (r > 1.5R) = {rel_err.max():.3e}, "
           f"mean = {rel_err.mean():.3e}")
-    assert rel_err.max() < 0.10, "uniform-ball FMG isolated test failed"
+    assert rel_err.max() < 0.02, "uniform-ball FMG isolated test failed"
 
 
 def test_offcenter_point_mass():
@@ -82,7 +82,7 @@ def test_offcenter_point_mass():
     rel_err = np.abs(phi[mask] - phi_an[mask]) / np.abs(phi_an[mask])
     print(f"  off-centre point mass: max rel err = {rel_err.max():.3e}, "
           f"mean = {rel_err.mean():.3e}")
-    assert rel_err.max() < 0.10, "point-mass FMG isolated test failed"
+    assert rel_err.max() < 0.02, "point-mass FMG isolated test failed"
 
 
 def main():

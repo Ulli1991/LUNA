@@ -1,102 +1,27 @@
 """
-Primitive variable utilities for the MUSCL-Hancock predictor.
+Primitive-variable Jacobians for the unsplit MUSCL-Hancock predictor.
 
-Provides two formulations of the Hancock predictor advance:
+The predictor advances cell-centred PRIMITIVE states by a half step:
 
-  (A) Jacobian-times-slope:  -A_p(W) · ∂W/∂x  via apply_primitive_jacobian_*
-      Linearized around the cell-center state. Correct to leading order
-      for small perturbations, but introduces an O(amp) per-step error
-      when the background advection (u·∂W/∂x diagonal terms) is non-zero.
+    W^{n+1/2} = W^n − (Δt/2) · Σ_d  A_d(W^n) · ∂W/∂x_d
 
-  (B) Flux-difference:        -[F(W + Δ/2) - F(W - Δ/2)] / dx via primitive_flux_*
-      Evaluates the nonlinear flux F = (ρu, ρu²+p, (E+p)u) at the
-      reconstructed face states. Captures advection consistently with
-      the conservation laws. This is the textbook (Toro) MUSCL-Hancock form.
+with the sum running over all spatial directions — the transverse terms
+are included, making the scheme unsplit (Saltzman 1994). This is the
+same predictor as RAMSES's `muscl` scheme (Teyssier 2002, A&A 385, 337,
+§2.3.1: PLM slopes on primitives + unsplit transverse derivatives, then
+a Riemann solve on the reconstructed face states).
+
+The apply_primitive_jacobian_3d_{x,y,z} variants compute one direction's
+contribution at a time so the memory-conscious 3D path never holds all
+three slope arrays alive simultaneously.
+
+(A flux-difference predictor variant — evaluating the nonlinear flux at
+reconstructed face states instead of the Jacobian-times-slope product —
+briefly lived here as primitive_flux_* but was never wired into an
+integrator; removed, see git history.)
 """
 
 import jax.numpy as jnp
-
-
-def primitive_flux_1d(W, gamma):
-    """Conservative flux F(W) for 1D Euler given primitive state W = (ρ, vx, p).
-
-    Returns F = (ρ·vx, ρ·vx² + p, (E + p)·vx) where E = p/(γ-1) + 0.5·ρ·vx².
-    """
-    rho, vx, P = W
-    E = P / (gamma - 1.0) + 0.5 * rho * vx * vx
-    return jnp.stack(
-        [
-            rho * vx,
-            rho * vx * vx + P,
-            (E + P) * vx,
-        ]
-    )
-
-
-def primitive_flux_2d(W, gamma, axis):
-    """Conservative flux of 2D Euler in direction `axis` (0=x, 1=y).
-
-    W = (ρ, vx, vy, p). Returns the 4-vector flux.
-    """
-    rho, vx, vy, P = W
-    E = P / (gamma - 1.0) + 0.5 * rho * (vx * vx + vy * vy)
-    if axis == 0:  # x-direction
-        return jnp.stack(
-            [
-                rho * vx,
-                rho * vx * vx + P,
-                rho * vx * vy,
-                (E + P) * vx,
-            ]
-        )
-    else:  # y-direction
-        return jnp.stack(
-            [
-                rho * vy,
-                rho * vx * vy,
-                rho * vy * vy + P,
-                (E + P) * vy,
-            ]
-        )
-
-
-def primitive_flux_3d(W, gamma, axis):
-    """Conservative flux of 3D Euler in direction `axis` (0=x, 1=y, 2=z).
-
-    W = (ρ, vx, vy, vz, p). Returns the 5-vector flux.
-    """
-    rho, vx, vy, vz, P = W
-    E = P / (gamma - 1.0) + 0.5 * rho * (vx * vx + vy * vy + vz * vz)
-    if axis == 0:
-        return jnp.stack(
-            [
-                rho * vx,
-                rho * vx * vx + P,
-                rho * vx * vy,
-                rho * vx * vz,
-                (E + P) * vx,
-            ]
-        )
-    elif axis == 1:
-        return jnp.stack(
-            [
-                rho * vy,
-                rho * vx * vy,
-                rho * vy * vy + P,
-                rho * vy * vz,
-                (E + P) * vy,
-            ]
-        )
-    else:  # axis == 2
-        return jnp.stack(
-            [
-                rho * vz,
-                rho * vx * vz,
-                rho * vy * vz,
-                rho * vz * vz + P,
-                (E + P) * vz,
-            ]
-        )
 
 
 def apply_primitive_jacobian_1d(W, dW, gamma):

@@ -110,7 +110,7 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 - ✅ PLM reconstruction with multiple limiters
 - ✅ Smooth limiters for automatic differentiation
 - ✅ Full autodiff support with gradient visualization
-- ✅ Multiple time integrators (RK2, RK4, MUSCL-Hancock)
+- ✅ Unsplit 2nd-order MUSCL-Hancock time integration (RAMSES-style primitive predictor)
 
 ---
 
@@ -141,11 +141,14 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 ### Run Simulation
 
 ```bash
-# Single-GPU
+# Single- or multi-GPU: main.py initializes JAX distributed automatically
+# (single process uses all visible GPUs; under SLURM, srun spawns one
+# process per GPU and they coordinate via JAX_COORDINATOR_PORT).
 python main.py
 
-# Multi-GPU (JAX automatically detects all GPUs)
-python main_multi.py
+# Validation problems run through the runner instead (see submit/ for
+# SLURM templates):
+python -m scripts.validation.runs.sedov3d_run
 ```
 
 ---
@@ -154,26 +157,40 @@ python main_multi.py
 
 ### Configuration
 
-Edit `config.py` to set:
-- **Test problem**: `"Sod-Shock"`, `"Kelvin-Helmholtz"`, `"Sedov-Blast"`, etc.
-- **Spatial dimension**: `SPATIAL_DIMENSION = 1, 2, or 3`
-- **Grid resolution**: `Nx`, `Ny`, `Nz`
-- **Time integration**: `TIME_SOLVER = 0` (RK2), `1` (MUSCL-Hancock), `2` (RK4)
-- **CFL number**: `CFL = 0.5`
-- **Output cadence**: `output_cadence = 50`
+`config.py` is a dataclass (copied from `template_config.py`); edit the field
+defaults. The knobs that matter most:
+
+- **Test problem**: `test_problem` — any name registered in
+  `ic_generation/ic.py` (e.g. `"Sod-Shock"`, `"Kelvin-Helmholtz"`,
+  `"Sedov-Blast-3D"`, `"Boss-Bodenheimer-3D"`, `"CC85-Wind-3D"`)
+- **Dimension / grid**: `SPATIAL_DIMENSION`, `Nx/Ny/Nz`, `Lx/Ly/Lz`
+- **Scheme** (time integration is always unsplit MUSCL-Hancock):
+  - `ORDER` — 0 = first-order Godunov, 1 = PLM (2nd order, default)
+  - `LIMITER` — 0 = MinMod, 1 = MonCen, 2 = VanLeer
+  - `riemann_solver` — `"hllc"` (default), `"hll"` (more dissipative),
+    `"lhllc"` (low-Mach fix for stratified/subsonic flows)
+  - `CFL` — 0.3–0.5 for 3D unsplit; up to 0.8 for 1D
+- **Boundaries**: `BOUNDARY` — 0 = periodic, 1 = outflow/zero-gradient,
+  2 = reflective
+- **Self-gravity**: `SELF_GRAVITY=True` + `GRAVITATIONAL_G`;
+  `POISSON_BOUNDARY` — inherit (None), 0 = periodic (Jeans swindle),
+  3 = isolated (multipole-Dirichlet FMG)
 
 ### Example Configuration
 
 ```python
-# config.py
-test_problem = "Kelvin-Helmholtz"
-SPATIAL_DIMENSION = 2
-Nx, Ny = 2048, 2048
-Lx, Ly = 1.0, 1.0
-t_start, t_end = 0.0, 2.0
-CFL = 0.5
-TIME_SOLVER = 0  # RK2
-BOUNDARY = 0  # Periodic
+# config.py — fields inside the Config dataclass
+test_problem: str = "Kelvin-Helmholtz"
+SPATIAL_DIMENSION: int = 2
+Nx: int = 2048
+Ny: int = 2048
+Lx: float = 1.0
+Ly: float = 1.0
+t_end: float = 2.0
+CFL: float = 0.5
+ORDER: int = 1        # PLM
+LIMITER: int = 1      # MonCen
+BOUNDARY: int = 0     # periodic
 ```
 
 ### Run Simulation
@@ -182,6 +199,13 @@ BOUNDARY = 0  # Periodic
 python main.py
 ```
 
+For parameter sweeps and validation problems, skip `config.py` and use the
+programmatic runner, which applies overrides on top of the template:
+
+```python
+from scripts.validation.runner import run_one
+run_one(dict(test_problem="Sedov-Blast-3D", Nx=256, Ny=256, Nz=256, ...))
+```
 
 ---
 
@@ -189,45 +213,37 @@ python main.py
 
 ###  Overview
 
-LUNA supports multi-GPU execution using **JAX's native sharding**:
-- JAX automatically detects all available GPUs
-- Data is sharded across GPUs
-- Communication handled transparently via NCCL (NVIDIA) or RCCL (AMD)
-- No explicit MPI required
+LUNA has two multi-GPU execution paths:
+
+1. **Auto-sharding (default)** — arrays carry a `NamedSharding`; XLA inserts
+   the halo communication automatically. Fine for 2D and small 3D runs.
+2. **shard_map (production 3D)** — set `USE_SHARDMAP=True`. The whole
+   MUSCL-Hancock step runs per-shard with explicit `ppermute` halo
+   exchanges. This sidesteps XLA's auto-sharding working-set blowup and is
+   what the 1024³ production runs use.
+
+Mesh decomposition is controlled by `DECOMPOSITION` ("auto"/"slab"/"block")
+or pinned exactly with `MESH_SHAPE` (e.g. `(2, 2, 4)` for 16 GPUs on 1024³).
 
 ### Quick Start
 
 ```bash
-# JAX automatically uses all visible GPUs
-python main_multi.py
+# Single node: JAX automatically uses all visible GPUs
+python main.py
+
+# Multi-node under SLURM: one process per GPU via srun (see submit/ templates)
+srun python -u -m scripts.validation.runs.sedov3d_run
 ```
 
-### How It Works
+### Multi-process rules (hard-won)
 
-JAX automatically:
-1. Detects all GPUs on the system
-2. Creates a device mesh (e.g., 1×2 for 2 GPUs, 2×2 for 4 GPUs)
-3. Shards data across the mesh
-4. Handles halo communication transparently
-5. Uses collective operations (AllReduce) for global reductions
-
-### Performance Notes
-
-**Current Status:**
-- ✅ Works well on NVIDIA GPUs (NCCL)
-- ⚠️ Performance issues on AMD ROCm (RCCL overhead for scalar reductions)
-
-**NVIDIA Performance (expected):**
-| GPUs | Speedup | Efficiency |
-|------|---------|------------|
-| 1 | 1.0× | 100% |
-| 2 | 1.9× | 95% |
-| 4 | 3.8× | 95% |
-
-**AMD ROCm Performance:**
-- Multi-GPU sharding currently has significant overhead on AMD MI300A
-- Recommend single-GPU execution on AMD systems for now
-- This is a JAX/RCCL limitation, not a code issue
+- Build per-cell sharded arrays from local slices via
+  `make_array_from_single_device_arrays` — a full-array `device_put`
+  deadlocks silently multi-node.
+- Pass sharded arrays as JIT *arguments*, never capture them in Python
+  closures (XLA tries to inline them as constants and crashes).
+- 1024³ float32 3D needs ≥16 GPUs with `MESH_SHAPE=(2, 2, 4)`; the MUSCL
+  working set (~23 full-shard arrays) does not fit 8 A100-40GB.
 
 ---
 
@@ -237,9 +253,9 @@ For long-running production campaigns:
 
 - **NaN abort guard**: the time loop checks for non-finite state after every step (free piggyback on `compute_dt`). On detection it retries the step with halved CFL up to **8 times** (i.e., `dt → dt/256`). If the state is still bad it dumps an emergency checkpoint (`cfg.enable_checkpointing` is default-on) and raises `RuntimeError` so SLURM exits non-zero. No more silent multi-hour NaN'd runs.
 - **Periodic diagnostics**: every `cfg.diag_interval` steps the runner prints `min(rho), min(P), max(|v|), max(M)` and appends a row to `<output_dir>/history.csv` (Athena++-style `.hst` analog) for offline analysis.
-- **Determinism**: validated submit scripts in the repo root export `XLA_FLAGS="--xla_gpu_deterministic_ops=true"`. Together with `enable_x64=True` (set in run scripts) this gives bitwise-reproducible runs at fixed sharding.
-- **Source terms** live in `setup/source_*.py` (`source_ou_forcing`, `source_cc85`, `source_external_gravity`, `source_cooling`). Each returns a `{"apply": fn(U, dt)}` callable that the runner operator-splits after the hydro step. Adding a new source term means writing one `setup/source_X.py` and one line in `runner_distributed.py`.
-- **Multi-node**: the validated pattern (`submit_multi_test_clean.sh` + descendants like `submit_m82_multi.sh`, `submit_kh_multi.sh`) uses `--mem=500000`, `--constraint=gpu`, `--gres=gpu:4`, `JAX_COORDINATOR_PORT=12345`. Lessons from earlier multi-node debugging:
+- **Determinism**: validated submit scripts in `submit/` export `XLA_FLAGS="--xla_gpu_deterministic_ops=true"`. Together with `enable_x64=True` (set in run scripts) this gives bitwise-reproducible runs at fixed sharding.
+- **Source terms** live in `sources/` (`ou_forcing`, `cc85`, `external_gravity`, `cooling`, `self_gravity`). Each returns a `{"apply": fn(U, dt)}` callable that the runner operator-splits after the hydro step. Adding a new source term means writing one `sources/X.py` and one line in `setup/runner_distributed.py`.
+- **Multi-node**: the validated pattern (`submit/submit_m82_multi.sh`, `submit/submit_kh_multi.sh` and the other `*_multi`/`*_8node` scripts) uses `--mem=500000`, `--constraint=gpu`, `--gres=gpu:4`, `JAX_COORDINATOR_PORT=12345`. SLURM logs land in `slurm_logs/`. Lessons from earlier multi-node debugging:
   - Build all sharded auxiliary arrays via the KH-IC pattern (local-slice + `make_array_from_single_device_arrays`); naïve full-array `device_put` deadlocks multi-process.
   - Pass sharded arrays as JIT *arguments*, not as Python closures — XLA tries to inline closure-captured sharded arrays as MLIR constants and crashes with "Fetching value for jax.Array that spans non-addressable devices".
 
@@ -249,40 +265,30 @@ For long-running production campaigns:
 
 ### Single-GPU Optimization
 
-**Current performance (2048² grid, RK2):**
-- ~27 ms per timestep
-- HLLC flux: 95% of flux_divergence time
-- Already well-optimized
-
 **Optimizations completed:**
-1. ✅ Specialized 1D/2D/3D HLLC functions
-2. ✅ Replaced nested `jnp.where` with `jnp.select`
+1. ✅ Specialized 1D/2D/3D HLLC functions (memory-friendly per-component
+   `jnp.where` chains instead of stacked intermediates)
+2. ✅ Direction-by-direction predictor accumulation with
+   `optimization_barrier` (3D working set never holds three slope arrays)
 3. ✅ Optimized reflective boundaries
 4. ✅ Reciprocal caching in HLLC
-5. ✅ Reduced redundant operations
 
-**Result: ~12% HLLC speedup** (2.86ms → 2.52ms on 4096² grid)
+**Measured:** ~12% HLLC speedup from the flux rework (2.86 ms → 2.52 ms
+per flux call on a 4096² grid, A100).
 
 ### Multi-GPU Scaling
 
-**Strong Scaling (fixed problem size):**
+Early 2D auto-sharding measurements (2048² strong scaling on one A100 node)
+showed ~95% efficiency at 2–8 GPUs. For production 3D the relevant numbers
+are from the shard_map path:
 
-| GPUs | Grid per GPU | Speedup | Efficiency |
-|------|--------------|---------|------------|
-| 1 | 2048² | 1.0× | 100% |
-| 2 | 1024² | 1.9× | 95% |
-| 4 | 512² | 3.8× | 95% |
-| 8 | 256² | 7.5× | 94% |
-| 64 | — | 50-55× | 80-85% |
-
-**Weak Scaling (constant work per GPU):**
-- Should maintain 90-95% efficiency to 100s of GPUs
-- Keep at least 256³ cells per GPU
-
-**Communication Breakdown:**
-- Within-node: ~1-2% overhead (fast GPU-GPU)
-- Between-node: ~5-10% overhead (depends on network)
-- Total: ~5-10% overhead for well-sized problems
+- **Sedov 1024³ float32**: runs on 16 A100-40GB (4 nodes × 4),
+  `MESH_SHAPE=(2, 2, 4)`, `USE_SHARDMAP=True`. 8 GPUs OOMs — the unsplit
+  MUSCL working set needs the 16-GPU shard size.
+- shard_map vs auto-sharding at the same node count gave a major step-time
+  improvement at 1024³ (XLA's auto-sharded 3D step materializes large
+  scratch buffers that the explicit per-shard pipeline avoids).
+- Keep ≥256³ cells per GPU for good compute/halo ratio.
 
 ---
 

@@ -141,8 +141,8 @@ forcing, etc.
 | `setup/distributed_setup.py` | Wire `apply_self_gravity` into the source-term chain when `cfg.SELF_GRAVITY = True`. |
 | `template_config.py` | `SELF_GRAVITY: bool = False`, `GRAVITATIONAL_G: float = ...`, `POISSON_TOL: float = 1e-6`, `POISSON_MAX_CYCLES: int = 50`, `POISSON_N_LEVELS: int = None` (auto). |
 | `setup/runner_distributed.py` | Source-term order: existing forcing → self-gravity → cooling → isothermal projection. |
-| `scripts/validation/plots/jeans_instability_run.py` | **NEW**. Linear Jeans test (growth rate vs analytic). Phase 1 acceptance. |
-| `scripts/validation/plots/uniform_sphere_run.py` | **NEW**. Static uniform-density sphere → analytic interior+exterior Φ. Phase 1 acceptance. |
+| `scripts/validation/runs/jeans_instability_run.py` | **NEW**. Linear Jeans test (growth rate vs analytic). Phase 1 acceptance. |
+| `scripts/validation/runs/uniform_sphere_run.py` | **NEW**. Static uniform-density sphere → analytic interior+exterior Φ. Phase 1 acceptance. |
 
 ## Test strategy
 

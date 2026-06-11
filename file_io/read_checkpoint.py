@@ -53,7 +53,6 @@ def read_checkpoint(checkpoint_filename):
         numerics = {
             "ORDER": int(f["numerics"].attrs["ORDER"]),
             "LIMITER": int(f["numerics"].attrs["LIMITER"]),
-            "TIME_SOLVER": int(f["numerics"].attrs["TIME_SOLVER"]),
             "CFL": float(f["numerics"].attrs["CFL"]),
         }
 

@@ -67,7 +67,6 @@ def plot_one(problem_name, params):
         gamma=gam,
         t_end=t_end,
         time_bet_snaps=t_end,
-        TIME_SOLVER=1,             # MUSCL-Hancock
         ORDER=1,
         LIMITER=0,                 # minmod, per user spec
         CFL=0.4,

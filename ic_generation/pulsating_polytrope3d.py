@@ -39,7 +39,7 @@ def pulsating_polytrope_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     n = float(getattr(cfg, "lane_n", 1.5))
     rho_c = float(getattr(cfg, "lane_rho_c", 1.0))
     R = float(getattr(cfg, "lane_R", 1.0))
-    rho_amb_cfg = float(getattr(cfg, "lane_rho_ambient", 0.0))
+    rho_amb_cfg = float(getattr(cfg, "lane_rho_ambient", 0.01))
     pulse_amp = float(getattr(cfg, "pulse_amp", 0.01))
     G = float(getattr(cfg, "GRAVITATIONAL_G", 1.0))
 

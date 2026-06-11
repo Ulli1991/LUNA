@@ -40,13 +40,6 @@ class Config:
     #
     test_problem: str = "Sod-Shock"
 
-    # ---------------- Device ----------------
-
-    # 0 = CPU
-    # 1 = GPU
-    # 2 = TPU
-    DEVICE: int = 1
-
     # ---------------- Domain ----------------
     # 1 = 1D
     # 2 = 2D
@@ -106,7 +99,8 @@ class Config:
     # Bonnor-Ebert sphere IC (test_problem='Bonnor-Ebert-3D').
     # ξ_t = 5 → sub-critical (stable); ξ_t = 10 → super-critical (collapsing).
     be_xi_t: float = 5.0
-    be_rho_c: float = 1.0                # auto-overridden by geometry
+    be_rho_c: float = 1.0                # placeholder; the IC unconditionally recomputes
+                                         # ρ_c from (ξ_t, R, cs²) so the sphere geometry closes
     be_cs2: float = 1.0
     be_R: float = 1.0
     be_rho_ambient: float = 0.0
@@ -124,7 +118,8 @@ class Config:
     # Boss-Bodenheimer IC (test_problem='Boss-Bodenheimer-3D').
     bb_M: float = 1.0
     bb_R: float = 1.0
-    bb_cs2: float = 0.25                 # canonical α = R·cs²/(GM) = 0.25 thermal/grav ratio
+    bb_cs2: float = 0.25                 # isothermal sound speed squared; with M=R=G=1 this equals
+                                         # the thermal/grav ratio α = R·cs²/(GM), canonical α = 0.25
     bb_beta: float = 0.16
     bb_amp: float = 0.1
     bb_rho_ambient: float = 0.0
@@ -153,9 +148,8 @@ class Config:
     # ---------------- Time Integration ----------------
     CFL: float = 0.8
 
-    # Only MUSCL-Hancock (predictor-corrector, 2nd-order) is supported.
-    # Field retained for backward compatibility of run scripts.
-    TIME_SOLVER: int = 1
+    # Time integration: unsplit MUSCL-Hancock (predictor-corrector, 2nd order)
+    # is the only scheme; there is no integrator-selection knob.
 
     # ---------------- Riemann Solver ----------------
     # Reconstruction order:
@@ -324,7 +318,3 @@ class Config:
         """Pre-computed snapshot times (using numpy, not JAX, to avoid GPU allocation)."""
         return np.arange(self.t_start, self.t_end + self.time_bet_snaps/2, self.time_bet_snaps)
 
-    @cached_property
-    def use_predictor(self) -> bool:
-        """Whether to use predictor step (MUSCL-Hancock only)."""
-        return self.TIME_SOLVER == 1

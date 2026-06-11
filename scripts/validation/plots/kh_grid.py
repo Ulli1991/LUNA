@@ -32,7 +32,6 @@ def main():
             BOUNDARY=0,
             Nx=Nx, Ny=Nx,
             t_end=T_END,
-            TIME_SOLVER=1,
             ORDER=1,
             PLOT_AFTER_SIM=False,
             production_mode=True,

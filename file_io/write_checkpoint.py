@@ -62,7 +62,6 @@ def write_checkpoint(U, cfg, t, step, checkpoint_dir="checkpoints"):
         numerics = f.create_group("numerics")
         numerics.attrs["ORDER"] = cfg.ORDER
         numerics.attrs["LIMITER"] = cfg.LIMITER
-        numerics.attrs["TIME_SOLVER"] = cfg.TIME_SOLVER
         numerics.attrs["CFL"] = cfg.CFL
 
         # Save time control
