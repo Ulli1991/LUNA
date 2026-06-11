@@ -496,6 +496,17 @@ def solve_poisson_fmg(
     Nx = rho.shape[0]
     if n_levels is None:
         n_levels = _max_levels(Nx)
+
+    # Isolated BC (Guillet-Teyssier-style): top-level Dirichlet halo from a
+    # multipole expansion of ρ; coarse error-correction subproblems use
+    # zero-Dirichlet. Dispatch here so the periodic / Neumann path stays
+    # exactly as it was.
+    if boundary == 3:
+        return _solve_poisson_fmg_isolated(
+            rho, dx, fourpiG, n_levels, n_vcycles_per_level,
+            n_extra_vcycles, n_pre, n_post, n_coarsest, return_residual,
+        )
+
     halo_fn = make_halo_3d(boundary)
     rhs = fourpiG * rho
 
@@ -506,5 +517,88 @@ def solve_poisson_fmg(
 
     if return_residual:
         r_norm = jnp.max(jnp.abs(residual(phi, rhs, dx, halo_fn)))
+        return phi, r_norm
+    return phi
+
+
+# ---------------------------------------------------------------------------
+# Isolated-BC FMG (Guillet & Teyssier 2011 style: multipole Dirichlet at top
+# of each V-cycle, zero Dirichlet for coarse error-correction subproblems)
+# ---------------------------------------------------------------------------
+def _vcycle_isolated(phi, rhs, dx, halo_top, halo_inner, level,
+                     n_pre, n_post, n_coarsest):
+    """V-cycle with split halos: halo_top at this level (Dirichlet from
+    multipole), halo_inner (zero Dirichlet) for the recursive error
+    subproblem. Restrict / prolong use halo_inner because they operate on
+    error, not the solution."""
+    if level == 0:
+        return rbgs_smoother(phi, rhs, dx, halo_top, n_coarsest)
+    phi = rbgs_smoother(phi, rhs, dx, halo_top, n_pre)
+    r = residual(phi, rhs, dx, halo_top)
+    r_c = restrict(r)
+    e_c = _vcycle_isolated(
+        jnp.zeros_like(r_c), r_c, 2.0 * dx,
+        halo_inner, halo_inner, level - 1,
+        n_pre, n_post, n_coarsest,
+    )
+    phi = phi + prolong(e_c, halo_fn=halo_inner)
+    phi = rbgs_smoother(phi, rhs, dx, halo_top, n_post)
+    return phi
+
+
+def _solve_poisson_fmg_isolated(
+    rho, dx, fourpiG, n_levels, n_vcycles_per_level, n_extra_vcycles,
+    n_pre, n_post, n_coarsest, return_residual,
+):
+    """FMG with isolated BC. Multipole-Dirichlet halo at each ladder level."""
+    from gravity.poisson_bc import (
+        make_zero_dirichlet_halo_3d,
+        make_fixed_dirichlet_halo_3d,
+        multipole_dirichlet_halo_values,
+    )
+    halo_inner = make_zero_dirichlet_halo_3d()
+
+    # Build ρ + rhs hierarchies (finest → coarsest).
+    rho_levels = [rho]
+    for _ in range(n_levels - 1):
+        rho_levels.append(restrict(rho_levels[-1]))
+    rhs_levels = [fourpiG * r for r in rho_levels]
+    dx_levels = [dx * (2 ** L) for L in range(n_levels)]
+
+    # Multipole Dirichlet halo at each level: same physical Φ_far(r), just
+    # sampled on that level's grid. Cheap to recompute per level.
+    halo_tops = [
+        make_fixed_dirichlet_halo_3d(
+            multipole_dirichlet_halo_values(rho_levels[L], dx_levels[L], fourpiG)
+        )
+        for L in range(n_levels)
+    ]
+
+    # Coarsest level: heavy smooth with this level's Dirichlet halo.
+    phi = jnp.zeros_like(rhs_levels[-1])
+    phi = rbgs_smoother(phi, rhs_levels[-1], dx_levels[-1], halo_tops[-1], n_coarsest)
+
+    # Walk up: prolong to next finer (using halo_inner for the correction-like
+    # transfer), then V-cycle with this level's Dirichlet halo at top + zero
+    # Dirichlet at coarser sub-levels.
+    for L in range(n_levels - 2, -1, -1):
+        phi = prolong(phi, halo_fn=halo_inner)
+        depth = (n_levels - 1) - L
+        for _ in range(n_vcycles_per_level):
+            phi = _vcycle_isolated(
+                phi, rhs_levels[L], dx_levels[L],
+                halo_tops[L], halo_inner, depth,
+                n_pre, n_post, n_coarsest,
+            )
+
+    for _ in range(n_extra_vcycles):
+        phi = _vcycle_isolated(
+            phi, rhs_levels[0], dx_levels[0],
+            halo_tops[0], halo_inner, n_levels - 1,
+            n_pre, n_post, n_coarsest,
+        )
+
+    if return_residual:
+        r_norm = jnp.max(jnp.abs(residual(phi, rhs_levels[0], dx, halo_tops[0])))
         return phi, r_norm
     return phi

@@ -100,6 +100,10 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Same BB79 collapse, side-by-side column density along z (the rotation axis) at t = 2.0. Same colormap range, same 64² bin grid. Both codes show the central concentration at (x, y) ≈ (2, 2); AREPO's mesh adapts into the dense core (peak log₁₀Σ ≈ −0.17 vs LUNA's −0.57), while LUNA's fixed grid produces a smoother ambient. AREPO's ambient noise reflects sparse particle coverage where the moving mesh derefined — the real cell density in those regions is much lower than in the centre. Apples-to-apples ICs, same units, code-unit comparison.*
 
+![Boss-Bodenheimer 1979 with isolated BC — LUNA 64³ vs 256³](figures/bb79_iso_luna_64_vs_256_minmod.png)
+
+*BB79 with the **isolated** Poisson BC (multipole-Dirichlet halo + outflow hydro, no periodic-image saddle pileup), MinMod limiter, at t = 2.0. Both panels are LUNA — left is 64³, right is 256³, same colour scale. The 64³ run gives a smooth blob with a weak m=4 grid-aligned envelope; the 256³ run resolves the actual BB79 rotational-collapse morphology: a clumpy central core with substructure that is the signature of m=2 fragmentation. The thin orthogonal lines through (x, y) = (2, 2) are residual cardinal-axis artefacts from the outflow BC at the box face centres — present but much weaker than the corner-spike pattern we get with the sharper MC limiter (which also crashes at t ≈ 0.8 due to negative density at the central spike). MinMod survives the full t = 2.0 evolution; MC does not.*
+
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
 - ✅ HLLC Riemann solver with optimized flux computation

@@ -136,6 +136,8 @@ class Config:
     POISSON_N_LEVELS: int = None          # auto (until per-side < 4)
     POISSON_FMG_VCYCLES_PER_LEVEL: int = 1
     POISSON_FMG_EXTRA_VCYCLES: int = 0
+    POISSON_BOUNDARY: int = None          # None → inherit from BOUNDARY; 0/1/2/3 to override
+                                          # 3 = isolated (multipole-Dirichlet)
 
     Nx: int = 1024
     Ny: int = 1024

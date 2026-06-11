@@ -30,10 +30,13 @@ def setup_self_gravity(cfg, sharding, is_main_process: bool = True):
         return None
     if cfg.SPATIAL_DIMENSION != 3:
         raise ValueError("SELF_GRAVITY currently requires SPATIAL_DIMENSION=3.")
-    if cfg.BOUNDARY not in (0, 1, 2):
+    # Poisson boundary independent of hydro boundary.  Default to hydro's.
+    pb = getattr(cfg, "POISSON_BOUNDARY", None)
+    poisson_boundary = int(cfg.BOUNDARY if pb is None else pb)
+    if poisson_boundary not in (0, 1, 2, 3):
         raise NotImplementedError(
-            f"Self-gravity boundary code {cfg.BOUNDARY} not supported in Phase 1; "
-            "use 0 (periodic) or 1/2 (Neumann)."
+            f"POISSON_BOUNDARY={poisson_boundary} not supported; "
+            "use 0 (periodic), 1/2 (Neumann), or 3 (isolated multipole-Dirichlet)."
         )
 
     dx = cfg.Lx / cfg.Nx
@@ -47,7 +50,7 @@ def setup_self_gravity(cfg, sharding, is_main_process: bool = True):
     n_pre = getattr(cfg, "POISSON_N_PRE", 2)
     n_post = getattr(cfg, "POISSON_N_POST", 2)
     n_coarsest = getattr(cfg, "POISSON_N_COARSEST", 50)
-    boundary = int(cfg.BOUNDARY)
+    boundary = poisson_boundary
     use_shardmap = bool(getattr(cfg, "USE_SHARDMAP", False)) and sharding is not None
 
     halo_fn_local = make_halo_3d(boundary)  # for single-process path
@@ -192,7 +195,7 @@ def setup_self_gravity(cfg, sharding, is_main_process: bool = True):
         print(
             f"✓ Self-gravity (multigrid V-cycle): "
             f"G={getattr(cfg, 'GRAVITATIONAL_G', 1.0):.3e}, "
-            f"BC={'periodic' if boundary == 0 else 'Neumann'}, "
+            f"BC={ {0: 'periodic', 1: 'Neumann', 2: 'Neumann', 3: 'isolated/multipole-Dirichlet'}.get(boundary, '?') }, "
             f"FMG vcycles/level={n_vcycles_per_level}, extra={n_extra_vcycles}"
         )
 
