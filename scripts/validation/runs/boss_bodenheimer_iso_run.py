@@ -18,10 +18,11 @@ def main():
     L = 4.0 * R
     G = 1.0
 
+    hydro_bc = int(os.environ.get("LUNA_BB_HYDRO_BC", "1"))  # 1=outflow, 0=periodic (BC diagnostic)
     overrides = dict(
         test_problem="Boss-Bodenheimer-3D",
         SPATIAL_DIMENSION=3,
-        BOUNDARY=1,                 # outflow / zero-gradient hydro BC
+        BOUNDARY=hydro_bc,
         POISSON_BOUNDARY=3,         # multipole-Dirichlet isolated BC
         Nx=Nx, Ny=Nx, Nz=Nx,
         Lx=L, Ly=L, Lz=L,
@@ -35,12 +36,13 @@ def main():
         bb_beta=0.16, bb_amp=0.1,
         isothermal_cs2=cs2,
         PLOT_AFTER_SIM=False, production_mode=True,
-        output_dir=f"snapshots/bb_iso_minmod_{riemann}_Nx{Nx}" if riemann != "hllc"
-                   else f"snapshots/bb_iso_minmod_Nx{Nx}",
+        output_dir=(f"snapshots/bb_iso_minmod_Nx{Nx}"
+                    + (f"_{riemann}" if riemann != "hllc" else "")
+                    + {0: "_perhydro", 4: "_diode"}.get(hydro_bc, "")),
         enable_x64=True, enable_checkpointing=False,
     )
     print(f"BB79 ISOLATED: Nx={Nx}, M={M}, R={R}, c_s²={cs2}, riemann={riemann}, "
-          f"BOUNDARY=1 (outflow), POISSON_BOUNDARY=3 (multipole), t_end={t_end:.2f}")
+          f"BOUNDARY={hydro_bc}, POISSON_BOUNDARY=3 (multipole), t_end={t_end:.2f}")
     run_one(overrides)
 
 

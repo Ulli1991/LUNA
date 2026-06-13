@@ -1,14 +1,14 @@
 """Runner-side wiring for the radiative cooling source term.
 
-Builds a TownsendCoolingSolver from cfg, suitable for use as an
+Builds an ExplicitCoolingSolver from cfg, suitable for use as an
 operator-split step:  U = apply_cooling(U, dt, cfg, solver).
 """
 
-from hydro.cooling import TownsendCoolingSolver, sutherland_dopita_cie
+from hydro.cooling import ExplicitCoolingSolver, sutherland_dopita_cie
 
 
 def setup_cooling(cfg, is_main_process: bool = True):
-    """Return the TownsendCoolingSolver or None when disabled."""
+    """Return the ExplicitCoolingSolver or None when disabled."""
     if not getattr(cfg, "cooling_enabled", False):
         return None
     if not cfg.units.is_enabled:
@@ -18,7 +18,8 @@ def setup_cooling(cfg, is_main_process: bool = True):
     else:
         raise ValueError(f"Unknown cooling_table: {cfg.cooling_table}")
     mu = getattr(cfg, "cc85_mu", 0.6)
-    solver = TownsendCoolingSolver(table=table, mu=mu)
+    n_sub = getattr(cfg, "cooling_n_sub", 16)
+    solver = ExplicitCoolingSolver(table=table, mu=mu, n_sub=n_sub)
     if is_main_process:
         print(
             f"✓ Cooling enabled: table={cfg.cooling_table}, "

@@ -129,7 +129,8 @@ def _muscl_hancock_2d(W_pad, dt, dWx, dWy, *, gamma, riemann_solver, inv_dx, inv
     return dU
 
 
-def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_dy, inv_dz, boundary):
+def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_dy, inv_dz, boundary,
+                      exact_wrap=False):
     """3D unsplit MUSCL-Hancock — full transverse predictor, streaming flux phase.
 
     Predictor (A_dW = A_x dWx + A_y dWy + A_z dWz) is built one direction at
@@ -177,20 +178,27 @@ def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_
         dW = compute_slope_x_3d_from_padded(W_pad, limiter)
         Wr = W_half + 0.5 * dW
         Wl = W_half - 0.5 * dW
-        # Boundary states for the wrap (or BC) face. Use the halo W (cell-
-        # centered) for *all* boundary types — this is correct under
-        # shard_map (the halo brings the actual neighbour shard's edge cell).
-        # For single-process periodic, this loses half-order accuracy at the
-        # wrap face vs the previous `Wr[-1:]` reconstruction, but only at
-        # that single face (one cell per axis) — negligible for smooth
-        # flows. Previous behaviour `Wr[:, -1:, :, :]` was a *local* wrap,
-        # which under multi-process injected a small spurious velocity at
-        # every shard boundary every step (Jeans linear-theory breakdown).
-        WL_bc = W_pad[:, 0:1, 1:-1, 1:-1]
-        WR_bc = W_pad[:, -1:, 1:-1, 1:-1]
         F_int = flux_fn(Wr[:, :-1, :, :], Wl[:, 1:, :, :], axis=0, gamma=gamma)
-        F_l = flux_fn(WL_bc, Wl[:, 0:1, :, :], axis=0, gamma=gamma)
-        F_r = flux_fn(Wr[:, -1:, :, :], WR_bc, axis=0, gamma=gamma)
+        if exact_wrap:
+            # Single-process periodic: the wrap seam is ONE physical face
+            # (between cell N-1 and cell 0). Compute its flux once from the
+            # reconstructed states on both sides and use it at both ends —
+            # the flux sum then telescopes exactly (mass/momentum/energy
+            # conservation to machine precision) and the seam stays 2nd order.
+            F_face = flux_fn(Wr[:, -1:, :, :], Wl[:, 0:1, :, :], axis=0, gamma=gamma)
+            F_l = F_face
+            F_r = F_face
+        else:
+            # Boundary states for the BC / shard face. Use the halo W (cell-
+            # centered) — correct under shard_map (the halo brings the actual
+            # neighbour shard's edge cell) and for physical BCs (the ghost
+            # carries the BC state). Costs half-order accuracy and exact
+            # telescoping at that single face; under shard_map the proper fix
+            # is exchanging reconstructed face states (future work).
+            WL_bc = W_pad[:, 0:1, 1:-1, 1:-1]
+            WR_bc = W_pad[:, -1:, 1:-1, 1:-1]
+            F_l = flux_fn(WL_bc, Wl[:, 0:1, :, :], axis=0, gamma=gamma)
+            F_r = flux_fn(Wr[:, -1:, :, :], WR_bc, axis=0, gamma=gamma)
         return jnp.concatenate(
             [F_l - F_int[:, 0:1, :, :], F_int[:, :-1, :, :] - F_int[:, 1:, :, :], F_int[:, -1:, :, :] - F_r],
             axis=1,
@@ -200,11 +208,16 @@ def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_
         dW = compute_slope_y_3d_from_padded(W_pad, limiter)
         Wr = W_half + 0.5 * dW
         Wl = W_half - 0.5 * dW
-        WL_bc = W_pad[:, 1:-1, 0:1, 1:-1]
-        WR_bc = W_pad[:, 1:-1, -1:, 1:-1]
         F_int = flux_fn(Wr[:, :, :-1, :], Wl[:, :, 1:, :], axis=1, gamma=gamma)
-        F_l = flux_fn(WL_bc, Wl[:, :, 0:1, :], axis=1, gamma=gamma)
-        F_r = flux_fn(Wr[:, :, -1:, :], WR_bc, axis=1, gamma=gamma)
+        if exact_wrap:
+            F_face = flux_fn(Wr[:, :, -1:, :], Wl[:, :, 0:1, :], axis=1, gamma=gamma)
+            F_l = F_face
+            F_r = F_face
+        else:
+            WL_bc = W_pad[:, 1:-1, 0:1, 1:-1]
+            WR_bc = W_pad[:, 1:-1, -1:, 1:-1]
+            F_l = flux_fn(WL_bc, Wl[:, :, 0:1, :], axis=1, gamma=gamma)
+            F_r = flux_fn(Wr[:, :, -1:, :], WR_bc, axis=1, gamma=gamma)
         return jnp.concatenate(
             [F_l - F_int[:, :, 0:1, :], F_int[:, :, :-1, :] - F_int[:, :, 1:, :], F_int[:, :, -1:, :] - F_r],
             axis=2,
@@ -214,11 +227,16 @@ def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_
         dW = compute_slope_z_3d_from_padded(W_pad, limiter)
         Wr = W_half + 0.5 * dW
         Wl = W_half - 0.5 * dW
-        WL_bc = W_pad[:, 1:-1, 1:-1, 0:1]
-        WR_bc = W_pad[:, 1:-1, 1:-1, -1:]
         F_int = flux_fn(Wr[:, :, :, :-1], Wl[:, :, :, 1:], axis=2, gamma=gamma)
-        F_l = flux_fn(WL_bc, Wl[:, :, :, 0:1], axis=2, gamma=gamma)
-        F_r = flux_fn(Wr[:, :, :, -1:], WR_bc, axis=2, gamma=gamma)
+        if exact_wrap:
+            F_face = flux_fn(Wr[:, :, :, -1:], Wl[:, :, :, 0:1], axis=2, gamma=gamma)
+            F_l = F_face
+            F_r = F_face
+        else:
+            WL_bc = W_pad[:, 1:-1, 1:-1, 0:1]
+            WR_bc = W_pad[:, 1:-1, 1:-1, -1:]
+            F_l = flux_fn(WL_bc, Wl[:, :, :, 0:1], axis=2, gamma=gamma)
+            F_r = flux_fn(Wr[:, :, :, -1:], WR_bc, axis=2, gamma=gamma)
         return jnp.concatenate(
             [F_l - F_int[:, :, :, 0:1], F_int[:, :, :, :-1] - F_int[:, :, :, 1:], F_int[:, :, :, -1:] - F_r],
             axis=3,
@@ -250,6 +268,7 @@ def muscl_hancock_divergence(
     inv_dz,
     boundary,
     order,
+    exact_wrap=False,
 ):
     """Compute dU/dt = -∇·F(U) using MUSCL-Hancock (second-order) or plain
     Godunov on primitives (first-order, order=0). All arguments after the
@@ -278,6 +297,7 @@ def muscl_hancock_divergence(
             inv_dy=inv_dy,
             inv_dz=inv_dz,
             boundary=boundary,
+            exact_wrap=exact_wrap,
         )
 
     # 1D and 2D paths still precompute slopes (small N, memory not critical).

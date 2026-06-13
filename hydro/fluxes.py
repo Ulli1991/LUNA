@@ -216,12 +216,21 @@ def hllc_flux_primitive_3d(W_L, W_R, axis, gamma):
     denom_L = rho_L * (S_L - vn_L)
     denom_R = rho_R * (S_R - vn_R)
 
+    # Degenerate faces (near-vacuum / symmetric expansion) can drive these
+    # denominators to exactly zero. The jnp.where flux selection masks the
+    # resulting inf/NaN in the forward pass, but the VJP of jnp.where still
+    # pulls NaN out of the unselected branch (inf * 0 cotangent). Guard every
+    # division site away from exact zero; guarded faces are never selected,
+    # so forward results are bit-identical.
+    def _nz(d, eps=1e-20):
+        return jnp.where(jnp.abs(d) < eps, jnp.where(d < 0, -eps, eps), d)
+
     # Middle speed
-    S_M = (P_R - P_L + denom_L * vn_L - denom_R * vn_R) / (denom_L - denom_R)
+    S_M = (P_R - P_L + denom_L * vn_L - denom_R * vn_R) / _nz(denom_L - denom_R)
 
     # Star densities
-    rho_star_L = denom_L / (S_L - S_M)
-    rho_star_R = denom_R / (S_R - S_M)
+    rho_star_L = denom_L / _nz(S_L - S_M)
+    rho_star_R = denom_R / _nz(S_R - S_M)
 
     # Total kinetic energy and total energy
     ke_L = 0.5 * (vn_L * vn_L + vt1_L * vt1_L + vt2_L * vt2_L)
@@ -230,8 +239,8 @@ def hllc_flux_primitive_3d(W_L, W_R, axis, gamma):
     E_R = P_R / gm1 + rho_R * ke_R
 
     # Star energies
-    E_star_L = E_L / rho_L + (S_M - vn_L) * (S_M + P_L / denom_L)
-    E_star_R = E_R / rho_R + (S_M - vn_R) * (S_M + P_R / denom_R)
+    E_star_L = E_L / rho_L + (S_M - vn_L) * (S_M + P_L / _nz(denom_L))
+    E_star_R = E_R / rho_R + (S_M - vn_R) * (S_M + P_R / _nz(denom_R))
 
     # Normal momentum
     rho_vn_L = rho_L * vn_L

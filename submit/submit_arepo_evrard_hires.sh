@@ -26,4 +26,4 @@ cp "$EXAMPLE/param.txt" .
 # move 256^3 IC into hires run dir if not already
 [ -f IC.hdf5 ] || cp "$AREPO_DIR/run/examples/$TEST/IC.hdf5" .
 
-srun "$AREPO_DIR/Arepo_evrard" param.txt
+srun "$AREPO_DIR/Arepo_evrard_iso" param.txt

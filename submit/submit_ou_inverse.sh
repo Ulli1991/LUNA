@@ -20,4 +20,5 @@ export LUNA_OU_NX=${LUNA_OU_NX:-128}
 export LUNA_OU_NSTEPS=${LUNA_OU_NSTEPS:-250}
 export LUNA_OU_ITER=${LUNA_OU_ITER:-80}
 
+export XLA_FLAGS="--xla_gpu_autotune_level=1"
 python -u -m scripts.autodiff.ou_inverse

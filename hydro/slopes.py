@@ -20,7 +20,19 @@ def moncen(dl, dr):
 
 
 def vanleer(dl, dr):
-    return jnp.where(dl * dr > 0, 2 * dl * dr / (dl + dr), 0.0)
+    # Double-where: the denominator must be made safe BEFORE the division,
+    # otherwise 0/0 at dl+dr=0 (flat regions) is NaN in the unselected
+    # branch and the VJP of jnp.where propagates it into the gradient
+    # even though the forward pass is masked correctly.
+    # The threshold must be the smallest NORMAL float, not 0: for subnormal
+    # slopes (~1e-160) the backward-pass ratio 2*dr^2/(dl+dr)^2 underflows
+    # to 0/0 = NaN even though it is analytically bounded by 2. Requiring
+    # dl*dr above the normal floor keeps (dl+dr)^2 from underflowing on the
+    # taken branch; slopes that tiny are physically zero anyway.
+    tiny = jnp.finfo(jnp.result_type(dl, dr)).tiny
+    same_sign = dl * dr > tiny
+    denom = jnp.where(same_sign, dl + dr, 1.0)
+    return jnp.where(same_sign, 2 * dl * dr / denom, 0.0)
 
 
 # ------------------- Slope selection -------------------

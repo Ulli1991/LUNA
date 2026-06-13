@@ -36,8 +36,12 @@ Thumbs.db
 # bash scripts in main
 /*.sh
 
-# AthenaK reference simulation outputs (large binary dumps, regenerable)
-reference/
+# Simulation output dirs — now symlinks into /ptmp (move_all_to_ptmp.sh).
+# No trailing slash: a "name/" pattern matches only real directories, NOT a
+# symlink, so these would otherwise keep showing up as untracked.
+# (snapshots* are already covered by the snap* rule above.)
+reference
+checkpoints
 
 # Paper figure staging: ship the PNGs, not the tex source
 paper_figures/*.tex

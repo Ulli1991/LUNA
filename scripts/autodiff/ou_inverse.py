@@ -98,29 +98,44 @@ def _apply_ou(U, force, dt):
 # ---------------------------------------------------------------------------
 
 def _make_simulate(Nx, L, gamma, rho_0, p_0, n_steps, dt, order, limiter,
-                    ou_driver, X, Y, Z, ou_keys):
+                    ou_driver, X, Y, Z, ou_keys, chunk_len=10):
     inv_dx = jnp.asarray(Nx / L, dtype=jnp.float64)
+
+    # Two-level checkpointed scan. A flat scan stores the carry at EVERY
+    # step for the backward pass (n_steps × 5 fields × Nx³ — 21 GB at
+    # 128³/250 steps, the OOM we hit). Chunking stores only the outer
+    # carries (n_chunks × state) and recomputes the inner steps on the
+    # backward sweep: memory ÷ chunk_len for ~2× compute.
+    assert n_steps % chunk_len == 0, "n_steps must be divisible by chunk_len"
+    n_chunks = n_steps // chunk_len
 
     @functools.partial(jax.jit)
     def simulate(delta_rho, ou_a0):
         U = build_ic(delta_rho, Nx, rho_0, p_0, gamma)
+        keys_chunked = ou_keys.reshape(n_chunks, chunk_len, *ou_keys.shape[1:])
 
-        def body(carry, key):
+        # Nested remat: the per-step checkpoint matters as much as the chunk
+        # one. XLA's memory_analysis showed ~720 MB/step of saved residuals
+        # (the OU force_field materializes per-mode arrays), so a chunk's
+        # backward held chunk_len × that. Checkpointing the step recomputes
+        # those internals one step at a time: ~3× forward compute, but peak
+        # memory becomes chunk-size-independent (≈5 GB at 128³ vs 53 GiB).
+        @jax.checkpoint
+        def step(carry, key):
             U, a = carry
-            # Hydro half-step
             U = _hydro_step(U, dt, gamma=gamma, limiter=limiter,
                             order=order, inv_dx=inv_dx)
-            # OU evolve
             a_new = ou_driver.evolve(a, dt, key)
-            # Force on momentum
             Fx, Fy, Fz = ou_driver.force_field(a_new, X, Y, Z)
             U = _apply_ou(U, (Fx, Fy, Fz), dt)
             return (U, a_new), None
 
-        # Checkpoint the body: recompute activations on backward pass
-        # instead of storing them.  ~2× compute, ~N_steps× less memory.
-        body_remat = jax.checkpoint(body)
-        (U_final, _), _ = jax.lax.scan(body_remat, (U, ou_a0), ou_keys)
+        @jax.checkpoint
+        def chunk_body(carry, keys):
+            carry, _ = jax.lax.scan(step, carry, keys)
+            return carry, None
+
+        (U_final, _), _ = jax.lax.scan(chunk_body, (U, ou_a0), keys_chunked)
         return U_final
 
     return simulate
@@ -245,12 +260,37 @@ def main():
             print(f"  iter {it:3d}  L={L_val:.4e}  ‖δρ_est−δρ_true‖={res:.4e}")
     print(f"  Adam: {time.time()-t0:.1f}s wall for {n_iter} iter")
 
+    # Scale-resolved recovery: cross-correlation per k-shell. Quantifies
+    # which spatial scales of the IC remain invertible through the forced
+    # turbulence (loss can converge while small scales stay unconstrained).
+    ft = np.fft.rfftn(np.asarray(delta_rho_true))
+    fe = np.fft.rfftn(np.asarray(delta_rho))
+    kf = np.fft.fftfreq(Nx) * Nx
+    kx, ky = np.meshgrid(kf, kf, indexing="ij")
+    kz = np.arange(Nx // 2 + 1)
+    kmag = np.sqrt(kx[..., None] ** 2 + ky[..., None] ** 2 + kz**2)
+    kbin = np.rint(kmag).astype(int)
+    nk = Nx // 2
+    cross = np.zeros(nk); p_t = np.zeros(nk); p_e = np.zeros(nk)
+    for k in range(1, nk):
+        m = kbin == k
+        cross[k] = np.sum((fe[m] * np.conj(ft[m])).real)
+        p_t[k] = np.sum(np.abs(ft[m]) ** 2)
+        p_e[k] = np.sum(np.abs(fe[m]) ** 2)
+    valid = (p_t > 0) & (p_e > 0)
+    r_k = np.zeros(nk)
+    r_k[valid] = cross[valid] / np.sqrt(p_t[valid] * p_e[valid])
+    print("\n  scale-resolved recovery r(k):")
+    for k in range(1, min(nk, 13)):
+        if valid[k]:
+            print(f"    k={k:2d}  r={r_k[k]:+.3f}")
+
     # Plot.
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    fig, axes = plt.subplots(1, 4, figsize=(17.5, 4))
     axes[0].semilogy(losses, "o-", lw=1, ms=3, label="loss")
     axes[0].semilogy(residuals, "s-", lw=1, ms=3, label="‖δρ_est − δρ_true‖")
     axes[0].set_xlabel("Adam iter"); axes[0].set_ylabel("value")
@@ -265,12 +305,31 @@ def main():
                           vmin=vmin, vmax=vmax, cmap="RdBu_r")
     axes[2].set_title("δρ_recovered (z-mid)"); plt.colorbar(im1, ax=axes[2], shrink=0.85)
 
+    ks = np.arange(1, nk)
+    axes[3].plot(ks[valid[1:]], r_k[1:][valid[1:]], "o-", lw=1.2, ms=4)
+    axes[3].axhline(0, color="k", lw=0.5)
+    axes[3].axvline(4.5, color="gray", ls="--", lw=0.8)  # IC k_max and OU forcing band edge
+    axes[3].set_xlabel("k"); axes[3].set_ylabel("r(k)")
+    axes[3].set_title("scale-resolved recovery"); axes[3].set_ylim(-0.2, 1.05)
+    axes[3].grid(alpha=0.3)
+
     os.makedirs("figures", exist_ok=True)
     out = f"figures/ou_inverse_recovery_Nx{Nx}.png"
     fig.tight_layout(); fig.savefig(out, dpi=140); plt.close(fig)
     print(f"  wrote {out}")
     rel_final = residuals[-1] / float(jnp.linalg.norm(delta_rho_true))
     print(f"\n  Final ‖δρ_est − δρ_true‖ / ‖δρ_true‖ = {rel_final:.3e}")
+
+    # Null-space projection: r(k) shows constrained modes (k ≲ k_max·√3)
+    # are recovered near-perfectly while k above the IC's spectral support
+    # carries unconstrained noise. Projecting onto the supported band shows
+    # how much of the residual is pure null space.
+    k_cut = 7.5
+    fe_proj = np.where(kmag <= k_cut, fe, 0.0)
+    dr_proj = np.fft.irfftn(fe_proj, s=(Nx, Nx, Nx))
+    res_proj = np.linalg.norm(dr_proj - np.asarray(delta_rho_true))
+    rel_proj = res_proj / float(jnp.linalg.norm(delta_rho_true))
+    print(f"  After k≤{k_cut} projection:           = {rel_proj:.3e}")
 
 
 if __name__ == "__main__":

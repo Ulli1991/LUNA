@@ -168,6 +168,30 @@ def pad_with_halo_3d_auto(U, boundary):
         U_padded = jnp.concatenate([U_padded[:, :, :, 0:1], U_padded, U_padded[:, :, :, -1:]], axis=3)
         U_padded = _reshard(U_padded, s)
 
+    elif boundary == 4:  # Diode outflow: zero-gradient, but no inflow.
+        # Plain zero-gradient ghosts copy the edge cell's velocity, so under
+        # an inward pull (e.g. self-gravity of a central cloud) the boundary
+        # becomes an infinite mass reservoir — gas streams IN forever
+        # (measured: ×5.7 box mass by t=2 in the isolated BB79 run, with
+        # axis-aligned inflow jets at the face centres). The diode keeps the
+        # zero-gradient ghosts but clamps the ghost NORMAL velocity against
+        # inflow: gas may leave, nothing may enter. Operates on PRIMITIVES
+        # (index 1/2/3 = vx/vy/vz in 3D).
+        U_padded = jnp.concatenate([U[:, 0:1, :, :], U, U[:, -1:, :, :]], axis=1)
+        U_padded = _reshard(U_padded, s)
+        U_padded = jnp.concatenate([U_padded[:, :, 0:1, :], U_padded, U_padded[:, :, -1:, :]], axis=2)
+        U_padded = _reshard(U_padded, s)
+        U_padded = jnp.concatenate([U_padded[:, :, :, 0:1], U_padded, U_padded[:, :, :, -1:]], axis=3)
+        U_padded = _reshard(U_padded, s)
+        # Low face: inflow = positive normal velocity → clamp to ≤ 0.
+        # High face: inflow = negative normal velocity → clamp to ≥ 0.
+        U_padded = U_padded.at[1, 0, :, :].set(jnp.minimum(U_padded[1, 0, :, :], 0.0))
+        U_padded = U_padded.at[1, -1, :, :].set(jnp.maximum(U_padded[1, -1, :, :], 0.0))
+        U_padded = U_padded.at[2, :, 0, :].set(jnp.minimum(U_padded[2, :, 0, :], 0.0))
+        U_padded = U_padded.at[2, :, -1, :].set(jnp.maximum(U_padded[2, :, -1, :], 0.0))
+        U_padded = U_padded.at[3, :, :, 0].set(jnp.minimum(U_padded[3, :, :, 0], 0.0))
+        U_padded = U_padded.at[3, :, :, -1].set(jnp.maximum(U_padded[3, :, :, -1], 0.0))
+
     else:  # Reflective (edge then negate normal momenta)
         U_padded = jnp.concatenate([U[:, 0:1, :, :], U, U[:, -1:, :, :]], axis=1)
         U_padded = _reshard(U_padded, s)

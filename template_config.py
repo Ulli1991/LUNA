@@ -46,8 +46,11 @@ class Config:
     # 3 = 3D (not meaningfully implemented yet)
     SPATIAL_DIMENSION: int = 1
     # 0 = Periodic
-    # 1 = von Neumann
+    # 1 = von Neumann (zero-gradient; NOTE: permits boundary inflow under an
+    #     inward pull — for self-gravitating isolated problems prefer 4)
     # 2 = Reflective
+    # 4 = Diode outflow (zero-gradient, ghost normal velocity clamped against
+    #     inflow; gas can leave, nothing enters). 3D auto-sharding path only.
     BOUNDARY: int = 1
 
     # Domain decomposition strategy (for multi-GPU parallelization)

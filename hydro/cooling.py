@@ -1,5 +1,6 @@
 """
-ISM-style radiative cooling + heating with Townsend (2009) exact integration.
+ISM-style radiative cooling + heating, integrated by explicit forward-Euler
+sub-cycling (Schneider, Robertson & Thompson 2018, Cholla/CGOLS).
 
 Provides two cooling functions out of the box, optionally combined:
 
@@ -14,17 +15,18 @@ Provides two cooling functions out of the box, optionally combined:
     above ~10^4 K. Embedded as a compact log T - log Lambda table at solar
     metallicity. For production runs swap in a higher-resolution table.
 
-The Townsend (2009) scheme advances temperature exactly under piecewise
-power-law Lambda(T) by integrating the cooling ODE in closed form.
+Cooling is operator-split after the hydro update and advanced with n_sub
+forward-Euler sub-steps and a temperature floor. The smooth log-log
+Lambda(T) interpolant keeps the whole step differentiable.
 
 For one zone at fixed density (rho constant during the cooling step):
-    de_int/dt = -n_H^2 Lambda(T) + n_H Gamma                 (cgs)
+    de_int/dt = -n_e n_H Lambda(T) + n_H Gamma               (cgs)
     T         = (gamma - 1) mu m_p e_int / (k_B rho)
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -75,8 +77,8 @@ def koyama_inutsuka_2002(
     """Build a tabulated CoolingTable from the KI 2002 analytic formula.
 
     Default T_min = 30 K: below this Lambda is effectively zero (heating
-    dominates) and the Townsend integrator's Y integral becomes ill-conditioned.
-    Set T_min lower at your own risk.
+    dominates) and log10(Lambda) is ill-defined. Set T_min lower at your
+    own risk.
     """
     log_T = np.linspace(np.log10(T_min), np.log10(T_max), n_pts)
     T = 10.0**log_T
@@ -167,203 +169,82 @@ def combine(
 
 
 # ---------------------------------------------------------------------------
-# Townsend (2009) helpers
-#
-# Convention: Y is dimensionless and *strictly decreasing in T*.
-#     Y(T) = (Lambda_ref / T_ref) * integral_T^{T_ref} dT' / Lambda(T')
-# So Y(T_ref) = 0, Y(T_min) = Y_max > 0.
-#
-# Under a piecewise power-law Lambda(T) = L_k (T/T_k)^a_k on [T_k, T_{k+1}]:
-#     integral_T^{T_{k+1}} dT' / Lambda(T') = (T_k / L_k) * g(a_k, T/T_k, T_{k+1}/T_k)
-# where
-#     g(a, x_lo, x_hi) = (x_hi^{1-a} - x_lo^{1-a}) / (1 - a)    if a != 1
-#                     = log(x_hi / x_lo)                          if a == 1.
-#
-# Then Y(T) = Y(T_{k+1}) + (Lambda_ref/T_ref) * (T_k/L_k) * g(a_k, T/T_k, T_{k+1}/T_k).
-# ---------------------------------------------------------------------------
-def _townsend_Y_grid(table: CoolingTable, T_ref: Optional[float] = None) -> np.ndarray:
-    T = table.T
-    L = table.Lambda
-    alpha = table.alpha
-    N = len(T)
-    if T_ref is None:
-        T_ref = T[-1]
-    Lambda_ref = L[-1]
-
-    Y = np.zeros(N, dtype=np.float64)
-    # Walk from top down; Y at the highest-T node is zero.
-    for k in range(N - 2, -1, -1):
-        a = alpha[k]
-        x_hi = T[k + 1] / T[k]
-        x_lo = 1.0
-        if abs(a - 1.0) < 1.0e-12:
-            seg = (T[k] / L[k]) * np.log(x_hi)
-        else:
-            seg = (T[k] / L[k]) * ((x_hi ** (1.0 - a) - x_lo ** (1.0 - a)) / (1.0 - a))
-        Y[k] = Y[k + 1] + (Lambda_ref / T_ref) * seg
-    return Y
-
-
-def _g_segment(a, x_lo, x_hi):
-    """int_{x_lo}^{x_hi} y^{-a} dy. Branch on a==1.
-
-    Note: x_lo and x_hi are positive scalars (or jnp arrays). For a!=1 we use
-    the closed form (x_hi^{1-a} - x_lo^{1-a}) / (1-a). For a==1 we use the log.
-    """
-    one_minus_a = 1.0 - a
-    # Use safe value of a to avoid 0/0 in the unused branch
-    safe = jnp.where(jnp.abs(one_minus_a) < 1.0e-10, 1.0e-3, one_minus_a)
-    pwr = (x_hi**safe - x_lo**safe) / safe
-    lin = jnp.log(x_hi / x_lo)
-    return jnp.where(jnp.abs(one_minus_a) < 1.0e-10, lin, pwr)
-
-
-def _Y_of_T(T, T_grid, L_grid, alpha_grid, Y_grid, T_ref, Lambda_ref):
-    """Y(T). Clamps T to the table range."""
-    T_clip = jnp.clip(T, T_grid[0], T_grid[-1])
-    k = jnp.clip(jnp.searchsorted(T_grid, T_clip) - 1, 0, T_grid.shape[0] - 2)
-    T_k = T_grid[k]
-    L_k = L_grid[k]
-    a = alpha_grid[k]
-    g = _g_segment(a, T_clip / T_k, T_grid[k + 1] / T_k)
-    seg = (T_k / L_k) * g
-    return Y_grid[k + 1] + (Lambda_ref / T_ref) * seg
-
-
-def _T_of_Y(y, T_grid, L_grid, alpha_grid, Y_grid, T_ref, Lambda_ref):
-    """Invert Y -> T. Clamps to table.
-
-    Y_grid is descending in index; we locate the bin via -Y_grid (ascending).
-    """
-    y_clip = jnp.clip(y, Y_grid[-1], Y_grid[0])
-    neg_Y = -Y_grid
-    k = jnp.clip(jnp.searchsorted(neg_Y, -y_clip) - 1, 0, T_grid.shape[0] - 2)
-    T_k = T_grid[k]
-    L_k = L_grid[k]
-    a = alpha_grid[k]
-
-    # delta = (y - Y_grid[k+1]) * (T_ref / Lambda_ref) = (T_k/L_k) * g(a, T/T_k, T_{k+1}/T_k)
-    # Solve g(a, x, x_hi) = delta * L_k / T_k for x = T/T_k.
-    delta = (y_clip - Y_grid[k + 1]) * (T_ref / Lambda_ref)
-    rhs = delta * (L_k / T_k)
-    x_hi = T_grid[k + 1] / T_k
-
-    one_minus_a = 1.0 - a
-    safe = jnp.where(jnp.abs(one_minus_a) < 1.0e-10, 1.0e-3, one_minus_a)
-    # Power-law branch: x^{1-a} = x_hi^{1-a} - (1-a) * rhs
-    x_pwr_arg = jnp.maximum(x_hi**safe - safe * rhs, 1.0e-30)
-    x_pwr = x_pwr_arg ** (1.0 / safe)
-    # Log branch (a == 1): log(x_hi / x) = rhs -> x = x_hi / exp(rhs)
-    x_lin = x_hi / jnp.exp(rhs)
-    x = jnp.where(jnp.abs(one_minus_a) < 1.0e-10, x_lin, x_pwr)
-    T_new = T_k * x
-    return jnp.clip(T_new, T_grid[0], T_grid[-1])
-
-
-# ---------------------------------------------------------------------------
-# Townsend cooling solver
+# Explicit sub-cycled cooling solver
 # ---------------------------------------------------------------------------
 @dataclass
-class TownsendCoolingSolver:
-    """Townsend (2009) cooling + explicit forward-Euler heating, per cell."""
+class ExplicitCoolingSolver:
+    """Forward-Euler sub-cycled radiative cooling, following Schneider,
+    Robertson & Thompson (2018, Cholla/CGOLS): operator-split, explicit
+    forward Euler on the cooling ODE with sub-cycling and a temperature
+    floor. The cooling curve Lambda(T) is a SMOOTH log-log interpolant of
+    the table -> fully differentiable (no Townsend piecewise inversion,
+    which was a reverse-mode gradient minefield: searchsorted + power-law
+    root + clamps each inject masked NaNs)."""
 
     table: CoolingTable
-    mu: float = 1.27
+    mu: float = 0.6
+    n_sub: int = 16
+    T_floor: float = 1.0e4
 
     def jax_pack(self):
-        T = self.table.T.astype(np.float64)
-        L = self.table.Lambda.astype(np.float64)
-        a = self.table.alpha.astype(np.float64)
-        Y = _townsend_Y_grid(self.table).astype(np.float64)
         return {
-            "T_grid": jnp.asarray(T),
-            "L_grid": jnp.asarray(L),
-            "alpha_grid": jnp.asarray(a),
-            "Y_grid": jnp.asarray(Y),
-            "T_ref": jnp.float64(T[-1]),
-            "Lambda_ref": jnp.float64(L[-1]),
+            "logT": jnp.asarray(self.table.log_T, dtype=jnp.float64),
+            "logL": jnp.asarray(self.table.log_Lambda, dtype=jnp.float64),
             "heating": jnp.float64(self.table.heating),
             "mu": jnp.float64(self.mu),
+            "n_sub": int(self.n_sub),
+            "T_floor": jnp.float64(self.T_floor),
         }
-
-    @staticmethod
-    def step(T_cgs, dt_eff, params):
-        """Advance T_cgs over an effective dt under pure Townsend cooling.
-
-        dt_eff must already absorb the (gamma-1) mu m_p n_H Lambda_ref / (k_B T_ref)
-        prefactor so that Y_new = Y_old + dt_eff is the correct exact update.
-        """
-        y = _Y_of_T(
-            T_cgs,
-            params["T_grid"],
-            params["L_grid"],
-            params["alpha_grid"],
-            params["Y_grid"],
-            params["T_ref"],
-            params["Lambda_ref"],
-        )
-        return _T_of_Y(
-            y + dt_eff,
-            params["T_grid"],
-            params["L_grid"],
-            params["alpha_grid"],
-            params["Y_grid"],
-            params["T_ref"],
-            params["Lambda_ref"],
-        )
 
 
 # ---------------------------------------------------------------------------
 # High-level interface
 # ---------------------------------------------------------------------------
-def apply_cooling(U, dt_code, cfg, solver: TownsendCoolingSolver):
-    """Apply Townsend cooling + explicit heating to U for one hydro step.
+def apply_cooling(U, dt_code, cfg, solver: ExplicitCoolingSolver):
+    """Apply explicit sub-cycled radiative cooling (+ optional heating) to U
+    for one hydro step (Schneider+2018 / Cholla style).
 
     rho, momentum, kinetic energy unchanged. Only total energy E (cell 4) is
-    updated, via a Strang split: half-step heating, full-step cooling,
-    half-step heating.
+    updated. The cooling ODE du/dt = -n_e n_H Lambda(T) + n_H Gamma is
+    advanced with n_sub forward-Euler sub-steps and a temperature floor.
     """
     if not cfg.units.is_enabled:
         raise ValueError("apply_cooling requires cfg.units enabled (cgs scales)")
 
     rho = U[0]
-    mx, my, mz = U[1], U[2], U[3]
-    E = U[4]
+    kin = 0.5 * (U[1] ** 2 + U[2] ** 2 + U[3] ** 2) / rho
+    u_int = U[4] - kin
     gamma = cfg.gamma
-    mu = solver.mu
 
-    kin = 0.5 * (mx * mx + my * my + mz * mz) / rho
-    u_int = E - kin  # internal energy per unit volume (code units)
+    p = solver.jax_pack()
+    logT, logL = p["logT"], p["logL"]
+    Gamma, mu, n_sub, T_floor = p["heating"], p["mu"], p["n_sub"], p["T_floor"]
 
+    # L = n_e n_H Lambda(T): two-body rate matching the Sutherland-Dopita
+    # Lambda_N (per n_e*n_H) normalization. n_tot=rho/(mu*m_p) sets u<->T.
+    X_H, NE_PER_NH = 0.7154, 1.189
     rho_cgs = rho * cfg.units.UnitDensity_in_cgs
     u_int_cgs = u_int * cfg.units.UnitPressure_in_cgs
-    T_cgs = (gamma - 1.0) * mu * PROTON_MASS_CGS * u_int_cgs / (BOLTZMANN_CGS * rho_cgs)
-    n_H_cgs = rho_cgs / (mu * PROTON_MASS_CGS)
-    dt_cgs = dt_code * cfg.units.UnitTime_in_s
+    n_tot = rho_cgs / (mu * PROTON_MASS_CGS)
+    n_H = X_H * rho_cgs / PROTON_MASS_CGS
+    n_e = NE_PER_NH * n_H
+    T0 = (gamma - 1.0) * mu * PROTON_MASS_CGS * jnp.clip(u_int_cgs, 1e-100) \
+        / (BOLTZMANN_CGS * rho_cgs)
+    dt_sub = (dt_code * cfg.units.UnitTime_in_s) / n_sub
 
-    params = solver.jax_pack()
-    T_ref = params["T_ref"]
-    Lambda_ref = params["Lambda_ref"]
-    Gamma = params["heating"]
+    def Lam(T):
+        # smooth log-log interpolant, clamped at table edges; differentiable
+        return 10.0 ** jnp.interp(jnp.log10(T), logT, logL)
 
-    # Effective Townsend dt. The mu*m_p factor that converts u_int<->T
-    # cancels with the n_H = rho/(mu*m_p) factor in the cooling rate, leaving
-    #   dT/dt = -(gamma-1) n_H Lambda(T) / k_B,
-    # so dY/dt = (gamma-1) n_H Lambda_ref / (k_B T_ref).
-    dt_eff = dt_cgs * (gamma - 1.0) * n_H_cgs * Lambda_ref / (BOLTZMANN_CGS * T_ref)
+    def sub(T, _):
+        # dT/dt = (gamma-1)/(n_tot k_B) * (n_H Gamma - n_e n_H Lambda(T))
+        dTdt = (gamma - 1.0) / (n_tot * BOLTZMANN_CGS) * (n_H * Gamma - n_e * n_H * Lam(T))
+        return jnp.maximum(T + dTdt * dt_sub, T_floor), None
 
-    # Strang-split heating: half before, full cooling, half after.
-    # dT/dt|_heat = (gamma-1) Gamma / (k_B mu)    (independent of n_H since
-    # rho = n_H mu m_p and Gamma is per-H heating).
-    dT_heat_half = 0.5 * (gamma - 1.0) * Gamma * dt_cgs / (BOLTZMANN_CGS * mu)
-    T_after_h1 = T_cgs + dT_heat_half
-    T_after_c = TownsendCoolingSolver.step(T_after_h1, dt_eff, params)
-    T_new = T_after_c + dT_heat_half
-
+    T_new, _ = jax.lax.scan(sub, T0, None, length=n_sub)
     u_int_cgs_new = BOLTZMANN_CGS * rho_cgs * T_new / ((gamma - 1.0) * mu * PROTON_MASS_CGS)
     u_int_new = u_int_cgs_new / cfg.units.UnitPressure_in_cgs
-    E_new = u_int_new + kin
-    return U.at[4].set(E_new)
+    return U.at[4].set(u_int_new + kin)
 
 
 # ----------------------------------------------------------------------

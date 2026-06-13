@@ -98,6 +98,13 @@ def create_muscl_hancock_modular_step(
 
     from hydro.muscl_hancock import muscl_hancock_divergence
 
+    # Exact periodic seam flux: under auto-sharding the array is global, so
+    # the wrap face can be fluxed ONCE from the reconstructed states of both
+    # sides — exact conservation (telescoping) + 2nd order at the seam.
+    # Under shard_map arrays are per-shard local and the halo-based
+    # (asymmetric) face flux is required for correctness across shards.
+    exact_wrap = (boundary == 0) and (not use_shardmap)
+
     # Inner step (semantics-only — same body whether dispatched per-shard
     # via shard_map or globally via auto-sharding).
     def _step_inner(U, dt):
@@ -115,6 +122,7 @@ def create_muscl_hancock_modular_step(
             inv_dz=inv_dz,
             boundary=boundary,
             order=order,
+            exact_wrap=exact_wrap,
         )
         U_new = U + dt * dU
         if sharding is not None and not use_shardmap:
