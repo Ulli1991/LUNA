@@ -175,21 +175,20 @@ def compare_test(name, arepo_subdir, luna_subdir, target_t, out_path):
     fig, axes = plt.subplots(1, 3, figsize=(FIGSIZE[0]*3, FIGSIZE[1]))
     titles = ["ρ", "v_r", "P"]
     keys   = ["rho", "v_r", "P"]
-    for ax, k, title in zip(axes, keys, titles):
+    ylabels = [r"$\rho$", r"$v_r$", r"$P$"]
+    for ax, k, ylab in zip(axes, keys, ylabels):
         cA, mA = radial_bins(A["r"], A[k], n_bins=40, r_max=r_max, log=True)
         cL, mL = radial_bins(LU["r"], LU[k], n_bins=40, r_max=r_max, log=True)
         if k == "v_r":
-            ax.plot(cA, mA, "o-", lw=1.5, ms=4, label="AREPO")
-            ax.plot(cL, mL, "s--", lw=1.5, ms=4, label="LUNA")
+            ax.plot(cA, mA, "-", lw=2.0, color="C0", label="AREPO")
+            ax.plot(cL, mL, "--", lw=2.0, color="C1", label="LUNA")
             ax.set_xscale("log")
         else:
-            ax.loglog(cA, np.abs(mA), "o-", lw=1.5, ms=4, label="AREPO")
-            ax.loglog(cL, np.abs(mL), "s--", lw=1.5, ms=4, label="LUNA")
-        ax.set_xlabel("r"); ax.set_ylabel(title)
-        ax.set_title(title)
+            ax.loglog(cA, np.abs(mA), "-", lw=2.0, color="C0", label="AREPO")
+            ax.loglog(cL, np.abs(mL), "--", lw=2.0, color="C1", label="LUNA")
+        ax.set_xlabel(r"$r$"); ax.set_ylabel(ylab)
         ax.legend()
         decorate(ax)
-    fig.suptitle(f"{name}: AREPO vs LUNA at t={A['t']:.3f} (target {target_t})")
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)

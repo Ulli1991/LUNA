@@ -151,8 +151,6 @@ def main():
     ax.semilogy(ts, amps, "o", ms=6, color="C0", zorder=5,
                 label=r"LUNA  $|\delta\rho_k|/\rho_0$")
     ax.set_xlabel("t  [code units]"); ax.set_ylabel(r"mode amplitude $|\delta\rho_k|/\rho_0$")
-    ax.set_title(fr"Jeans instability, $N_x$={Nx}: "
-                 fr"$\sigma_{{\rm meas}}$={sigma_meas:.3f} vs $\sigma_{{\rm exact}}$={growth_rate:.3f}")
     ax.legend(loc="upper left")
     decorate(ax)
     fig.tight_layout()

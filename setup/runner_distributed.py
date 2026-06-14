@@ -47,6 +47,31 @@ def _isothermal_project(U, cs2_iso, gamma):
 
 
 @jax.jit
+def _barotropic_project_jit(U, unit_density, unit_pressure, T0, rho_AD, mu, gm1):
+    """Reset total energy so p follows the barotropic EOS (cgs):
+        T(rho) = T0 [1 + (rho/rho_AD)^gm1],  p = k_B T rho / (mu m_H).
+    Leaves rho and momentum untouched. dtype follows U (run in fp64)."""
+    K_B = 1.380649e-16
+    M_H = 1.6726219e-24
+    rho = U[0]
+    mx, my, mz = U[1], U[2], U[3]
+    rho_cgs = rho * unit_density
+    T = T0 * (1.0 + (rho_cgs / rho_AD) ** gm1)
+    p = (K_B * T * rho_cgs / (mu * M_H)) / unit_pressure
+    KE = 0.5 * (mx * mx + my * my + mz * mz) / rho
+    E_new = p / gm1 + KE
+    return U.at[4].set(E_new)
+
+
+def _barotropic_project(U, cfg):
+    u = cfg.units
+    return _barotropic_project_jit(
+        U, u.UnitDensity_in_cgs, u.UnitPressure_in_cgs,
+        float(cfg.barotropic_T0_K), float(cfg.barotropic_rho_AD_cgs),
+        float(cfg.barotropic_mu), cfg.gamma - 1.0)
+
+
+@jax.jit
 def _diag_reductions(U, gamma):
     """Single-pass GPU reductions for periodic-diagnostic prints + history.
 
@@ -234,6 +259,8 @@ def run_simulation_distributed(
             U_new, new_a, new_key = forcing_state["apply"](U_new, forcing_a, forcing_key, dt)
         if cfg.isothermal_cs2 > 0.0:
             U_new = _isothermal_project(U_new, cfg.isothermal_cs2, cfg.gamma)
+        if getattr(cfg, "barotropic_eos", False):
+            U_new = _barotropic_project(U_new, cfg)
         if ext_grav_state is not None:
             U_new = ext_grav_state["apply"](U_new, dt)
         if self_grav_state is not None:

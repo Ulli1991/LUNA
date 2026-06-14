@@ -123,12 +123,20 @@ class Config:
     mac_rho: float = 1.0
     mac_rho_ambient: float = 0.0
     # Boss-Bodenheimer IC (test_problem='Boss-Bodenheimer-3D').
+    # Physical (cgs) parameters straight from GANDALF (Hubber+ 2018 §6.12) /
+    # Boss & Bodenheimer 1979; run with a star-formation UnitSystem (pc, Msun,
+    # km/s) and the barotropic EOS below.
+    bb_rho0_cgs: float = 1.44e-17        # mean cloud density (g/cm^3)
+    bb_R_pc: float = 0.01                # cloud radius (pc)
+    bb_omega_rad_s: float = 1.6e-12      # rigid-body angular velocity (rad/s)
+    bb_amp: float = 0.5                  # m-mode perturbation amplitude (paper: A=0.5)
+    bb_m: int = 2                        # azimuthal mode number
+    bb_rho_ambient_frac: float = 1.0e-3  # ambient density as a fraction of rho0
+    # legacy code-unit knobs (kept for back-compat; unused by the physical IC)
     bb_M: float = 1.0
     bb_R: float = 1.0
-    bb_cs2: float = 0.25                 # isothermal sound speed squared; with M=R=G=1 this equals
-                                         # the thermal/grav ratio α = R·cs²/(GM), canonical α = 0.25
+    bb_cs2: float = 0.25
     bb_beta: float = 0.16
-    bb_amp: float = 0.1
     bb_rho_ambient: float = 0.0
     POISSON_TOL: float = None             # ∞-norm residual stop; None = run all cycles
     POISSON_MAX_CYCLES: int = 10
@@ -348,6 +356,18 @@ class Config:
     # This is the "soft thermostat" version of an isothermal EOS: the solver
     # internals keep using gamma (HLLC, CFL) but no thermal energy accumulates.
     isothermal_cs2: float = 0.0
+
+    # ---------------- Barotropic EOS (star formation) ----------------
+    # When True, after each hydro step the runner resets the pressure to the
+    # barotropic relation  P = k_B T(ρ) ρ / (μ m_H)  with
+    # T(ρ) = T0 [1 + (ρ/ρ_AD)^(γ-1)]: an isothermal floor at T0 that stiffens
+    # adiabatically above ρ_AD (GANDALF/Boss-Bodenheimer). Requires cfg.units.
+    # The stiffening halts the runaway isothermal collapse. Mutually exclusive
+    # with isothermal_cs2.
+    barotropic_eos: bool = False
+    barotropic_T0_K: float = 10.0
+    barotropic_rho_AD_cgs: float = 1.0e-14
+    barotropic_mu: float = 2.35
 
     # -------------------------------------------------------------------------
     # Computed properties (lightweight, timing-related)

@@ -92,6 +92,36 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Boss & Bodenheimer 1979 rotating isothermal collapse with the **isolated** Poisson BC (multipole-Dirichlet halo + outflow hydro, no periodic-image saddle), MinMod limiter, at t = 2.0. Both panels are LUNA: 64³ (left) gives a smooth under-resolved blob, while 256³ (right) resolves the m = 2 rotational-fragmentation morphology — a clumpy central bar with substructure.*
 
+## Differentiable simulation (autodiff)
+
+LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable (JAX), in both forward and reverse mode, through the *production* solver. The tests below first validate the gradients against ground truth, then put them to work: forward-mode parameter sensitivity, reverse-mode inverse problems across physics regimes, a solver-in-the-loop learned correction, and finally the whole thing at multi-GPU scale.
+
+![Sedov autodiff: AD vs analytic exponents + FD cross-check](figures/autodiff_sedov_validation.png)
+
+*1. Gradient self-consistency (Sedov-Taylor). Forward-mode AD through the full Sedov blast (32³, 200 steps) reproduces the **analytic** self-similar exponents — ∂lnR/∂lnE = +1/5, ∂lnR/∂lnρ₀ = −1/5, the KE/TE energy partition, the Rankine-Hugoniot density jump — with every point on the y = x line (left), and matches central finite differences to < 10⁻² (right). The gradient is checked against an analytic ground truth, not just FD.*
+
+![Autodiff through adaptive timestepping](figures/autodiff_dtmode_fd.png)
+
+*2. Gradients through adaptive timestepping. ∂lnL_X/∂lnη for the M82 wind (32×32×64, integrated to 10 Myr), AD vs central FD, under three dt treatments. Fixed dt and fully-differentiated adaptive dt are FD-exact (< 10⁻³); `stop_gradient` on the CFL dt drops the dt-sensitivity path (≈ 13 % on η_M, ≈ 59 % on η_E) — so differentiating an adaptive-dt run must either hold dt fixed or differentiate it. (A subtlety not addressed by prior differentiable-hydro work.)*
+
+*3. M82 forward sensitivity — ∂lnL_X/∂lnη_M, ∂lnL_X/∂lnη_E on the developed (10 Myr) wind, the X-ray response to mass- and energy-loading. **Figure in flight** (forward-mode, `diff` dt).*
+
+![Turbulence IC inversion: reverse-mode recovery + r(k)](figures/autodiff_ic_inversion_DrivenTurbulence3D_Nx32.png)
+
+*4. Reverse-mode IC inversion — turbulent flow. Recovering the initial low-k density field from the evolved OU-driven turbulent state (32³) by reverse-mode AD through the production solver. δ_true vs δ_recovered (large scales recovered, fine scales decorrelated); the scale-resolved cross-correlation r(k) ≈ 1 through the forcing band (k ≤ 4) then collapses — the recoverability cliff set by chaotic mixing.*
+
+*5. Reverse-mode IC inversion — self-gravitating flow, through the differentiable FMG-Poisson adjoint. **Figure in flight.***
+
+![Radiative-cooling IC inversion](figures/autodiff_ic_inversion_JeansInstability3D_cool_Nx32.png)
+
+*6. Reverse-mode IC inversion — radiatively cooling flow. Recovering the IC energy perturbation through the cooling solver (uniform box, n_H ≈ 0.05 cm⁻³, T ≈ 2×10⁵ K, evolved ~½ a cooling time). The r(k) cliff at k ≈ 4–5 is the dissipative recovery limit — cooling smooths the small scales. Together with panels 4–5 this mirrors the diffhydro "turbulent, self-gravitating, radiatively cooling" reconstruction trilogy.*
+
+*7. Solver-in-the-loop KH corrector — a CNN flux correction trained reverse-mode through the unrolled coarse rollout (Um+ 2020) to track a 4× fine reference. **Retrain in flight.***
+
+![Differentiable simulation at 256³ on 4 GPUs](figures/autodiff_scale_256.png)
+
+*8. Autodiff at scale. Forward-mode ∂lnL_X/∂lnη on the M82 wind at **256×256×512 across 4 GPUs** (auto-sharded), FD-validated (η_M to a relative 3×10⁻⁴) — differentiable simulation at diffhydro-parity resolution on multiple devices.*
+
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
 - ✅ HLLC Riemann solver with optimized flux computation

@@ -85,11 +85,20 @@ def multipole_dirichlet_halo_values(rho, dx, fourpiG, l_max=0):
     return phi_far
 
 
-def multipole_dirichlet_face_values(rho, dx, fourpiG, l_max=0):
+def multipole_dirichlet_face_values(rho, dx, fourpiG, l_max=2):
     """Guillet-Teyssier 2011 §3 face-centred BC: Φ evaluated at the box
     face positions (not at ghost cell centres). Pairs with
     `make_linear_extrap_dirichlet_halo_3d` so the discrete BC lands
     exactly on the face — which is what gives 2nd-order accuracy.
+
+    l_max controls the multipole order of the boundary potential:
+      l_max = 0 → monopole only  (Φ = -G M / r)
+      l_max ≥ 2 → monopole + quadrupole (dipole vanishes about the COM)
+                  Φ = -G[ M/r + ½ Q_ij r_i r_j / r^5 ],
+                  Q_ij = Σ ρ (3 r_i r_j - r² δ_ij) dV  (traceless).
+    The quadrupole term matters when the boundary is close to a
+    non-spherical mass — e.g. the Boss-Bodenheimer m=2 cloud in a tight
+    box, where the monopole-only BC would otherwise distort the m=2 mode.
 
     Returned array is shape (Nx+2, Ny+2, Nz+2); only the six face
     slices carry meaningful values (interior/edges/corners are zero
@@ -99,7 +108,8 @@ def multipole_dirichlet_face_values(rho, dx, fourpiG, l_max=0):
     G = fourpiG / (4.0 * jnp.pi)
 
     # Total mass + COM (positive box coordinates).
-    M_total = jnp.sum(rho) * (dx ** 3)
+    w = rho * (dx ** 3)
+    M_total = jnp.sum(w)
     inv_mass = 1.0 / (jnp.sum(rho) + 1e-30)
     x = (jnp.arange(Nx, dtype=jnp.float64) + 0.5) * dx
     y = (jnp.arange(Ny, dtype=jnp.float64) + 0.5) * dx
@@ -109,11 +119,28 @@ def multipole_dirichlet_face_values(rho, dx, fourpiG, l_max=0):
     cy = jnp.sum(rho * Y) * inv_mass
     cz = jnp.sum(rho * Z) * inv_mass
 
+    # Traceless quadrupole moment tensor about the COM, Q_ij = Σ ρ(3 r_i r_j − r²δ).
+    use_quad = l_max >= 2
+    if use_quad:
+        dXc, dYc, dZc = X - cx, Y - cy, Z - cz
+        r2c = dXc * dXc + dYc * dYc + dZc * dZc
+        Qxx = jnp.sum(w * (3.0 * dXc * dXc - r2c))
+        Qyy = jnp.sum(w * (3.0 * dYc * dYc - r2c))
+        Qzz = jnp.sum(w * (3.0 * dZc * dZc - r2c))
+        Qxy = jnp.sum(w * (3.0 * dXc * dYc))
+        Qxz = jnp.sum(w * (3.0 * dXc * dZc))
+        Qyz = jnp.sum(w * (3.0 * dYc * dZc))
+
     Lx, Ly, Lz = Nx * dx, Ny * dx, Nz * dx
 
     def _phi(rx, ry, rz):
-        r = jnp.sqrt(rx * rx + ry * ry + rz * rz)
-        return -G * M_total / jnp.maximum(r, 0.5 * dx)
+        r = jnp.maximum(jnp.sqrt(rx * rx + ry * ry + rz * rz), 0.5 * dx)
+        phi = -G * M_total / r
+        if use_quad:
+            quad = (Qxx * rx * rx + Qyy * ry * ry + Qzz * rz * rz
+                    + 2.0 * Qxy * rx * ry + 2.0 * Qxz * rx * rz + 2.0 * Qyz * ry * rz)
+            phi = phi - G * 0.5 * quad / r ** 5
+        return phi
 
     out = jnp.zeros((Nx + 2, Ny + 2, Nz + 2), dtype=jnp.float64)
 

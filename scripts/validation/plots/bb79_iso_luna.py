@@ -16,8 +16,7 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 
 apply_style()
 
-SNAP64  = "/raven/u/uli/jax-hydro/snapshots/bb_iso_Nx64"
-SNAP256 = "/raven/u/uli/jax-hydro/snapshots/bb_iso_minmod_Nx256"
+SNAP256 = os.environ.get("LUNA_BB_SNAP", "snapshots/bb79_baro_Nx256")
 
 
 def luna_column_density(snapdir):
@@ -54,42 +53,21 @@ def latest_clean(root):
 
 
 def main():
-    snap64  = latest_clean(SNAP64)
     snap256 = latest_clean(SNAP256)
-    print(f"  64³  last clean: {os.path.basename(snap64)}")
     print(f"  256³ last clean: {os.path.basename(snap256)}")
-
-    S64,  L64,  t64  = luna_column_density(snap64)
     S256, L256, t256 = luna_column_density(snap256)
-    print(f"  64³:  t={t64:.3f}  Σ ∈ [{S64.min():.3e}, {S64.max():.3e}]")
-    print(f"  256³: t={t256:.3f}  Σ ∈ [{S256.min():.3e}, {S256.max():.3e}]")
+    print(f"  256³: t={t256:.4f}  Σ ∈ [{S256.min():.3e}, {S256.max():.3e}]")
 
-    S64_pos  = np.maximum(S64,  1e-30)
     S256_pos = np.maximum(S256, 1e-30)
-    vmin = np.log10(min(S64_pos.min(), S256_pos.min()))
-    vmax = np.log10(max(S64_pos.max(), S256_pos.max()))
-
-    fig, axes = plt.subplots(1, 2, figsize=(FIGSIZE[0]*2, FIGSIZE[1]))
-    im0 = axes[0].imshow(np.log10(S64_pos).T,  origin="lower",
-                          extent=(0, L64,  0, L64),
-                          vmin=vmin, vmax=vmax, cmap="magma")
-    axes[0].grid(False)
-    axes[0].set_title(f"LUNA 64³  isolated  (t={t64:.2f})")
-    axes[0].set_xlabel("x"); axes[0].set_ylabel("y")
-    plt.colorbar(im0, ax=axes[0], shrink=0.85, label=r"$\log_{10}\Sigma$")
-
-    im1 = axes[1].imshow(np.log10(S256_pos).T, origin="lower",
-                          extent=(0, L256, 0, L256),
-                          vmin=vmin, vmax=vmax, cmap="magma")
-    axes[1].grid(False)
-    axes[1].set_title(f"LUNA 256³ isolated (t={t256:.2f})")
-    axes[1].set_xlabel("x"); axes[1].set_ylabel("y")
-    plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10}\Sigma$")
-
-    fig.suptitle("Boss-Bodenheimer 1979 — LUNA isolated BC, resolution scan, column density along z")
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    im = ax.imshow(np.log10(S256_pos).T, origin="lower",
+                   extent=(0, L256, 0, L256), cmap="magma")
+    ax.grid(False)
+    ax.set_xlabel("x [pc]"); ax.set_ylabel("y [pc]")
+    plt.colorbar(im, ax=ax, shrink=0.85, label=r"$\log_{10}\,\Sigma$")
     fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
-    out = "figures/bb79_iso_luna_64_vs_256_minmod.png"
+    out = f"figures/bb79_256_column_density_Nx{S256.shape[0]}.png"
     fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}")
 
