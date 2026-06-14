@@ -22,6 +22,10 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
 from scripts.validation.runner import sweep
 from scripts.validation.athenak_io import load_1d as load_athenak_bin
 from scripts.validation.metrics import l1_error, l2_error, convergence_slope
@@ -60,6 +64,7 @@ def main():
         production_mode=True,
         enable_x64=True,
         soundwave_single_mode=False,   # ← u=0 superposition (standing wave)
+        clear_output_dir=True,
     )
 
     results = sweep(base, "Nx", NX_SCAN,
@@ -97,7 +102,7 @@ def main():
         ak_slope = convergence_slope(ak_nx, ak_l1)
         print(f"AthenaK slope: L1={ak_slope:.3f}")
 
-    fig, ax = plt.subplots(figsize=(7.0, 5.0))
+    fig, ax = plt.subplots(figsize=FIGSIZE)
     ax.loglog(NX_SCAN, l1s, "o-", color="C0", lw=2.0, ms=7,
               label="LUNA  PLM+MUSCL-Hancock")
     if ak_nx:
@@ -111,9 +116,8 @@ def main():
 
     ax.set_xlabel("resolution Nx", fontsize=11)
     ax.set_ylabel(r"L1 error in density (vs analytic)", fontsize=11)
-    ax.legend(fontsize=10, loc="upper right", frameon=False)
-    ax.grid(True, which="major", alpha=0.3)
-    ax.tick_params(which="both", top=True, right=True, direction="in")
+    ax.legend(loc="upper right")
+    decorate(ax)
     fig.tight_layout()
 
     Path("figures").mkdir(exist_ok=True)

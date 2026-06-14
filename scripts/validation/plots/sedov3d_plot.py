@@ -15,6 +15,10 @@ import numpy as np
 import h5py
 import matplotlib.pyplot as plt
 
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
 from scripts.validation.metrics import radial_profile
 
 
@@ -154,7 +158,7 @@ def main():
     # Overlay n, v_r, P, T profiles from every available Nx run at t = t_end.
     R_xlim = final["Lx"] * UNIT_LENGTH / PARSEC_CGS / 2
 
-    figR, axes = plt.subplots(2, 2, figsize=(11, 8))
+    figR, axes = plt.subplots(2, 2, figsize=(FIGSIZE[0]*2*0.6, FIGSIZE[1]*2*0.6))
     cmap = plt.get_cmap("magma")
     all_res = _list_res_outdirs()
     colors = [cmap(0.15 + 0.7 * i / max(1, len(all_res) - 1))
@@ -206,9 +210,8 @@ def main():
         ax.set_xlabel("r [pc]"); ax.set_ylabel(ylabel)
         ax.set_xlim(0, R_xlim)
         ax.set_yscale(yscale)
-        ax.tick_params(top=True, right=True, direction="in", which="both")
-        ax.grid(True, which="both", linestyle=":", alpha=0.4)
-        ax.legend(frameon=False, fontsize=9)
+        ax.legend()
+        decorate(ax)
     figR.suptitle(f"Sedov 3D radial-profile resolution study at t = {t_final_yr:.0f} yr",
                   fontsize=11)
     figR.tight_layout()
@@ -217,15 +220,14 @@ def main():
     figR.savefig("figures/sedov3d_radial.png", dpi=200)
 
     # === Figure 2: R_s(t) + column density projection ===
-    fig, (axR, axS) = plt.subplots(1, 2, figsize=(11, 4.4))
+    fig, (axR, axS) = plt.subplots(1, 2, figsize=(FIGSIZE[0]*2, FIGSIZE[1]))
     t_dense = np.linspace(max(t_yrs[0], 1.0), t_yrs[-1], 200)
     R_th = np.array([analytic_R_s(t) for t in t_dense])
     axR.loglog(t_yrs[1:], R_sim[1:], "o-", color="C0", label="LUNA peak-ρ location")
     axR.loglog(t_dense, R_th, "k--", label=r"$R_s(t) = \xi (E t^2/\rho_0)^{1/5}$, $\xi$=1.15")
     axR.set_xlabel("t [yr]"); axR.set_ylabel(r"$R_{shock}$ [pc]")
-    axR.legend(frameon=False, fontsize=9)
-    axR.tick_params(top=True, right=True, direction="in", which="both")
-    axR.grid(True, which="both", linestyle=":", alpha=0.4)
+    axR.legend()
+    decorate(axR)
 
     # === Right panel: density projection (column integrate along z) ===
     rho_proj = final["rho"].sum(axis=2) * final["dz"] * UNIT_DENSITY * UNIT_LENGTH
@@ -234,7 +236,7 @@ def main():
                extent=(0, L_pc, 0, L_pc),
                cmap="magma", aspect="equal")
     axS.set_xlabel("x [pc]"); axS.set_ylabel("y [pc]")
-    axS.tick_params(top=True, right=True, direction="in")
+    axS.grid(False)
 
     fig.tight_layout()
     Path("figures").mkdir(exist_ok=True)

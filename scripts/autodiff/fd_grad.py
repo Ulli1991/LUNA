@@ -103,13 +103,15 @@ def plot_horizon_scan(horizons, err, out_path, title="AD vs FD: |Δg|/|g_FD|"):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(5, 4))
+    from utils.figstyle import apply_style, decorate, FIGSIZE
+    apply_style()
+    fig, ax = plt.subplots(figsize=FIGSIZE)
     ax.semilogy(horizons, err, "o-", lw=1.5)
     ax.set_xlabel("integration horizon  T")
     ax.set_ylabel("|∇_AD − ∇_FD| / |∇_FD|  (max over params)")
     ax.set_title(title)
-    ax.grid(True, which="both", alpha=0.3)
     ax.axhline(1e-3, color="gray", lw=0.8, ls="--")
+    decorate(ax)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path)
     plt.close(fig)

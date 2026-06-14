@@ -10,7 +10,10 @@ Env vars:
     LUNA_M82_TEND  : end time in Myr (default 10).
 """
 import os
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 from units import UnitSystem
 
 
@@ -90,6 +93,7 @@ def main():
                    + ("_no_cc85" if not cc85_on else "")
                    + ("_no_grav" if not grav_on else "")
                    + ("_no_cool" if not cool_on else ""),
+        clear_output_dir=True,
         enable_x64=use_fp64,
         enable_checkpointing=False,
     )
@@ -97,7 +101,9 @@ def main():
     print(f"M82 disk + CC85 wind: Nx={Nx}, Ny={Ny}, Nz={Nz}; "
           f"box {LX_KPC}x{LY_KPC}x{LZ_KPC} kpc; res={LX_KPC*1000/Nx:.1f} pc; "
           f"t_end={t_end_Myr} Myr")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
 
 if __name__ == "__main__":

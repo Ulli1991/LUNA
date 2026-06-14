@@ -10,7 +10,14 @@ Saves figures/sedov_slice.pdf.
 from pathlib import Path
 import matplotlib.pyplot as plt
 
-from scripts.validation.runner import run_one
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 
 
 NX = 1024
@@ -28,8 +35,11 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         output_dir=f"snapshots/sedov3d_Nx{NX}",
+        clear_output_dir=True,
     )
-    _, _, outdir = run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    _, _, outdir = run(replace(Config(), **overrides))
 
     # TODO: load final density from outdir, take the z=Nz//2 slice.
     raise NotImplementedError(

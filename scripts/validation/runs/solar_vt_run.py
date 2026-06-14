@@ -18,7 +18,10 @@ Env vars:
     LUNA_SOLAR_VT_TEND : end time (default 100).
 """
 import os
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 
 
 L = 11.0
@@ -53,11 +56,14 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         output_dir=out_dir,
+        clear_output_dir=True,
         enable_x64=True,
     )
     print(f"V&T solar convection: Nx={Nx}, Ny={Ny}, Lx={LX}, Ly={LY}, "
           f"t_end={t_end}, riemann={riemann}")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
 
 if __name__ == "__main__":

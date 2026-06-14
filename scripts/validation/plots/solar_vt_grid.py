@@ -10,6 +10,9 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from file_io.read_snapshot import read_snapshot
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
 
 
 # V&T (2025) 3-layer polytropic atmosphere — must match solar_convection_vt_2d.py
@@ -114,6 +117,7 @@ def _plot_grid(field_key, label, outpath_stem, runs):
     im = None
     for j_col, Nx in enumerate(resolutions):
         ax = axes[j_col]
+        ax.grid(False)
         run = runs.get(("lhllc", Nx))
         if run is None:
             ax.text(0.5, 0.5, f"(no data yet)\nLHLLC Nx={Nx}",

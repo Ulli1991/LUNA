@@ -12,6 +12,10 @@ import numpy as np
 import h5py
 import matplotlib.pyplot as plt
 
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
 
 NX_LIST = [128, 256, 512, 1024]
 TARGET_T = 4.0
@@ -86,6 +90,7 @@ def main():
 
     for Nx, (r, c) in panels.items():
         ax = axes[r, c]
+        ax.grid(False)
         if data[Nx] is None:
             ax.text(0.5, 0.5, f"missing\n{Nx}³",
                     ha="center", va="center", transform=ax.transAxes,

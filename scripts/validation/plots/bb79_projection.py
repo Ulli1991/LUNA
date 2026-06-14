@@ -13,6 +13,9 @@ import h5py
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
 
 
 AREPO_SNAP = "/raven/u/uli/arepo/run/examples/bb79_3d/output"
@@ -107,16 +110,18 @@ def main():
     vmin = np.log10(max(min(Sigma_A_pos.min(), Sigma_L_pos.min()), 1e-6))
     vmax = np.log10(max(Sigma_A_pos.max(), Sigma_L_pos.max()))
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(FIGSIZE[0]*2, FIGSIZE[1]))
     extent_A = (0, L_A, 0, L_A)
     extent_L = (0, L_L, 0, L_L)
     im0 = axes[0].imshow(np.log10(Sigma_A_pos).T, origin="lower",
                           extent=extent_A, vmin=vmin, vmax=vmax, cmap="magma")
+    axes[0].grid(False)
     axes[0].set_title(f"AREPO  (t={t_A:.2f})")
     axes[0].set_xlabel("x"); axes[0].set_ylabel("y")
     plt.colorbar(im0, ax=axes[0], shrink=0.85, label=r"$\log_{10} \Sigma$")
     im1 = axes[1].imshow(np.log10(Sigma_L_pos).T, origin="lower",
                           extent=extent_L, vmin=vmin, vmax=vmax, cmap="magma")
+    axes[1].grid(False)
     axes[1].set_title(f"LUNA   (t={t_L:.2f})")
     axes[1].set_xlabel("x"); axes[1].set_ylabel("y")
     plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10} \Sigma$")
@@ -124,7 +129,7 @@ def main():
     fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
     out = "figures/arepo_vs_luna_bb79_projection.png"
-    fig.savefig(out, dpi=140); plt.close(fig)
+    fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}")
 
 

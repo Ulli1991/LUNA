@@ -77,6 +77,18 @@ def setup_cc85_source(cfg, sharding, is_main_process: bool = True):
     def _apply(U, dt):
         return _apply_inner(U, dt, sphere_mask)
 
+    # Per-unit-loading rates: Mdot ∝ eta_M, Edot ∝ eta_E (linear), so the
+    # differentiable M82 driver can take gradients w.r.t. (eta_M, eta_E) by
+    # calling apply_eta with eta as a runtime arg. apply_eta(U, dt, (cfg_etaM,
+    # cfg_etaE)) reproduces _apply exactly.
+    rho_dot_per_etaM = rho_dot_code / cfg.cc85_eta_M
+    e_dot_per_etaE = e_dot_code / cfg.cc85_eta_E
+
+    def _apply_eta(U, dt, eta):
+        drho = eta[0] * rho_dot_per_etaM * dt * sphere_mask
+        dE = eta[1] * e_dot_per_etaE * dt * sphere_mask
+        return U.at[0].add(drho).at[-1].add(dE)
+
     if is_main_process:
         n_inj = int(jnp.sum(sphere_mask)) if jax.process_count() == 1 else -1
         print(
@@ -88,4 +100,4 @@ def setup_cc85_source(cfg, sharding, is_main_process: bool = True):
         print(f"  Edot = {Edot_cgs:.3e} erg/s = {Edot_code:.3e} code")
         print(f"  Injection cells: {n_inj}")
 
-    return {"apply": _apply}
+    return {"apply": _apply, "apply_eta": _apply_eta, "sphere_mask": sphere_mask}

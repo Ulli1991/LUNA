@@ -18,8 +18,8 @@ source ~/jax-env/bin/activate
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export JAX_PLATFORM_NAME=cuda
 
-export LUNA_JEANS_NX=64
-export LUNA_JEANS_TEND=1.0
+export LUNA_JEANS_NX=${LUNA_JEANS_NX:-64}
+export LUNA_JEANS_TEND=${LUNA_JEANS_TEND:-1.2}
 # Toggle shard_map self-gravity. With 1 GPU + MESH_SHAPE=(1,1,1) we exercise
 # the shard_map code path (ppermute halo, pmean) without actually sharding.
 export LUNA_USE_SHARDMAP=${LUNA_USE_SHARDMAP:-1}

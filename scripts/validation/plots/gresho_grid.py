@@ -12,6 +12,9 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from file_io.read_snapshot import read_snapshot
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
 
 
 RESOLUTIONS = [256, 512, 1024, 2048]
@@ -72,12 +75,12 @@ def _plot_panel(ax, snap_idx, title):
     ax.set_xlabel("r")
     ax.set_ylabel(r"$v_\phi$")
     ax.set_title(title, fontsize=12)
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="best", fontsize=9)
+    ax.legend(loc="best")
+    decorate(ax)
 
 
 def main(outpath_stem="figures/gresho_vphi_vs_radius"):
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+    fig, axes = plt.subplots(1, 2, figsize=(FIGSIZE[0]*2, FIGSIZE[1]), constrained_layout=True)
     d_early = _load_vphi(RESOLUTIONS[0], SNAP_EARLY)
     d_late  = _load_vphi(RESOLUTIONS[0], SNAP_LATE)
     t_early = f"{d_early['t']:.2f}" if d_early else "?"

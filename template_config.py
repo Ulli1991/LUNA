@@ -94,6 +94,10 @@ class Config:
     jeans_kx: float = 0.0                # set to 2π/Lx in the run script
     jeans_ky: float = 0.0
     jeans_kz: float = 0.0
+    # True: seed the pure growing Jeans eigenmode (adiabatic δP = c_s²δρ +
+    # matching longitudinal velocity) → clean δρ(t)=A₀e^{σt}. False: legacy
+    # static, equal-amplitude perturbation (a cosh+offset, needs a 3-param fit).
+    jeans_eigenmode: bool = True
     # Evrard collapse IC knobs (test_problem='Evrard-Collapse-3D')
     evrard_M: float = 1.0
     evrard_R: float = 1.0
@@ -181,6 +185,11 @@ class Config:
     # ---------------- Output ----------------
     output_dir: str = "snapshots"
     base_name: str = "snap"
+    # Wipe output_dir before the run. Opt-in (default False so production /
+    # checkpoint-restart never deletes data). Validation runs set this True so
+    # post-run analysis that globs+stitches every snapdir under output_dir can't
+    # pick up stale snapshots from a prior run with different sharding / config.
+    clear_output_dir: bool = False
     PLOT_AFTER_SIM: bool = True
 
     # How often to print progress and validate (in steps)
@@ -204,6 +213,34 @@ class Config:
     # - Disables memory checks
     # - Minimizes CPU-GPU synchronization
     production_mode: bool = False
+
+    # ---------------- Autodiff run mode ----------------
+    # When True, main.run dispatches to the autodiffable scan runner
+    # (run_simulation_autodiff): the SAME setup, per-step physics, and sharding
+    # as the HPC path, but the time loop is a pure remat'd lax.scan with fixed
+    # dt and no IO/checkpoint/NaN-guard, so the whole evolution is
+    # differentiable. Works single- and multi-GPU (inherits the sharded
+    # step_fn / source applies). The differentiated parameters and observable
+    # are problem-specific (e.g. M82: d L_X / d (cc85_eta_M, cc85_eta_E)).
+    autodiff_mode: bool = False
+    autodiff_n_steps: int = 100
+    autodiff_fixed_dt: float = 0.0        # >0 -> fixed dt; 0.0 -> adaptive CFL dt
+    # adaptive-dt differentiation mode (used when autodiff_fixed_dt == 0):
+    #   "stopgrad" -> dt = stop_gradient(CFL dt): robust, no calibration, but
+    #                 the gradient drops the dt-path so AD != FD (FD re-adapts).
+    #   "diff"     -> differentiate THROUGH the CFL dt: AD == FD, exact total
+    #                 derivative, at the cost of the dt's max-reduction kinks.
+    autodiff_dt_mode: str = "stopgrad"
+    # gradient mode for the xray_sensitivity task: "reverse" (grad, needs the
+    # trajectory tape) or "forward" (jvp, memory-flat in n_steps -> the route
+    # to high resolution / many steps for few-parameter sensitivities).
+    autodiff_grad_mode: str = "reverse"
+    # which differentiable task the autodiff runner performs:
+    #   "xray_sensitivity" -> d ln L_X / d (cc85 loadings)   [forward/reverse]
+    #   "ic_inversion"     -> recover an IC density perturbation [reverse]
+    autodiff_task: str = "xray_sensitivity"
+    autodiff_n_iter: int = 100            # optimizer iterations for inversions
+    autodiff_ic_field: str = "density"    # ic_inversion: perturb "density" or "energy"
 
     # ---------------- Restart / Checkpoint ----------------
     # Enable restart from checkpoint

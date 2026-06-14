@@ -10,6 +10,10 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
 from scripts.validation.runner import sweep
 from scripts.validation.athenak_io import load_1d as load_ak
 from file_io.read_snapshot import read_snapshot, latest_snapshot_dir
@@ -73,11 +77,12 @@ def plot_one(problem_name, params):
         PLOT_AFTER_SIM=False,
         production_mode=True,
         enable_x64=True,
+        clear_output_dir=True,
     )
     out_template = f"snapshots/{slug}_Nx{{}}"
     results = sweep(base, "Nx", NX_SCAN, output_dir_template=out_template)
 
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
+    fig, axes = plt.subplots(2, 2, figsize=(FIGSIZE[0]*2*0.6, FIGSIZE[1]*2*0.6), sharex=True)
     panels = [
         (axes[0, 0], "rho",   "density"),
         (axes[0, 1], "vx",    "v_x"),
@@ -120,12 +125,10 @@ def plot_one(problem_name, params):
 
     for ax, _, label in panels:
         ax.set_ylabel(label)
-        ax.grid(True, which="major", alpha=0.3)
-        ax.tick_params(which="both", top=True, right=True, direction="in")
-        ax.minorticks_on()
+        decorate(ax)
     axes[1, 0].set_xlabel("x")
     axes[1, 1].set_xlabel("x")
-    axes[0, 0].legend(loc="best", fontsize=8, frameon=False)
+    axes[0, 0].legend(loc="best")
 
     fig.tight_layout()
     Path("figures").mkdir(exist_ok=True)

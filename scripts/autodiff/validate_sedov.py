@@ -132,6 +132,72 @@ def main():
     print(f"  KE/E = {KE/E0:.3f} (Sedov γ=5/3 expects ~0.30)")
     print(f"  TE/E = {TE/E0:.3f} (Sedov γ=5/3 expects ~0.70)")
 
+    _save_figure(obs_keys, J_ad, J_fd, v0, cfg, t_end)
+
+
+def _save_figure(obs_keys, J_ad, J_fd, v0, cfg, t_end):
+    """Headline AD-rigor figure: forward-mode AD log-derivatives vs the analytic
+    Sedov-Taylor exponents (should lie on y=x), plus the AD-vs-FD cross-check."""
+    import os
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from utils.figstyle import apply_style, decorate, FIGSIZE
+    apply_style()
+
+    # Restrict to the SMOOTH functionals with well-defined analytic exponents.
+    # The "at-shock" pressure/temperature are max-based (non-smooth → AD gives a
+    # subgradient FD can't match) and L_sq is a symmetry check, so they're shown
+    # in the printed table but excluded from this AD-vs-analytic rigor figure.
+    SMOOTH = {"R", "KE_total", "TE_total", "rho_postshock"}
+    pretty = {"R": "R", "KE_total": r"KE", "TE_total": r"TE",
+              "rho_postshock": r"\rho_s"}
+    an, ad, fd, labels = [], [], [], []
+    for i, k in enumerate(obs_keys):
+        if k not in SMOOTH:
+            continue
+        ana_E, ana_rho, is_zero = OBSERVABLE_ANALYTIC[k]
+        for j, (ana, ch) in enumerate(((ana_E, "E"), (ana_rho, r"\rho_0"))):
+            an.append(ana); ad.append(J_ad[i, j]); fd.append(J_fd[i, j])
+            labels.append(fr"$\partial\ln {pretty[k]}/\partial\ln {ch}$")
+    an = np.array(an); ad = np.array(ad); fd = np.array(fd)
+
+    fig, ax = plt.subplots(1, 2, figsize=(FIGSIZE[0] * 2, FIGSIZE[1]))
+
+    # (a) AD vs analytic — points on y=x validate the gradient against theory.
+    lo = min(an.min(), ad.min()) - 0.15
+    hi = max(an.max(), ad.max()) + 0.15
+    ax[0].plot([lo, hi], [lo, hi], "-", color="0.5", lw=1.2, zorder=1,
+               label=r"$y=x$")
+    ax[0].scatter(an, ad, s=55, color="C0", zorder=3, label="forward-mode AD")
+    ax[0].set_xlim(lo, hi); ax[0].set_ylim(lo, hi)
+    ax[0].set_xlabel("analytic Sedov-Taylor exponent")
+    ax[0].set_ylabel("AD log-derivative")
+    ax[0].set_title(f"AD vs analytic ($N$={cfg['Nx']}, {cfg['n_steps']} steps)")
+    ax[0].legend(loc="upper left")
+    decorate(ax[0])
+
+    # (b) AD-vs-FD relative error per channel — the independent cross-check.
+    rel = np.abs(ad - fd) / (np.abs(fd) + 1e-3)
+    yy = np.arange(len(labels))
+    ax[1].barh(yy, rel, color="C1", zorder=3)
+    ax[1].axvline(0.01, color="k", ls="--", lw=1.2, label="1% threshold")
+    ax[1].set_yticks(yy); ax[1].set_yticklabels(labels, fontsize=9)
+    ax[1].set_xscale("log")
+    ax[1].set_xlabel(r"$|{\rm AD}-{\rm FD}|/|{\rm FD}|$")
+    ax[1].set_title("AD vs finite-difference cross-check")
+    ax[1].legend(loc="lower right")
+    decorate(ax[1])
+
+    fig.tight_layout()
+    os.makedirs("figures", exist_ok=True)
+    out = "figures/autodiff_sedov_validation.png"
+    fig.savefig(out)
+    maxrel = float(np.max(np.abs(ad - an)) )
+    print(f"\nRESULT sedov_ad: max|AD-analytic|={maxrel:.3e}  "
+          f"max|AD-FD|rel={float(np.max(rel)):.3e}", flush=True)
+    print(f"  figure -> {out}", flush=True)
+
 
 if __name__ == "__main__":
     main()

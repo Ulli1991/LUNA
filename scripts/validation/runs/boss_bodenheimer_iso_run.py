@@ -5,7 +5,10 @@ AREPO GRAVITY_NOT_PERIODIC + REFLECTIVE_X/Y/Z=2 setup we resubmitted.
 """
 import os
 import numpy as np
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 
 
 def main():
@@ -39,11 +42,14 @@ def main():
         output_dir=(f"snapshots/bb_iso_minmod_Nx{Nx}"
                     + (f"_{riemann}" if riemann != "hllc" else "")
                     + {0: "_perhydro", 4: "_diode"}.get(hydro_bc, "")),
+        clear_output_dir=True,
         enable_x64=True, enable_checkpointing=False,
     )
     print(f"BB79 ISOLATED: Nx={Nx}, M={M}, R={R}, c_s²={cs2}, riemann={riemann}, "
           f"BOUNDARY={hydro_bc}, POISSON_BOUNDARY=3 (multipole), t_end={t_end:.2f}")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
 
 if __name__ == "__main__":

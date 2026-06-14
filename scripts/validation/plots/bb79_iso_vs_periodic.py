@@ -12,6 +12,9 @@ import h5py
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
 
 ISO_DIR  = "/raven/u/uli/jax-hydro/snapshots/bb_iso_minmod_Nx256"
 PER_DIR  = "/raven/u/uli/jax-hydro/snapshots/bb_periodic_minmod_Nx256"
@@ -61,10 +64,11 @@ def main():
     vmin = np.log10(min(Sp_iso.min(), Sp_per.min()))
     vmax = np.log10(max(Sp_iso.max(), Sp_per.max()))
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(FIGSIZE[0]*2, FIGSIZE[1]))
     im0 = axes[0].imshow(np.log10(Sp_iso).T, origin="lower",
                           extent=(0, L_iso, 0, L_iso),
                           vmin=vmin, vmax=vmax, cmap="magma")
+    axes[0].grid(False)
     axes[0].set_title(f"isolated BC (outflow + multipole-Dirichlet) — t={t_iso:.2f}")
     axes[0].set_xlabel("x"); axes[0].set_ylabel("y")
     plt.colorbar(im0, ax=axes[0], shrink=0.85, label=r"$\log_{10}\Sigma$")
@@ -72,6 +76,7 @@ def main():
     im1 = axes[1].imshow(np.log10(Sp_per).T, origin="lower",
                           extent=(0, L_per, 0, L_per),
                           vmin=vmin, vmax=vmax, cmap="magma")
+    axes[1].grid(False)
     axes[1].set_title(f"periodic BC (Jeans swindle) — t={t_per:.2f}")
     axes[1].set_xlabel("x"); axes[1].set_ylabel("y")
     plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10}\Sigma$")
@@ -81,7 +86,7 @@ def main():
     fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
     out = "figures/bb79_iso_vs_periodic_diagnostic.png"
-    fig.savefig(out, dpi=140); plt.close(fig)
+    fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}")
 
 

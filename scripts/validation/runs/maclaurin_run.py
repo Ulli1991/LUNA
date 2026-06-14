@@ -1,7 +1,10 @@
 """Maclaurin spheroid equilibrium test."""
 import os
 import numpy as np
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 
 
 def main():
@@ -25,10 +28,13 @@ def main():
         mac_e=e, mac_a=a, mac_rho=1.0,
         PLOT_AFTER_SIM=False, production_mode=True,
         output_dir=f"snapshots/maclaurin_e{e:.2f}_Nx{Nx}",
+        clear_output_dir=True,
         enable_x64=True, enable_checkpointing=False,
     )
     print(f"Maclaurin spheroid: Nx={Nx}, e={e}, a={a}, t_end={t_end:.2f}")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
 
 if __name__ == "__main__":

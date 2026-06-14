@@ -11,6 +11,10 @@ import numpy as np
 import h5py
 import matplotlib.pyplot as plt
 
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
 from scripts.validation.metrics import radial_profile
 
 
@@ -74,11 +78,11 @@ def main():
     r_b, rho_b, vr_b, p_b = compute_profiles(base)
     r_s, rho_s, vr_s, p_s = compute_profiles(sm)
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5), constrained_layout=True)
+    fig, axes = plt.subplots(1, 3, figsize=(FIGSIZE[0]*3, FIGSIZE[1]), constrained_layout=True)
     axes[0].plot(r_b, rho_b, "C0-", lw=2, label="baseline (auto-sharded)")
     axes[0].plot(r_s, rho_s, "C3--", lw=1.5, label="shard_map")
     axes[0].set_xlabel("r [code]"); axes[0].set_ylabel(r"$\rho$")
-    axes[0].legend(frameon=False)
+    axes[0].legend()
 
     axes[1].plot(r_b, vr_b, "C0-", lw=2)
     axes[1].plot(r_s, vr_s, "C3--", lw=1.5)
@@ -89,11 +93,11 @@ def main():
     axes[2].set_xlabel("r [code]"); axes[2].set_ylabel(r"$P$")
 
     for ax in axes:
-        ax.grid(True, alpha=0.3); ax.tick_params(top=True, right=True, direction="in")
+        decorate(ax)
 
     Path("figures").mkdir(exist_ok=True)
     out = "figures/sedov_shardmap_vs_baseline.png"
-    fig.savefig(out, dpi=160, bbox_inches="tight")
+    fig.savefig(out, bbox_inches="tight")
     print(f"Saved {out}")
 
     # Quantitative diagnostic

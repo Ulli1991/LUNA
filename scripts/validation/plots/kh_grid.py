@@ -11,7 +11,14 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-from scripts.validation.runner import run_one
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 
 
 NX_SCAN = [1024, 2048, 4096, 8192]
@@ -25,6 +32,7 @@ def main():
     #    irregular timestamps so we run with a coarse cadence and the runner
     #    will land on them (or we override snapshot_times directly via Config).
     output_dirs = []
+    initialize_jax_distributed(enable_x64=False)
     for i, Nx in enumerate(NX_SCAN):
         overrides = dict(
             test_problem="Kelvin-Helmholtz",
@@ -37,8 +45,10 @@ def main():
             production_mode=True,
             time_bet_snaps=min(np.diff(SNAPSHOT_TIMES)),
             output_dir=f"snapshots/kh_Nx{Nx}",
+            clear_output_dir=True,
         )
-        _, _, outdir = run_one(overrides, jax_already_initialized=(i > 0))
+        overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+        _, _, outdir = run(replace(Config(), **overrides))
         output_dirs.append(outdir)
 
     # 2. Load density at each (resolution, time) and assemble the grid plot.
@@ -51,6 +61,7 @@ def main():
     for r, (Nx, outdir) in enumerate(zip(NX_SCAN, output_dirs)):
         for c, t in enumerate(SNAPSHOT_TIMES):
             ax = axes[r, c]
+            ax.grid(False)
             # TODO: load density at time t from outdir.
             raise NotImplementedError(
                 "Hook this up to the LUNA snapshot reader once the snapshot "

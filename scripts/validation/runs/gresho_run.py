@@ -8,7 +8,10 @@ Env vars:
     LUNA_GRESHO_MMAX    : peak Mach number (default 0.01).
 """
 import os
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 
 
 def main():
@@ -35,10 +38,13 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         output_dir=f"snapshots/gresho_{riemann}_Nx{Nx}_M{Mmax}",
+        clear_output_dir=True,
         enable_x64=True,
     )
     print(f"Gresho 2D: Nx={Nx}, t_end={t_end}, riemann={riemann}, M_max={Mmax}")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
 
 if __name__ == "__main__":

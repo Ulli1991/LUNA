@@ -13,6 +13,10 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
 from file_io.read_snapshot import read_snapshot, find_snapshot_at_time
 
 
@@ -42,6 +46,7 @@ def main():
         outdir = f"snapshots/kh_Nx{Nx}"
         for c, t_target in enumerate(SNAPSHOT_TIMES):
             ax = axes[r, c]
+            ax.grid(False)
             try:
                 snapdir = find_snapshot_at_time(outdir, t_target, tol=0.05)
                 snap = read_snapshot(snapdir)

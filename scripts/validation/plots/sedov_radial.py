@@ -10,7 +10,14 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-from scripts.validation.runner import run_one
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 from scripts.validation.metrics import radial_profile
 from scripts.validation.sedov_analytic import sedov_taylor_3d
 
@@ -35,8 +42,11 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         output_dir=f"snapshots/sedov3d_Nx{NX}",
+        clear_output_dir=True,
     )
-    _, _, outdir = run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    _, _, outdir = run(replace(Config(), **overrides))
 
     # TODO: load final-time conservative state U_final from outdir.
     # Convert to primitives: rho, vx, vy, vz, P. Compute v_r from velocities
@@ -55,7 +65,7 @@ def main():
     # Analytic curves on the same radial grid
     # ref = sedov_taylor_3d(r_centers, t=T_END, E0=E0, rho0=RHO0, gamma=GAMMA)
 
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    fig, axes = plt.subplots(1, 3, figsize=(FIGSIZE[0]*3, FIGSIZE[1]))
     # axes[0].plot(r_centers, rho_r, "C0o", ms=2, label=f"LUNA Nx={NX}")
     # axes[0].plot(r_centers, ref["rho"], "k-", label="Sedov-Taylor")
     # axes[0].set_xlabel("r"); axes[0].set_ylabel("density"); axes[0].legend()

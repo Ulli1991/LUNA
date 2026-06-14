@@ -8,7 +8,10 @@ grid resolution changes. Adapted from Federrath/Schmidt (2010).
     LUNA_TURB_OUT : output dir (default snapshots/turb_Nx{Nx})
 """
 import os
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 from hydro.turbulence import OUDriverConfig
 
 
@@ -77,13 +80,16 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         output_dir=out_dir,
+        clear_output_dir=True,
         enable_x64=use_fp64,
         enable_checkpointing=False,
     )
     print(f"Driven-turbulence run: Nx={Nx}, M_target={M_TARGET}, "
           f"v_rms_target={V_RMS_TARGET:.3f}, T_turnover={T_TURNOVER:.3f}, "
           f"t_end={T_END:.3f}, T_ac={T_AC:.3f}, rms_acc={RMS_ACC:.3f}")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
 
 if __name__ == "__main__":

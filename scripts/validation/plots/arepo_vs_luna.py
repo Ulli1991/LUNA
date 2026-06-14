@@ -18,6 +18,9 @@ import h5py
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
 
 
 AREPO_RUN = "/raven/u/uli/arepo/run/examples"
@@ -160,7 +163,7 @@ def compare_test(name, arepo_subdir, luna_subdir, target_t, out_path):
     print(f"  {name}: AREPO t={A['t']:.3f}  LUNA t={LU['t']:.3f}  (target {target_t})")
 
     r_max = 0.5 * A["L"]   # half-box; cloud R typically <0.25 L
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    fig, axes = plt.subplots(1, 3, figsize=(FIGSIZE[0]*3, FIGSIZE[1]))
     titles = ["ρ", "v_r", "P"]
     keys   = ["rho", "v_r", "P"]
     for ax, k, title in zip(axes, keys, titles):
@@ -174,11 +177,12 @@ def compare_test(name, arepo_subdir, luna_subdir, target_t, out_path):
             ax.loglog(cA, np.abs(mA), "o-", lw=1.5, ms=4, label="AREPO")
             ax.loglog(cL, np.abs(mL), "s--", lw=1.5, ms=4, label="LUNA")
         ax.set_xlabel("r"); ax.set_ylabel(title)
-        ax.set_title(title); ax.grid(True, which="both", alpha=0.3)
+        ax.set_title(title)
         ax.legend()
+        decorate(ax)
     fig.suptitle(f"{name}: AREPO vs LUNA at t={A['t']:.3f} (target {target_t})")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=140)
+    fig.savefig(out_path)
     plt.close(fig)
     print(f"    wrote {out_path}")
     return True

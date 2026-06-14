@@ -6,7 +6,10 @@ specific to the outflow + multipole-Dirichlet BC interaction.
 """
 import os
 import numpy as np
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 
 
 def main():
@@ -35,10 +38,13 @@ def main():
         isothermal_cs2=cs2,
         PLOT_AFTER_SIM=False, production_mode=True,
         output_dir=f"snapshots/bb_periodic_minmod_Nx{Nx}",
+        clear_output_dir=True,
         enable_x64=True, enable_checkpointing=False,
     )
     print(f"BB79 PERIODIC + MinMod: Nx={Nx}, M={M}, R={R}, c_s²={cs2}, t_end={t_end:.2f}")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
 
 if __name__ == "__main__":

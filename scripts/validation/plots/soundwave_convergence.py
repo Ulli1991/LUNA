@@ -17,6 +17,10 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
 from scripts.validation.runner import sweep
 from scripts.validation.metrics import l1_error, l2_error, convergence_slope
 from scripts.validation.athenak_io import load_1d as load_athdf_1d
@@ -55,6 +59,7 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         enable_x64=True,       # float64: perturbation is small, need precision
+        clear_output_dir=True,
     )
     results = sweep(base, "Nx", NX_SCAN,
                     output_dir_template="snapshots/soundwave_Nx{}")
@@ -113,7 +118,7 @@ def main():
 
     luna_conv = converging_slope(NX_SCAN, l1s)
 
-    fig, ax = plt.subplots(figsize=(7.5, 5.5))
+    fig, ax = plt.subplots(figsize=FIGSIZE)
     ax.loglog(NX_SCAN, l1s, "o-", color="C0", lw=2.0, ms=7,
               label="LUNA  PLM + MUSCL-Hancock + MonCen")
 
@@ -141,9 +146,8 @@ def main():
     ymin = 0.3 * plateau
     ymax = 3.0 * max(max(l1s), max(max(v[1]) for v in ak_results.values()) if ak_results else 0)
     ax.set_ylim(ymin, ymax)
-    ax.legend(fontsize=10, loc="upper right", frameon=False)
-    ax.grid(True, which="major", alpha=0.3)
-    ax.tick_params(which="both", top=True, right=True, direction="in")
+    ax.legend(loc="upper right")
+    decorate(ax)
     fig.tight_layout()
 
     Path("figures").mkdir(exist_ok=True)

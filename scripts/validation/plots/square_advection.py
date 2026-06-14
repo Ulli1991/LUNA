@@ -10,8 +10,15 @@ Saves figures/square_advection.{pdf,png}.
 from pathlib import Path
 import matplotlib.pyplot as plt
 
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
 from file_io.read_snapshot import read_snapshot, find_snapshot_at_time
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 
 
 NX = 1024
@@ -36,9 +43,12 @@ def main():
         production_mode=True,
         time_bet_snaps=0.25,
         output_dir=OUTDIR,
+        clear_output_dir=True,
         enable_x64=True,
     )
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
     fig, axes = plt.subplots(
         1, len(SNAPSHOT_TIMES),
@@ -54,8 +64,7 @@ def main():
                   vmin=VMIN, vmax=VMAX, cmap="magma",
                   interpolation="nearest", aspect="equal")
         ax.set_title(f"t = {t}", fontsize=11)
-        ax.tick_params(top=True, right=True, direction="in")
-        ax.grid(True, linestyle=":", alpha=0.4)
+        ax.grid(False)
         if c > 0:
             ax.set_yticklabels([])
 

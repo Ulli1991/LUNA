@@ -13,7 +13,10 @@ Just runs the sim and saves snapshots; plot script picks them up afterwards.
 """
 import os
 from units import UnitSystem
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 
 
 # Physical setup constants
@@ -62,6 +65,7 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         output_dir=os.environ.get("LUNA_SEDOV_OUT", f"snapshots/sedov3d_arepo_Nx{NX}"),
+        clear_output_dir=True,
         MESH_SHAPE=(
             tuple(int(s) for s in os.environ["LUNA_MESH_SHAPE"].split(","))
             if os.environ.get("LUNA_MESH_SHAPE") else None
@@ -75,7 +79,9 @@ def main():
     )
     print(f"Sedov 3D Arepo run: box={BOX_SIZE_PC} pc, Nx={NX}, t_end={T_END_YR} yr "
           f"= {T_END_CODE:.4e} code")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
 
 if __name__ == "__main__":

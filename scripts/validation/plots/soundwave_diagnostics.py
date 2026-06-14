@@ -45,6 +45,7 @@ COMMON = dict(
     PLOT_AFTER_SIM=False,
     production_mode=True,
     enable_x64=True,
+    clear_output_dir=True,
 )
 
 

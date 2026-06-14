@@ -34,7 +34,8 @@ import functools
 import jax
 import jax.numpy as jnp
 
-from gravity.poisson_multigrid import solve_poisson_fmg
+from gravity.poisson_multigrid import solve_poisson_fmg, laplacian_7pt
+from gravity.poisson_bc import make_halo_3d
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=(1, 2, 3, 4, 5))
@@ -93,3 +94,40 @@ def _bwd(dx, fourpiG, boundary, n_vcycles_per_level, n_extra_vcycles,
 
 
 solve_poisson_fmg_diff.defvjp(_fwd, _bwd)
+
+
+# ---------------------------------------------------------------------------
+# Both-modes variant (forward AND reverse) via jax.lax.custom_linear_solve.
+# ---------------------------------------------------------------------------
+def solve_poisson_fmg_bidiff(rho, dx, fourpiG, boundary,
+                             n_vcycles_per_level=1, n_extra_vcycles=1):
+    """Poisson solve differentiable in BOTH forward and reverse mode.
+
+    The map ρ → Φ is linear (A Φ = 4πG ρ), so jax.lax.custom_linear_solve
+    gives exact jvp AND vjp for free from the matvec (the 7-point Laplacian)
+    and the FMG solver — unlike solve_poisson_fmg_diff, whose custom_vjp is
+    reverse-only and raises on jacfwd. Use this when forward-mode autodiff
+    (jacfwd / few-input Jacobians) through self-gravity is wanted.
+
+    Periodic BC: A has a constant null space, so the operator, RHS and Φ are
+    all projected to zero-mean — this restricts the solve to the invertible
+    zero-mean subspace and makes the implicit-diff rule well-posed (the same
+    gauge fix the custom_vjp path applies)."""
+    halo_fn = make_halo_3d(boundary)
+    periodic = boundary == 0
+
+    def _zm(x):
+        return x - jnp.mean(x) if periodic else x
+
+    def matvec(phi):
+        return _zm(laplacian_7pt(phi, dx, halo_fn))
+
+    def solve(_mv, b):
+        phi = solve_poisson_fmg(_zm(b), dx, 1.0, boundary,
+                                n_vcycles_per_level=n_vcycles_per_level,
+                                n_extra_vcycles=n_extra_vcycles)
+        return _zm(phi)
+
+    phi = jax.lax.custom_linear_solve(matvec, _zm(fourpiG * rho), solve,
+                                      symmetric=True)
+    return _zm(phi)

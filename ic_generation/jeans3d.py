@@ -14,6 +14,8 @@ Config knobs expected:
     jeans_kx, jeans_ky, jeans_kz : perturbation wavenumber components
 """
 
+import math
+
 import jax.numpy as jnp
 
 
@@ -54,12 +56,37 @@ def jeans_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     z = (jnp.arange(zs, ze) + 0.5) * dz
     X, Y, Z = jnp.meshgrid(x, y, z, indexing="ij")
 
-    perturb = jnp.cos(kx * X + ky * Y + kz * Z)
-    rho = rho0 * (1.0 + amp * perturb)
-    P = P0 * (1.0 + amp * perturb)  # isothermal-like (c_s² ≈ γP/ρ stays ≈ const at linear order)
-    vx = jnp.zeros_like(rho)
-    vy = jnp.zeros_like(rho)
-    vz = jnp.zeros_like(rho)
+    theta = kx * X + ky * Y + kz * Z
+    cphase = jnp.cos(theta)
+    sphase = jnp.sin(theta)
+    rho = rho0 * (1.0 + amp * cphase)
+
+    # Pure growing Jeans eigenmode (from a static linear analysis): adiabatic
+    # pressure δP = c_s²δρ  →  P = P0(1 + γ·amp·cos θ), plus the matching
+    # longitudinal velocity  v = -(σ/k)·amp·sin θ · k̂  with
+    # σ = √(4πGρ₀ − c_s²k²). This launches δρ(t) = A₀ e^{σt} (clean exponential),
+    # so a trivial log-linear fit recovers σ — no cosh/offset artifact.
+    eigenmode = getattr(cfg, "jeans_eigenmode", True)
+    kmag2 = kx * kx + ky * ky + kz * kz
+    kmag = kmag2 ** 0.5
+    cs2 = gamma * P0 / rho0
+    Gconst = getattr(cfg, "GRAVITATIONAL_G", 1.0)
+    sig2 = 4.0 * math.pi * Gconst * rho0 - cs2 * kmag2
+
+    if eigenmode and sig2 > 0.0 and kmag > 0.0:
+        sigma = sig2 ** 0.5
+        P = P0 * (1.0 + gamma * amp * cphase)
+        vfac = -(sigma * amp / kmag)
+        vx = (vfac * kx / kmag) * sphase
+        vy = (vfac * ky / kmag) * sphase
+        vz = (vfac * kz / kmag) * sphase
+    else:
+        # legacy static / stable fallback (equal-amplitude δP, v = 0)
+        P = P0 * (1.0 + amp * cphase)
+        vx = jnp.zeros_like(rho)
+        vy = jnp.zeros_like(rho)
+        vz = jnp.zeros_like(rho)
+
     E = P / (gamma - 1.0) + 0.5 * rho * (vx * vx + vy * vy + vz * vz)
 
     return jnp.stack([rho, rho * vx, rho * vy, rho * vz, E])

@@ -7,7 +7,10 @@ Env vars:
     LUNA_CC85_TEND : simulation end time in Myr (default 10).
 """
 import os
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 from units import UnitSystem
 
 
@@ -67,6 +70,7 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         output_dir=f"snapshots/cc85_Nx{Nx}",
+        clear_output_dir=True,
         enable_x64=True,
     )
 
@@ -79,7 +83,9 @@ def main():
           f"box {LX_KPC}x{LY_KPC}x{LZ_KPC} kpc; "
           f"res={LX_KPC*1000/Nx:.1f} pc; t_end={t_end_Myr} Myr "
           f"(={t_end_code:.4e} code)")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
 
 if __name__ == "__main__":

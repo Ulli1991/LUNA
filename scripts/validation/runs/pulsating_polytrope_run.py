@@ -2,7 +2,10 @@
 Expect oscillation at the fundamental radial mode period."""
 import os
 import numpy as np
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 
 
 def main():
@@ -26,10 +29,13 @@ def main():
         pulse_amp=0.01,
         PLOT_AFTER_SIM=False, production_mode=True,
         output_dir=f"snapshots/pulse_Nx{Nx}",
+        clear_output_dir=True,
         enable_x64=True, enable_checkpointing=False,
     )
     print(f"Pulsating polytrope: Nx={Nx}, n=1.5, R={R}, t_end={t_end:.2f}")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
 
 if __name__ == "__main__":

@@ -15,7 +15,10 @@ import glob, os
 import numpy as np
 import h5py
 
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 from ic_generation.solar_convection_2d import solar_convection_2d_equilibrium
 
 
@@ -55,10 +58,13 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         output_dir=OUTDIR,
+        clear_output_dir=True,
         enable_x64=True,
     )
     print(f"WB HSE test: Nx={NX}, t_end={T_END}, g_z={GRAVITY_Z}, gamma=Gamma={GAMMA}")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
     # Load the final snapshot and compare against U_eq.
     snaps = sorted(glob.glob(os.path.join(OUTDIR, "snapdir_*")))

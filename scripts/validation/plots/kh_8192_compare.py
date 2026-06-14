@@ -14,6 +14,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import h5py
 
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
 from file_io.read_snapshot import read_snapshot, find_snapshot_at_time
 from scripts.validation.athenak_io import load_2d as ak_load_2d
 
@@ -56,6 +60,7 @@ def main():
         ax.imshow(snap["rho"].T, origin="lower", extent=(0, LX, 0, LY),
                   vmin=VMIN, vmax=VMAX, cmap=CMAP,
                   interpolation="nearest", aspect="equal")
+        ax.grid(False)
         ax.set_xticks([]); ax.set_yticks([])
         axes[0, c].set_title(f"t = {t}", fontsize=11)
 
@@ -67,6 +72,7 @@ def main():
                   extent=(0, snap["Lx"], 0, snap["Ly"]),
                   vmin=VMIN, vmax=VMAX, cmap=CMAP,
                   interpolation="nearest", aspect="equal")
+        ax.grid(False)
         ax.set_xticks([]); ax.set_yticks([])
 
     axes[0, 0].set_ylabel("LUNA", fontsize=11)

@@ -12,6 +12,9 @@ import h5py
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
 
 SNAP64  = "/raven/u/uli/jax-hydro/snapshots/bb_iso_Nx64"
 SNAP256 = "/raven/u/uli/jax-hydro/snapshots/bb_iso_minmod_Nx256"
@@ -66,10 +69,11 @@ def main():
     vmin = np.log10(min(S64_pos.min(), S256_pos.min()))
     vmax = np.log10(max(S64_pos.max(), S256_pos.max()))
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(FIGSIZE[0]*2, FIGSIZE[1]))
     im0 = axes[0].imshow(np.log10(S64_pos).T,  origin="lower",
                           extent=(0, L64,  0, L64),
                           vmin=vmin, vmax=vmax, cmap="magma")
+    axes[0].grid(False)
     axes[0].set_title(f"LUNA 64³  isolated  (t={t64:.2f})")
     axes[0].set_xlabel("x"); axes[0].set_ylabel("y")
     plt.colorbar(im0, ax=axes[0], shrink=0.85, label=r"$\log_{10}\Sigma$")
@@ -77,6 +81,7 @@ def main():
     im1 = axes[1].imshow(np.log10(S256_pos).T, origin="lower",
                           extent=(0, L256, 0, L256),
                           vmin=vmin, vmax=vmax, cmap="magma")
+    axes[1].grid(False)
     axes[1].set_title(f"LUNA 256³ isolated (t={t256:.2f})")
     axes[1].set_xlabel("x"); axes[1].set_ylabel("y")
     plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10}\Sigma$")
@@ -85,7 +90,7 @@ def main():
     fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
     out = "figures/bb79_iso_luna_64_vs_256_minmod.png"
-    fig.savefig(out, dpi=140); plt.close(fig)
+    fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}")
 
 

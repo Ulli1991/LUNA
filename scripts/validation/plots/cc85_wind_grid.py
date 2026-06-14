@@ -11,6 +11,9 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from file_io.read_snapshot import read_snapshot
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
 
 
 # Unit conversion (Arepo: kpc / 1e10 Msun / km/s).
@@ -93,6 +96,7 @@ def _plot_grid(field_key, cmap_name, vmin, vmax, label, outpath_stem, runs,
     im = None
     for j, Nx in enumerate(resolutions):
         ax = axes[j]
+        ax.grid(False)
         run = runs.get(Nx)
         if run is None:
             ax.text(0.5, 0.5, f"(no data yet)\nNx={Nx}",
@@ -156,7 +160,7 @@ def _radial_profile(rho_code, vx, vy, vz, P_code, Lx, Ly, Lz, n_bins=64):
 
 
 def _plot_radial_profiles(runs, snapshots_root="snapshots"):
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5), constrained_layout=True)
+    fig, axes = plt.subplots(1, 3, figsize=(FIGSIZE[0]*3, FIGSIZE[1]), constrained_layout=True)
     resolutions = sorted(runs.keys())
     colors = plt.cm.viridis(np.linspace(0.15, 0.85, len(resolutions)))
     for i, Nx in enumerate(resolutions):
@@ -175,7 +179,7 @@ def _plot_radial_profiles(runs, snapshots_root="snapshots"):
     axes[1].set_xlabel("r (kpc)"); axes[1].set_ylabel(r"$v_{\rm rad}\ [{\rm km\,s^{-1}}]$")
     axes[2].set_xlabel("r (kpc)"); axes[2].set_ylabel(r"$T\ [{\rm K}]$")
     for ax in axes:
-        ax.grid(True, alpha=0.3); ax.legend(loc="best", fontsize=10)
+        ax.legend(loc="best"); decorate(ax)
 
     for ext in ("pdf", "png"):
         path = f"figures/m82_wind_radial_profiles.{ext}"

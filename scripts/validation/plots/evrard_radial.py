@@ -18,6 +18,9 @@ import glob
 import numpy as np
 import h5py
 import matplotlib.pyplot as plt
+from utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
 
 from scripts.validation.metrics import radial_profile
 
@@ -95,7 +98,7 @@ def main():
     R_CLOUD = 1.0
     print(f"Target time: {TARGET_T}")
 
-    fig, axes = plt.subplots(2, 2, figsize=(11, 9), constrained_layout=True)
+    fig, axes = plt.subplots(2, 2, figsize=(FIGSIZE[0]*2*0.6, FIGSIZE[1]*2*0.6), constrained_layout=True)
     colors = plt.cm.magma(np.linspace(0.2, 0.85, max(1, len(runs))))
 
     for (Nx, sd, dt_close), color in zip(runs, colors):
@@ -127,18 +130,19 @@ def main():
     axes[0, 1].plot(r_grid, v_ff, "k--", lw=1, label="v_r = -√(2GM/r)")
 
     for ax in axes.flat:
-        ax.set_xscale("log"); ax.tick_params(top=True, right=True, direction="in", which="both")
-        ax.grid(True, which="both", alpha=0.3)
+        ax.set_xscale("log")
     axes[0, 0].set_yscale("log"); axes[0, 0].set_xlabel("r"); axes[0, 0].set_ylabel("ρ")
     axes[0, 1].set_xlabel("r"); axes[0, 1].set_ylabel("v_r")
     axes[1, 0].set_yscale("log"); axes[1, 0].set_xlabel("r"); axes[1, 0].set_ylabel("P")
     axes[1, 1].set_xlabel("r"); axes[1, 1].set_ylabel("ln(P/ρ^γ)  (entropy)")
-    axes[0, 0].legend(loc="upper right", fontsize=9)
-    axes[0, 1].legend(loc="lower right", fontsize=9)
+    axes[0, 0].legend(loc="upper right")
+    axes[0, 1].legend(loc="lower right")
+    for ax in axes.flat:
+        decorate(ax)
 
     out = "figures/evrard_radial.png"
     os.makedirs("figures", exist_ok=True)
-    fig.savefig(out, dpi=180, bbox_inches="tight")
+    fig.savefig(out, bbox_inches="tight")
     print(f"Saved {out}")
 
 

@@ -11,7 +11,10 @@ Driven by env vars so the same submit script can dispatch resolutions:
     LUNA_SOLAR_OUT   : output dir (default snapshots/solar_Nx{Nx})
 """
 import os
-from scripts.validation.runner import run_one
+from dataclasses import replace
+from template_config import Config
+from setup.distributed_setup import initialize_jax_distributed
+from main import run
 
 
 GAMMA = 5.0 / 3.0
@@ -53,11 +56,14 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         output_dir=out_dir,
+        clear_output_dir=True,
         enable_x64=True,
     )
     print(f"Solar convection 2D: Nx={Nx}, Gamma={SOLAR_GAMMA} (gamma={GAMMA}), "
           f"g_z={GRAVITY}, t_end={T_END}, pert_amp={PERT_AMP}")
-    run_one(overrides)
+    initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
+    run(replace(Config(), **overrides))
 
 
 if __name__ == "__main__":
