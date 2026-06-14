@@ -160,8 +160,10 @@ def setup_sinks(cfg, sharding, is_main_process: bool = True):
         for i in range(N):
             r2 = (X - pos[i, 0])**2 + (Y - pos[i, 1])**2 + (Z - pos[i, 2])**2
             inside = active[i] * (r2 < r_acc * r_acc)
-            # remove a fixed fraction of the gas above the creation floor each step
-            dm_cell = inside * jnp.maximum(rho - 0.0, 0.0) * 0.5      # 50%/step inside r_acc
+            # SEREN-style threshold accretion: take only the gas ABOVE ρ_SINK,
+            # leaving the cell at ρ_SINK (not a fixed 50%/step of everything —
+            # that swallowed most of the cloud).
+            dm_cell = inside * jnp.maximum(rho - rho_create, 0.0)
             dM = jnp.sum(dm_cell) * dV
             # accreted momentum (cell momentum fraction)
             frac = jnp.where(rho > 0, dm_cell / jnp.maximum(rho, 1e-30), 0.0)
@@ -197,12 +199,7 @@ def setup_sinks(cfg, sharding, is_main_process: bool = True):
         near = jnp.any(active * (d2 < r_sep * r_sep))
         free_slot = jnp.argmin(active.astype(jnp.int32))   # first inactive slot
         has_free = jnp.any(active < 0.5)
-        # form a sink iff: above ρ_create, at a potential minimum (candidate by
-        # construction), converging flow (∇·v < 0), isolated from existing sinks,
-        # and a free slot exists.
-        do_create = (rho_pk > rho_create) & (divv_pk < 0.0) & (~near) & has_free
-
-        # gas inside r_acc of the peak → the new sink. CRITICAL: remove only a
+        # gas inside r_acc of the candidate → the prospective sink. Remove only a
         # FRACTION (sink_create_frac), leaving a positive density floor — zeroing
         # the cells makes the next hydro step do v = mom/rho = 0/0 = NaN.
         r2 = (X - pk[0])**2 + (Y - pk[1])**2 + (Z - pk[2])**2
@@ -211,6 +208,16 @@ def setup_sinks(cfg, sharding, is_main_process: bool = True):
         p0 = jnp.array([jnp.sum(rem * U[1]), jnp.sum(rem * U[2]),
                         jnp.sum(rem * U[3])]) * dV
         v0 = jnp.where(M0 > 0, p0 / M0, 0.0)
+        # SEREN bound criterion (vi): the seed region's total mechanical energy —
+        # kinetic (in its COM frame) + gravitational — must be negative.
+        vx = U[1] / rho; vy = U[2] / rho; vz = U[3] / rho
+        v_rel2 = (vx - v0[0])**2 + (vy - v0[1])**2 + (vz - v0[2])**2
+        E_kin = jnp.sum(rem * 0.5 * rho * v_rel2) * dV
+        E_grav = jnp.sum(rem * rho * phi) * dV          # phi < 0 in the well → binding
+        bound = (E_kin + E_grav) < 0.0
+        # form a sink iff (SEREN i, ii, iv, vi): density > ρ_SINK, potential-min
+        # candidate, converging flow ∇·v<0, BOUND (E_mech<0), isolated, free slot.
+        do_create = (rho_pk > rho_create) & (divv_pk < 0.0) & bound & (~near) & has_free
 
         s = free_slot
         pos = pos.at[s].set(jnp.where(do_create, pk, pos[s]))

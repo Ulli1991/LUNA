@@ -98,33 +98,55 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 ## Differentiable simulation (autodiff)
 
-LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable (JAX), in both forward and reverse mode, through the *production* solver. The tests below first validate the gradients against ground truth, then put them to work: forward-mode parameter sensitivity, reverse-mode inverse problems across physics regimes, a solver-in-the-loop learned correction, and finally the whole thing at multi-GPU scale.
+LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable (JAX), forward and reverse mode, through the *production* solver. The section follows one arc: **(1)** the gradients are validated against analytic ground truth, **(2)** put to work on inverse problems across physics regimes, **(3)** shown to scale across GPUs, **(4)** a signature demonstration, and **(5)** a tangible astrophysical application — the X-ray response of a galactic wind to its feedback.
+
+### 1 · Gradient correctness
 
 ![Sedov autodiff: AD vs analytic exponents + FD cross-check](figures/autodiff_sedov_validation.png)
 
-*1. Gradient self-consistency (Sedov-Taylor). Forward-mode AD through the full Sedov blast (32³, 200 steps) reproduces the **analytic** self-similar exponents — ∂lnR/∂lnE = +1/5, ∂lnR/∂lnρ₀ = −1/5, the KE/TE energy partition, the Rankine-Hugoniot density jump — with every point on the y = x line (left), and matches central finite differences to < 10⁻² (right). The gradient is checked against an analytic ground truth, not just FD.*
+*Forward-mode AD through the full Sedov blast (32³, 200 steps) reproduces the **analytic** self-similar exponents — ∂lnR/∂lnE = +1/5, ∂lnR/∂lnρ₀ = −1/5, the KE/TE energy partition, the Rankine-Hugoniot density jump — every point on the y = x line (left), matching central finite differences to < 10⁻² (right). The gradient is checked against **analytic ground truth**, not just FD — a standard prior differentiable-hydro work does not meet.*
 
 ![Autodiff through adaptive timestepping](figures/autodiff_dtmode_fd.png)
 
-*2. Gradients through adaptive timestepping. ∂lnL_X/∂lnη for the M82 wind (32×32×64, integrated to 10 Myr), AD vs central FD, under three dt treatments. Fixed dt and fully-differentiated adaptive dt are FD-exact (< 10⁻³); `stop_gradient` on the CFL dt drops the dt-sensitivity path (≈ 13 % on η_M, ≈ 59 % on η_E) — so differentiating an adaptive-dt run must either hold dt fixed or differentiate it. (A subtlety not addressed by prior differentiable-hydro work.)*
+*Gradients through adaptive timestepping. ∂lnL_X/∂lnη for the M82 wind (32×32×64 → 10 Myr), AD vs central FD under three dt treatments. Fixed dt and fully-differentiated adaptive dt are FD-exact (< 10⁻³); `stop_gradient` on the CFL dt drops the dt-sensitivity path (≈ 13 % on η_M, ≈ 59 % on η_E) — so differentiating an adaptive-dt run must hold dt fixed or differentiate it.*
 
-*3. M82 forward sensitivity — ∂lnL_X/∂lnη_M, ∂lnL_X/∂lnη_E on the developed (10 Myr) wind, the X-ray response to mass- and energy-loading. **Figure in flight** (forward-mode, `diff` dt).*
+### 2 · Inverse modeling — IC and parameter reconstruction
 
 ![Turbulence IC inversion: reverse-mode recovery + r(k)](figures/autodiff_ic_inversion_DrivenTurbulence3D_Nx32.png)
 
-*4. Reverse-mode IC inversion — turbulent flow. Recovering the initial low-k density field from the evolved OU-driven turbulent state (32³) by reverse-mode AD through the production solver. δ_true vs δ_recovered (large scales recovered, fine scales decorrelated); the scale-resolved cross-correlation r(k) ≈ 1 through the forcing band (k ≤ 4) then collapses — the recoverability cliff set by chaotic mixing.*
-
-*5. Reverse-mode IC inversion — self-gravitating flow, through the differentiable FMG-Poisson adjoint. **Figure in flight.***
+*Reverse-mode IC inversion, **turbulent** flow — recover the initial low-k density field from the evolved OU-driven state by reverse-mode AD through the production solver. δ_true vs δ_recovered; r(k) ≈ 1 through the forcing band (k ≤ 4) then collapses — the recoverability cliff set by chaotic mixing.*
 
 ![Radiative-cooling IC inversion](figures/autodiff_ic_inversion_JeansInstability3D_cool_Nx32.png)
 
-*6. Reverse-mode IC inversion — radiatively cooling flow. Recovering the IC energy perturbation through the cooling solver (uniform box, n_H ≈ 0.05 cm⁻³, T ≈ 2×10⁵ K, evolved ~½ a cooling time). The r(k) cliff at k ≈ 4–5 is the dissipative recovery limit — cooling smooths the small scales. Together with panels 4–5 this mirrors the diffhydro "turbulent, self-gravitating, radiatively cooling" reconstruction trilogy.*
+*Reverse-mode IC inversion, **radiatively-cooling** flow — recover the IC energy perturbation through the cooling solver; the r(k) cliff at k ≈ 4–5 is the dissipative recovery limit. With the turbulence panel above and the **self-gravitating** inversion (FMG-Poisson adjoint, landing at 256³ on the 4-GPU path), this mirrors the diffhydro "turbulent, self-gravitating, radiatively cooling" reconstruction trilogy — run here through LUNA's production solver.*
 
-*7. Solver-in-the-loop KH corrector — a CNN flux correction trained reverse-mode through the unrolled coarse rollout (Um+ 2020) to track a 4× fine reference. **Retrain in flight.***
+![2D blast-to-target reconstruction](figures/autodiff_blast_reconstruction_Nx256.png)
+
+*Blast reconstruction (2D, 256²) — optimize the initial internal-energy field so an ensemble of Sedov blasts collides and merges into a prescribed target morphology (the diffhydro Fig-12 analog).*
+
+*Two more inverse problems are landing: **coupled-physics parameter recovery** (`eta_recovery`) — recover the CC85 wind loadings (η_M, η_E) by reverse-mode AD through cooling + self-gravity + external potential simultaneously, a closed-loop correctness check across the full physics stack ("we measure what we put in"); and the **solver-in-the-loop KH corrector** (a CNN flux correction trained reverse-mode through the unrolled rollout, Um+ 2020) — retrain in flight.*
+
+### 3 · Scale
 
 ![Differentiable simulation at 256³ on 4 GPUs](figures/autodiff_scale_256.png)
 
-*8. Autodiff at scale. Forward-mode ∂lnL_X/∂lnη on the M82 wind at **256×256×512 across 4 GPUs** (auto-sharded), FD-validated (η_M to a relative 3×10⁻⁴) — differentiable simulation at diffhydro-parity resolution on multiple devices.*
+*Differentiable at production resolution. Forward-mode ∂lnL_X/∂lnη on the M82 wind at **256×256×512 across 4 GPUs** (auto-sharded), FD-validated (η_M to a relative 3×10⁻⁴) — the adjoint at diffhydro-parity resolution on multiple devices. The 256³ reverse-mode IC inversions run on the same sharded path.*
+
+### 4 · Signature — "LUNA out of the explosion set"
+
+![LUNA emerges from an optimized explosion set](figures/autodiff_luna_emergence_LUNA_Nx256.png)
+
+*Reverse-mode AD through the production solver finds an initial energy field — a "spark field" (left) — whose forward hydro evolution assembles the word **LUNA** in the density (middle) toward the target (right): the optimizer places high energy *around* the letters so the surrounding pressure compresses gas *into* them.*
+
+![A photograph reconstructed out of the explosion set — 1024² on 4 GPUs](figures/autodiff_luna_emergence_lubibi_Nx1024.png)
+
+*The same machinery at **1024² across 4 GPUs** reconstructing an arbitrary photograph: optimized initial conditions whose blast dynamics evolve into the target image. Differentiable hydro as a learned map from initial conditions to a chosen late-time morphology — and a multi-GPU scale demonstration in its own right.*
+
+### 5 · Application — M82 X-ray feedback sweep
+
+![M82 soft X-ray luminosity vs feedback loading, with the autodiff gradient](figures/autodiff_m82_xray_sweep.png)
+
+*The tangible payoff. How a galactic wind's soft X-ray luminosity L_X responds to its feedback loadings: L_X swept over the mass- and energy-loading (η_M, η_E) of the M82-like CC85 wind, with the **autodiff gradient ∂lnL_X/∂lnη** (single backward pass) giving the local slope — the efficient, differentiable alternative to a brute-force forward grid, and the bridge to the X-ray observables (XRISM-era L_X, T, σ) that constrain feedback in real starbursts. **Sweep landing.***
 
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
