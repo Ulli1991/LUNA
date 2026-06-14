@@ -76,17 +76,17 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Linear Jeans instability against analytic linear theory. Periodic self-gravitating box (64³) seeded with the growing Jeans eigenmode (adiabatic δP = c_s²δρ plus the matching longitudinal velocity), so the unstable mode grows as a clean exponential δρ ∝ e^{σt} with σ = √(4πGρ₀ − c_s²k²). LUNA's measured mode amplitude (points) and its log-slope fit track the analytic A₀e^{σt} (black) to **σ_meas = 5.34 vs σ_exact = 5.33 (0.06%)**. The underlying FMG multigrid Poisson solver is itself accurate to 0.08% on the analytic single-mode potential and converges to a 10⁻¹⁴ residual.*
 
-![Evrard collapse: LUNA vs AREPO radial profiles](figures/arepo_vs_luna_evrard_Nx64.png)
+![Evrard collapse: LUNA resolution convergence vs AREPO](figures/gravity_convergence_evrard.png)
 
-*Evrard 1988 adiabatic spherical collapse vs AREPO (Springel 2010 moving-mesh code) at t = 0.8 (Springel 2010 Fig 41 reference time). Identical ICs in code units (M = R = G = 1, ρ ∝ 1/r, u₀ = 0.05, γ = 5/3) at 64³ in a periodic L = 4 box. LUNA (points) and AREPO (line) agree on ρ, vᵣ, P through the accretion shock at r ≈ 0.15, the vᵣ ≈ −1.4 free-fall envelope, and the static ambient. AREPO's adaptive mesh reaches the post-bounce central density that LUNA's fixed dx = 0.06 grid cannot.*
+*Evrard 1988 adiabatic spherical collapse vs AREPO (Springel 2010 moving-mesh code) at t = 0.8 (Springel 2010 Fig 41 reference time). Identical ICs in code units (M = R = G = 1, ρ ∝ 1/r, u₀ = 0.05, γ = 5/3) in a periodic L = 4 box. The radial density profile is shown for LUNA at N = 64³, 128³, 256³ (coloured) against AREPO (black): LUNA converges toward the reference through the accretion shock at r ≈ 0.15 and the free-fall envelope as the grid is refined, with the higher-resolution runs reaching progressively deeper into the post-bounce central density that the coarse fixed grid cannot.*
 
-![Bonnor-Ebert sub-critical sphere: LUNA vs AREPO](figures/arepo_vs_luna_be_sub_Nx64.png)
+![Bonnor-Ebert sub-critical sphere: LUNA resolution convergence vs AREPO](figures/gravity_convergence_be_sub.png)
 
-*Sub-critical isothermal Bonnor-Ebert sphere (ξₜ = 5 < 6.451) vs AREPO at t = 3.0, periodic L = 4, c_s² = G = 1. LUNA and AREPO agree on ρ, vᵣ, P throughout; the slow outward drift is the IC's residual edge pressure/gravity mismatch (a periodic-BC artefact, reproduced independently by AREPO).*
+*Sub-critical isothermal Bonnor-Ebert sphere (ξₜ = 5 < 6.451) vs AREPO at t = 3.0, periodic L = 4, c_s² = G = 1. Radial density at LUNA N = 64³, 128³, 256³ (coloured) vs AREPO (black); the sphere stays pressure-supported and the profiles agree across resolutions, the small outward drift being the IC's residual edge pressure/gravity mismatch (a periodic-BC artefact reproduced independently by AREPO).*
 
-![Bonnor-Ebert super-critical sphere: LUNA vs AREPO](figures/arepo_vs_luna_be_super_Nx64.png)
+![Bonnor-Ebert super-critical sphere: LUNA resolution convergence vs AREPO](figures/gravity_convergence_be_super.png)
 
-*Super-critical isothermal Bonnor-Ebert sphere (ξₜ = 10 > 6.451) at t = 3.0. Both codes show the same post-bounce outward flow peaking at vᵣ ≈ 0.3; the bulk profiles match to plotting precision.*
+*Super-critical isothermal Bonnor-Ebert sphere (ξₜ = 10 > 6.451) at t = 3.0. Radial density at LUNA N = 64³, 128³, 256³ (coloured) vs AREPO (black); both codes show the same post-bounce collapse and the LUNA profiles converge toward the reference with increasing resolution.*
 
 ![Boss-Bodenheimer protostellar collapse — binary fragmentation at 256³](figures/bb79_256_column_density_Nx256.png)
 
