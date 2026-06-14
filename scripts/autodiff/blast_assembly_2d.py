@@ -120,21 +120,38 @@ def main():
                   else _text_density(Nx, text or "LUNA", rho0, rho_hi))
     rho_tgt = jnp.asarray(rho_tgt_np)
 
+    # IC-decorrelation penalty: forbid the TRIVIAL solution where the seed field
+    # already looks like the target ("could have assembled them myself"). We
+    # penalize positive correlation between the seed-energy IC and the target
+    # density, forcing the optimizer to find a disordered seed scatter whose
+    # COLLIDING shells converge into the target (the real Horowitz mechanism:
+    # dense regions form in the voids BETWEEN blasts, not at the seeds).
+    decorr = float(os.environ.get("LUNA_BLAST_DECORR", "0.0"))
+    _tc = rho_tgt - jnp.mean(rho_tgt)
+    tgt_n = _tc / (jnp.sqrt(jnp.mean(_tc ** 2)) + 1e-8)
+
     def loss(theta):
-        return jnp.mean((simulate(theta)[0] - rho_tgt) ** 2)
+        match = jnp.mean((simulate(theta)[0] - rho_tgt) ** 2)
+        if decorr > 0.0:
+            e = e_of(theta)
+            ic = e - jnp.mean(e)
+            ic_n = ic / (jnp.sqrt(jnp.mean(ic ** 2)) + 1e-8)
+            corr = jnp.mean(ic_n * tgt_n)          # in [-1,1]; >0 ⇒ IC ~ target
+            return match + decorr * jax.nn.relu(corr)
+        return match
 
     if jax.process_index() == 0:
         print(f"Blast-assembly: Nx={Nx}, {Ns}x{Ns}={Ns*Ns} blast seeds, "
               f"n_steps={n_steps}, target={label}", flush=True)
 
-    # ---- optimize seed AMPLITUDES and POSITIONS (physically-motivated warm start)
-    # Strong seeds in the BACKGROUND (dark target) so their expanding shells
-    # converge to compress gas INTO the bright letters; positions then migrate so
-    # the shell COLLISIONS trace the target. ----
-    tgt_seed = np.asarray(rho_tgt_np)[s // 2::s, s // 2::s]
-    tgt_seed = (tgt_seed - tgt_seed.min()) / (tgt_seed.max() - tgt_seed.min() + 1e-9)
-    logamp = jax.device_put(jnp.asarray((2.5 * (0.5 - tgt_seed)).ravel()), rep)
-    dpos = jax.device_put(jnp.zeros((Ns * Ns, 2)), rep)
+    # ---- optimize seed AMPLITUDES and POSITIONS from a RANDOM start ----
+    # The IC begins as a disordered scatter of blasts (no target shape) — so the
+    # converged IC is genuinely non-obvious noise, and the target emerges only
+    # from the long collide-and-merge evolution (not visible in the seeds).
+    rng = np.random.RandomState(0)
+    logamp = jax.device_put(jnp.asarray(rng.uniform(-1.0, 1.0, (Ns * Ns,))), rep)
+    dpos = jax.device_put(jnp.asarray(rng.uniform(-0.35 * s, 0.35 * s,
+                                                  (Ns * Ns, 2))), rep)
     params = (logamp, dpos)
     loss_grad = jax.jit(jax.value_and_grad(loss))
     _, g = loss_grad(params)

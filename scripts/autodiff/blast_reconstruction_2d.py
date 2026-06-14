@@ -57,13 +57,20 @@ def _text_density(Nx, text, rho_lo, rho_hi):
     fig = plt.figure(figsize=(4, 4), dpi=100)
     fig.patch.set_facecolor("black")
     ax = fig.add_axes([0, 0, 1, 1]); ax.set_facecolor("black"); ax.axis("off")
+    fam = os.environ.get("LUNA_BLAST_FONT", "sans-serif")     # "cursive" → calligraphic
+    fstyle = os.environ.get("LUNA_BLAST_FONTSTYLE", "normal")  # "italic" for flow
     ax.text(0.5, 0.5, text, ha="center", va="center", color="white",
             fontsize=260.0 / max(1, len(text)), fontweight="bold",
-            family="sans-serif", transform=ax.transAxes)
+            family=fam, style=fstyle, transform=ax.transAxes)
     fig.canvas.draw()
     buf = np.asarray(fig.canvas.buffer_rgba())[..., 0].astype(np.float64) / 255.0
     plt.close(fig)
     r = np.asarray(jresize(jnp.asarray(buf), (Nx, Nx), method="linear"))
+    blur = float(os.environ.get("LUNA_BLAST_BLUR", "0"))      # soften strokes (large-scale)
+    if blur > 0:
+        from scipy.ndimage import gaussian_filter
+        r = gaussian_filter(r, sigma=blur * Nx / 512.0)
+        r = (r - r.min()) / (r.max() - r.min() + 1e-12)
     return rho_lo + (rho_hi - rho_lo) * r[::-1].T
 
 
