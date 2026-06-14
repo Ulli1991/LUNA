@@ -88,9 +88,9 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Super-critical isothermal Bonnor-Ebert sphere (ξₜ = 10 > 6.451) at t = 3.0. Both codes show the same post-bounce outward flow peaking at vᵣ ≈ 0.3; the bulk profiles match to plotting precision.*
 
-![Boss-Bodenheimer 1979 with isolated BC — LUNA 64³ vs 256³](figures/bb79_iso_luna_64_vs_256_minmod.png)
+![Boss-Bodenheimer protostellar collapse — binary fragmentation at 256³](figures/bb79_256_column_density_Nx256.png)
 
-*Boss & Bodenheimer 1979 rotating isothermal collapse with the **isolated** Poisson BC (multipole-Dirichlet halo + outflow hydro, no periodic-image saddle), MinMod limiter, at t = 2.0. Both panels are LUNA: 64³ (left) gives a smooth under-resolved blob, while 256³ (right) resolves the m = 2 rotational-fragmentation morphology — a clumpy central bar with substructure.*
+*Boss & Bodenheimer 1979 rotating protostellar collapse at 256³, set up **verbatim from GANDALF** (Hubber, Rosotti & Booth 2018, §6.12): M ≈ 1 M⊙ cloud, R = 0.01 pc, ρ₀ = 1.44×10⁻¹⁷ g/cm³, ρ = ρ₀[1 + 0.5·sin2φ], β = 0.16, **barotropic EOS** T(ρ) = 10 K·[1 + (ρ/10⁻¹⁴)^(γ−1)], in physical (pc, M⊙, km/s) units. Column density log₁₀Σ along the rotation axis at t = 0.04 Myr (≈ 2.3 t_ff). The m = 2 perturbation collapses into the canonical **bar → binary**: two dense protostellar condensations with trailing spiral arms in a circumbinary envelope. Self-gravity uses the isolated multipole-Dirichlet Poisson BC (monopole + quadrupole) and a diode (outflow-only) hydro BC; the barotropic stiffening halts the runaway collapse that a strict-isothermal fixed-grid run would otherwise turn into a cardinal-axis artefact.*
 
 ## Differentiable simulation (autodiff)
 
