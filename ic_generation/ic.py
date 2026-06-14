@@ -39,6 +39,7 @@ from .soundwave3d import soundwave_3d
 from .soundwave_advected import soundwave_advected
 from .soundwave_advected2d import soundwave_advected2d
 from .woodward_colella import woodward_colella
+from .disc_planet_2d import disc_planet_2d
 
 # test_problem name -> (ic_function, ndim).
 # Every IC function accepts the slice kwargs matching its dimensionality
@@ -60,6 +61,7 @@ _IC_REGISTRY = {
     "Soundwave-Advected-2D": (soundwave_advected2d, 2),
     "Kelvin-Helmholtz": (kelvin_helmholtz, 2),
     "Double-Mach-Reflection": (double_mach_reflection, 2),
+    "Disc-Planet-2D": (disc_planet_2d, 2),
     # 3D
     "Sod-Shock-3D": (sod_shock_3d, 3),
     "Sedov-Blast-3D": (sedov_blast_3d, 3),

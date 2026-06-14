@@ -130,7 +130,9 @@ def _plot_grid(field_key, label, outpath_stem, runs):
         im = ax.imshow(data, origin="lower", extent=extent,
                        cmap=cmap, vmin=vmin, vmax=vmax, aspect="equal",
                        interpolation="nearest")
-        ax.set_title(f"L-HLLC  Nx={Nx}  t={run['t']:.0f}", fontsize=11)
+        ax.text(0.05, 0.92, f"L-HLLC  Nx={Nx}  t={run['t']:.0f}",
+                transform=ax.transAxes, fontsize=11, color="white", fontweight="bold",
+                bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
         ax.set_xlabel("x")
         if j_col == 0:
             ax.set_ylabel("y")

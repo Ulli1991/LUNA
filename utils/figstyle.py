@@ -29,6 +29,7 @@ import matplotlib as mpl
 
 # Canonical single-panel size — every figure uses this (or an (N*W, H) multiple
 # for N-column multipanels) so the paper has a uniform layout.
+# NOTE: figures carry NO titles — describe them in the caption, never set_title.
 FIGSIZE = (6.4, 4.8)
 
 # Grid styling, kept in one place so apply_style() and decorate() agree.

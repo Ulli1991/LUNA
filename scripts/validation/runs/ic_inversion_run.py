@@ -31,12 +31,16 @@ def main():
     Nx = int(os.environ.get("LUNA_AD_NX", "32"))
     n_steps = int(os.environ.get("LUNA_AD_NSTEPS", "150"))
     n_iter = int(os.environ.get("LUNA_AD_NITER", "80"))
+    use_shardmap = os.environ.get("LUNA_AD_SHARDMAP", "0") == "1"
+    mesh_env = os.environ.get("LUNA_AD_MESH", "")            # e.g. "2x2x1"
+    mesh_shape = tuple(int(v) for v in mesh_env.split("x")) if mesh_env else None
 
     common = dict(
         SPATIAL_DIMENSION=3, Nx=Nx, Ny=Nx, Nz=Nx, gamma=5.0 / 3.0,
         ORDER=1, LIMITER=1, CFL=0.4,
         autodiff_mode=True, autodiff_task="ic_inversion",
         autodiff_n_steps=n_steps, autodiff_n_iter=n_iter,
+        USE_SHARDMAP=use_shardmap, MESH_SHAPE=mesh_shape,
         PLOT_AFTER_SIM=False, production_mode=False,
     )
 

@@ -63,7 +63,9 @@ def main():
                   extent=(0, snap["Lx"], 0, snap["Ly"]),
                   vmin=VMIN, vmax=VMAX, cmap="magma",
                   interpolation="nearest", aspect="equal")
-        ax.set_title(f"t = {t}", fontsize=11)
+        ax.text(0.05, 0.92, f"t = {t}", transform=ax.transAxes, fontsize=11,
+                color="white", fontweight="bold",
+                bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
         ax.grid(False)
         if c > 0:
             ax.set_yticklabels([])

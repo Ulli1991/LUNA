@@ -61,7 +61,7 @@ def _vphi_analytic(r):
 def _plot_panel(ax, snap_idx, title):
     cmap = plt.cm.viridis(np.linspace(0.15, 0.85, len(RESOLUTIONS)))
     r_fine = np.linspace(0, 0.5, 200)
-    ax.plot(r_fine, _vphi_analytic(r_fine), color="black", ls="--", lw=1.5,
+    ax.plot(r_fine, _vphi_analytic(r_fine), color="0.5", ls="-", lw=1.0,
             label="analytic")
     for i, Nx in enumerate(RESOLUTIONS):
         d = _load_vphi(Nx, snap_idx)
@@ -74,7 +74,6 @@ def _plot_panel(ax, snap_idx, title):
     ax.set_xlim(0, 0.5)
     ax.set_xlabel("r")
     ax.set_ylabel(r"$v_\phi$")
-    ax.set_title(title, fontsize=12)
     ax.legend(loc="best")
     decorate(ax)
 
@@ -87,8 +86,6 @@ def main(outpath_stem="figures/gresho_vphi_vs_radius"):
     t_late  = f"{d_late['t']:.2f}"  if d_late  else "?"
     _plot_panel(axes[0], SNAP_EARLY, f"t = {t_early} (early)")
     _plot_panel(axes[1], SNAP_LATE,  f"t = {t_late} (late)")
-    fig.suptitle(r"Gresho vortex: $v_\phi(r)$ — HLLC dissipation of the analytic peak",
-                 fontsize=13)
 
     for ext in ("pdf", "png"):
         path = f"{outpath_stem}.{ext}"

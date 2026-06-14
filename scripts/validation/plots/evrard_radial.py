@@ -126,8 +126,8 @@ def main():
     r_grid = np.linspace(0.01, 2.0, 200)
     rho_ff = (1.0 / (2.0 * np.pi * R_CLOUD * R_CLOUD)) / r_grid   # IC profile (pre-collapse)
     v_ff = -np.sqrt(2.0 * 1.0 * 1.0 / r_grid)                    # free-fall
-    axes[0, 0].plot(r_grid, rho_ff, "k--", lw=1, label="IC ρ ∝ 1/r")
-    axes[0, 1].plot(r_grid, v_ff, "k--", lw=1, label="v_r = -√(2GM/r)")
+    axes[0, 0].plot(r_grid, rho_ff, "-", color="0.5", lw=1.0, label="IC ρ ∝ 1/r")
+    axes[0, 1].plot(r_grid, v_ff, "-", color="0.5", lw=1.0, label="v_r = -√(2GM/r)")
 
     for ax in axes.flat:
         ax.set_xscale("log")

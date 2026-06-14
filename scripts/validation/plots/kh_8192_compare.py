@@ -62,7 +62,9 @@ def main():
                   interpolation="nearest", aspect="equal")
         ax.grid(False)
         ax.set_xticks([]); ax.set_yticks([])
-        axes[0, c].set_title(f"t = {t}", fontsize=11)
+        axes[0, c].text(0.05, 0.92, f"t = {t}", transform=axes[0, c].transAxes,
+                        fontsize=11, color="white", fontweight="bold",
+                        bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
 
     # AthenaK bottom row
     for c, t in enumerate(SNAPSHOT_TIMES):

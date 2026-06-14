@@ -192,6 +192,8 @@ def run_simulation_autodiff(U0, cfg, grid, step_fn, compute_dt_fn, sharding,
 
     if task == "ic_inversion":
         return _ic_inversion(simulate, U0, eta_true, cfg, is_main_process)
+    if task == "eta_recovery":
+        return _eta_recovery(simulate, U0, eta_true, cfg, is_main_process)
     return _xray_sensitivity(simulate, U0, eta_true, cfg, is_main_process)
 
 
@@ -237,6 +239,119 @@ def _xray_sensitivity(simulate, U0, eta_true, cfg, is_main):
     return {"L_X": LX0, "dlnLX_dlneta": (eM, eE),
             "fd": (float(fdM), float(fdE)), "fd_rel": (relM, relE),
             "U_final": U_final}
+
+
+def _eta_recovery(simulate, U0, eta_true, cfg, is_main):
+    """Closed-loop recovery of the CC85 loadings (η_M, η_E) by reverse-mode AD
+    through the FULL coupled forward model — cc85 wind + radiative cooling +
+    self-gravity + external potential, all active in apply_sources.
+
+    This is a CIRCULAR / self-consistency validation: we inject a KNOWN η,
+    evolve, and recover it. It certifies that the gradients are correct through
+    the entire physics stack simultaneously — it is NOT a measurement of the real
+    M82. "We measure what we put in." (The non-circular feedback-history
+    inference is the follow-up, not this code paper.)
+    """
+    t0 = time.time()
+    U_obs = simulate(eta_true, U0)               # the "observed" evolved state
+    log_true = jnp.log(eta_true)
+
+    # Match the full evolved state; recover in log-η (positivity by construction).
+    def loss(log_eta):
+        return jnp.mean((simulate(jnp.exp(log_eta), U0) - U_obs) ** 2)
+
+    # Start from a deliberately wrong guess (η_M too high, η_E too low).
+    log0 = log_true + jnp.log(jnp.array([1.6, 0.6], eta_true.dtype))
+
+    # FD-validate the reverse-mode gradient at the start point.
+    g0 = jax.grad(loss)(log0)
+    h = 1.0e-4
+    fd0 = jnp.array([(loss(log0.at[i].add(h)) - loss(log0.at[i].add(-h)))
+                     / (2.0 * h) for i in range(2)])
+    rel = [abs(float(g0[i]) - float(fd0[i])) / (abs(float(fd0[i])) + 1e-30)
+           for i in range(2)]
+    if is_main:
+        print(f"  eta_recovery: forward+FD ({time.time()-t0:.0f}s); "
+              f"∂loss/∂lnη AD={np.asarray(g0)}  FD={np.asarray(fd0)}  "
+              f"rel={rel}", flush=True)
+
+    # Adam on log-η.
+    log_eta = log0
+    m = jnp.zeros_like(log_eta); v = jnp.zeros_like(log_eta)
+    n_iter = int(getattr(cfg, "autodiff_n_iter", 60))
+    hist_it, hist_L, hist_etaM, hist_etaE = [], [], [], []
+    for it in range(n_iter):
+        L, gg = jax.value_and_grad(loss)(log_eta)
+        m = 0.9 * m + 0.1 * gg
+        v = 0.999 * v + 0.001 * gg * gg
+        log_eta = log_eta - 3.0e-2 * m / (1 - 0.9 ** (it + 1)) / (
+            jnp.sqrt(v / (1 - 0.999 ** (it + 1))) + 1e-8)
+        eta_now = np.asarray(jnp.exp(log_eta))
+        hist_it.append(it); hist_L.append(float(L))
+        hist_etaM.append(float(eta_now[0])); hist_etaE.append(float(eta_now[1]))
+        if is_main and (it % max(1, n_iter // 10) == 0 or it == n_iter - 1):
+            print(f"    it {it:4d}  L={float(L):.3e}  "
+                  f"η_M={eta_now[0]:.4f} (true {float(eta_true[0]):.4f})  "
+                  f"η_E={eta_now[1]:.4f} (true {float(eta_true[1]):.4f})",
+                  flush=True)
+    eta_rec = np.asarray(jnp.exp(log_eta))
+    eta_t = np.asarray(eta_true)
+    res = float(np.max(np.abs(eta_rec - eta_t) / eta_t))
+    if is_main:
+        print(f"  recovered η=({eta_rec[0]:.4f}, {eta_rec[1]:.4f})  "
+              f"true=({eta_t[0]:.4f}, {eta_t[1]:.4f})  "
+              f"max rel err={res:.3e}", flush=True)
+        _save_eta_recovery_figure(hist_it, hist_L, hist_etaM, hist_etaE,
+                                  eta_t, rel, res, cfg)
+    return {"eta_recovered": eta_rec.tolist(), "eta_true": eta_t.tolist(),
+            "eta_rel_err": res, "grad_fd_rel": rel}
+
+
+def _save_eta_recovery_figure(its, Ls, etaM, etaE, eta_true, fd_rel, res, cfg):
+    """Closed-loop CC85 loading recovery through the full coupled physics. Two
+    panels: (a) the η_M, η_E trajectories converging onto the injected truths;
+    (b) the matching-loss curve. Caption (README) states this is a circular
+    validation of gradient correctness through cooling + self-gravity + external
+    potential — we recover what we inject."""
+    import os
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from utils.figstyle import apply_style, decorate, FIGSIZE
+    apply_style()
+
+    its = np.asarray(its)
+    fig, ax = plt.subplots(1, 2, figsize=(FIGSIZE[0] * 2, FIGSIZE[1]))
+
+    # (a) loading trajectories vs the injected truths.
+    ax[0].axhline(eta_true[0], color="C0", ls="--", lw=1.2,
+                  label=fr"$\eta_M$ injected = {eta_true[0]:.2f}")
+    ax[0].axhline(eta_true[1], color="C1", ls="--", lw=1.2,
+                  label=fr"$\eta_E$ injected = {eta_true[1]:.2f}")
+    ax[0].plot(its, etaM, "-", color="C0", lw=2.0, label=r"$\eta_M$ recovered")
+    ax[0].plot(its, etaE, "-", color="C1", lw=2.0, label=r"$\eta_E$ recovered")
+    ax[0].set_xlabel("iteration")
+    ax[0].set_ylabel(r"loading factor $\eta$")
+    ax[0].legend(loc="best")
+    ax[0].annotate(fr"max rel. err = {res:.1e}" + "\n"
+                   fr"AD vs FD: {max(fd_rel):.0e}",
+                   xy=(0.97, 0.5), xycoords="axes fraction", ha="right",
+                   va="center", fontsize=10)
+    decorate(ax[0])
+
+    # (b) matching-loss convergence.
+    ax[1].semilogy(its, np.asarray(Ls), "-", color="C3", lw=2.0,
+                   label=r"$\|U(\eta)-U_{\rm obs}\|^2$")
+    ax[1].set_xlabel("iteration")
+    ax[1].set_ylabel("state-matching loss")
+    ax[1].legend(loc="best")
+    decorate(ax[1])
+
+    fig.tight_layout()
+    os.makedirs("figures", exist_ok=True)
+    out = f"figures/autodiff_eta_recovery_Nx{cfg.Nx}.png"
+    fig.savefig(out); plt.close(fig)
+    print(f"  wrote {out}", flush=True)
 
 
 def _recovery_rk(delta_est, delta_true):

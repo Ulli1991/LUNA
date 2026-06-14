@@ -29,17 +29,20 @@ from utils.memory_utils import get_memory_usage
 
 @jax.jit
 def _isothermal_project_jit(U, cs2_iso, gm1):
-    """Reset total energy so p = cs2_iso * rho exactly.
+    """Reset total energy so p = cs2_iso * rho exactly (any dimensionality).
 
     E_new = p / (gamma - 1) + 0.5 |mom|^2 / rho with p = cs2_iso * rho.
-    Leaves rho and momentum components untouched.
+    Momentum is U[1:-1], energy is U[-1] — so this is correct in 1D/2D/3D
+    (the previous hard-coded U[1],U[2],U[3]/U[4] was a silent no-op in 2D, where
+    U[3] is energy and .at[4] is an out-of-bounds update JAX drops). rho and
+    momentum are left untouched.
     """
     rho = U[0]
-    mx, my, mz = U[1], U[2], U[3]
+    mom = U[1:-1]
     p_iso = cs2_iso * rho
-    KE = 0.5 * (mx * mx + my * my + mz * mz) / rho
+    KE = 0.5 * jnp.sum(mom * mom, axis=0) / rho
     E_new = p_iso / gm1 + KE
-    return U.at[4].set(E_new)
+    return U.at[-1].set(E_new)
 
 
 def _isothermal_project(U, cs2_iso, gamma):
@@ -135,6 +138,8 @@ def run_simulation_distributed(
     cc85_state = setup_cc85_source(cfg, sharding, is_main_process)
     ext_grav_state = setup_external_gravity(cfg, sharding, is_main_process)
     self_grav_state = setup_self_gravity(cfg, sharding, is_main_process)
+    from sources.particles import setup_particles
+    particle_state = setup_particles(cfg, sharding, is_main_process)
     cooling_solver = setup_cooling(cfg, is_main_process)
 
     # === WARMUP COMPILATION ===
@@ -252,7 +257,7 @@ def run_simulation_distributed(
     # Returns the new U and the new forcing OU state (a, key). Pure — takes
     # the previous-iteration forcing state, returns the new one. Used in
     # the retry-on-NaN loop below.
-    def _attempt_step(U_in, dt, forcing_a, forcing_key):
+    def _attempt_step(U_in, dt, forcing_a, forcing_key, particle_pos):
         U_new = step_fn(U_in, dt)
         new_a, new_key = forcing_a, forcing_key
         if forcing_state is not None:
@@ -265,13 +270,16 @@ def run_simulation_distributed(
             U_new = ext_grav_state["apply"](U_new, dt)
         if self_grav_state is not None:
             U_new = self_grav_state["apply"](U_new, dt)
+        new_pos = particle_pos
+        if particle_state is not None:
+            U_new, new_pos = particle_state["apply"](U_new, particle_pos, dt)
         if cc85_state is not None:
             U_new = cc85_state["apply"](U_new, dt)
         if cooling_solver is not None:
             from hydro.cooling import apply_cooling
 
             U_new = apply_cooling(U_new, dt, cfg, cooling_solver)
-        return U_new, new_a, new_key
+        return U_new, new_a, new_key, new_pos
 
     while t < cfg.t_end:
         t_snapshot_local = (
@@ -297,12 +305,15 @@ def run_simulation_distributed(
         # NaNs at the diag_interval cadence with negligible cost.
         forcing_a_pre = forcing_state["a"] if forcing_state is not None else None
         forcing_key_pre = forcing_state["key"] if forcing_state is not None else None
-        U_sharded, fa_new, fk_new = _attempt_step(
-            U_sharded, dt, forcing_a_pre, forcing_key_pre
+        particle_pos_pre = particle_state["pos"] if particle_state is not None else None
+        U_sharded, fa_new, fk_new, ppos_new = _attempt_step(
+            U_sharded, dt, forcing_a_pre, forcing_key_pre, particle_pos_pre
         )
         if forcing_state is not None:
             forcing_state["a"] = fa_new
             forcing_state["key"] = fk_new
+        if particle_state is not None:
+            particle_state["pos"] = ppos_new
 
         t = new_t
         step += 1

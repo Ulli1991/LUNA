@@ -128,13 +128,13 @@ def main():
     }
     for scheme, (nx, ak_l1) in ak_results.items():
         s = scheme_styles[scheme]
-        ax.loglog(nx, ak_l1, "s--", color=s["color"], lw=1.5, ms=6,
+        ax.loglog(nx, ak_l1, "s-", color=s["color"], lw=1.5, ms=6,
                   label=s["label"])
 
     # 2nd-order reference, anchored to LUNA's first data point.
     nx_ref = np.array([NX_SCAN[0], 512], dtype=float)
     ax.loglog(nx_ref, l1s[0] * (nx_ref / nx_ref[0]) ** -2,
-              color="0.4", linestyle=":", lw=1.5, label=r"slope $-2$ (2nd order)")
+              color="0.5", linestyle="-", lw=1.0, label=r"slope $-2$ (2nd order)")
 
     # Annotate the nonlinear-physics plateau (no slope label, just a horizontal line)
     plateau = float(min(l1s))

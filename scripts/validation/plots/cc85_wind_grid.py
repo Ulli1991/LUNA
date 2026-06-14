@@ -114,7 +114,9 @@ def _plot_grid(field_key, cmap_name, vmin, vmax, label, outpath_stem, runs,
                        vmin=vmin, vmax=vmax, aspect="equal",
                        interpolation="nearest")
         t_Myr = run["t"] * UnitTime_s / MYR
-        ax.set_title(f"Nx={Nx}    t={t_Myr:.1f} Myr", fontsize=11)
+        ax.text(0.05, 0.92, f"Nx={Nx}    t={t_Myr:.1f} Myr",
+                transform=ax.transAxes, fontsize=11, color="white", fontweight="bold",
+                bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
         ax.set_xlabel("x (kpc)")
         if j == 0:
             ax.set_ylabel("z (kpc)")

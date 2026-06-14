@@ -167,7 +167,7 @@ def _save_figure(obs_keys, J_ad, J_fd, v0, cfg, t_end):
     # (a) AD vs analytic — points on y=x validate the gradient against theory.
     lo = min(an.min(), ad.min()) - 0.15
     hi = max(an.max(), ad.max()) + 0.15
-    ax[0].plot([lo, hi], [lo, hi], "-", color="0.5", lw=1.2, zorder=1,
+    ax[0].plot([lo, hi], [lo, hi], "-", color="0.5", lw=1.0, zorder=1,
                label=r"$y=x$")
     ax[0].scatter(an, ad, s=55, color="C0", zorder=3, label="forward-mode AD")
     ax[0].set_xlim(lo, hi); ax[0].set_ylim(lo, hi)
@@ -183,7 +183,7 @@ def _save_figure(obs_keys, J_ad, J_fd, v0, cfg, t_end):
     abserr = np.abs(ad - fd)
     yy = np.arange(len(labels))
     ax[1].barh(yy, abserr, color="C1", zorder=3)
-    ax[1].axvline(0.01, color="k", ls="--", lw=1.2, label=r"$10^{-2}$")
+    ax[1].axvline(0.01, color="0.5", ls="-", lw=1.0, label=r"$10^{-2}$")
     ax[1].set_yticks(yy); ax[1].set_yticklabels(labels, fontsize=9)
     ax[1].set_xscale("log")
     ax[1].set_xlabel(r"$|{\rm AD}-{\rm FD}|$")

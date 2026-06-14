@@ -369,6 +369,44 @@ class Config:
     barotropic_rho_AD_cgs: float = 1.0e-14
     barotropic_mu: float = 2.35
 
+    # ---------------- Particle (point-mass) module ----------------
+    # A small set of point masses (central star + planet; later sinks) that
+    # exert Plummer-softened gravity on the gas each step (sources/particles.py).
+    # Used for the disc-planet interaction test (de Val-Borro 2006 / GANDALF
+    # §6.11). 2D. The planet is held on a prescribed circular Keplerian orbit.
+    particles_enabled: bool = False
+    particle_softening: float = 0.0       # Plummer ε (code length); ~ a few dx
+    particle_star_mass: float = 1.0       # central star mass (code units)
+    particle_planet_q: float = 1.0e-3     # planet/star mass ratio (Jupiter/Sun)
+    particle_planet_a: float = 1.0        # planet orbital radius (code units)
+    # Sink (accretion): drain gas within particle_sink_radius of a sink particle
+    # each step (fraction removed = particle_sink_rate * dt). The planet is a
+    # sink when enabled; the central star too if particle_sink_on_star.
+    particle_sink_enabled: bool = False
+    particle_sink_radius: float = 0.0     # planet accretion radius (code length); ~0.5 R_Hill
+    particle_sink_rate: float = 0.0       # accretion efficiency (1/code time)
+    particle_sink_on_star: bool = False   # also drain gas at the central star (inner cavity)
+    particle_star_sink_radius: float = 0.0  # star cavity radius; defaults to particle_sink_radius
+    particle_sink_vdamp: float = 0.0      # velocity damping rate in sink regions (de Val-Borro zones)
+
+    # ---------------- Disc-planet gas disc (Disc-Planet-2D IC) ----------------
+    # 2D globally-isothermal gas disc in rotational balance with the softened
+    # central-star potential (de Val-Borro 2006 / GANDALF §6.11). Requires
+    # isothermal_cs2 > 0. Σ ∝ R^-disc_sigma_index, tapered between R_in and R_out.
+    disc_sigma0: float = 1.0              # surface-density normalization at R=1
+    disc_sigma_index: float = 0.5         # Σ ∝ R^-index
+    disc_R_in: float = 0.4                # inner taper radius (code length)
+    disc_R_out: float = 2.5               # outer taper radius (code length)
+    disc_floor: float = 1.0e-4            # ambient surface-density floor
+    # de Val-Borro (2006) boundary damping zones: near the inner/outer radial
+    # boundaries relax the state toward the INITIAL axisymmetric disc (the IC,
+    # planet-free) with a rate ramping smoothly to the edge. This is what keeps
+    # the cold disc stable — a vacuum cavity drain does not.
+    disc_damping_enabled: bool = False
+    disc_damp_R_in: float = 0.5           # inner zone: damp where R < this
+    disc_damp_R_out: float = 2.2          # outer zone: damp where R > this
+    disc_damp_rate: float = 5.0           # peak relaxation rate (1/code time)
+
     # -------------------------------------------------------------------------
     # Computed properties (lightweight, timing-related)
     # -------------------------------------------------------------------------

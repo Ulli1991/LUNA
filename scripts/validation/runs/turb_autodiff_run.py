@@ -40,6 +40,9 @@ def main():
     Nx = int(os.environ.get("LUNA_TURB_NX", "32"))
     n_steps = int(os.environ.get("LUNA_TURB_NSTEPS", "200"))
     n_iter = int(os.environ.get("LUNA_TURB_NITER", "80"))
+    use_shardmap = os.environ.get("LUNA_TURB_SHARDMAP", "0") == "1"
+    mesh_env = os.environ.get("LUNA_TURB_MESH", "")          # e.g. "2x2x1"
+    mesh_shape = tuple(int(v) for v in mesh_env.split("x")) if mesh_env else None
 
     ou_cfg = OUDriverConfig(
         k_min=K_MIN, k_max=K_MAX, solenoidal_weight=1.0,
@@ -57,6 +60,7 @@ def main():
         autodiff_n_steps=n_steps,
         autodiff_fixed_dt=0.3 * (LX / Nx) / 2.0,   # fixed dt (cs+v ~ <2): clean grads
         autodiff_n_iter=n_iter,
+        USE_SHARDMAP=use_shardmap, MESH_SHAPE=mesh_shape,
         PLOT_AFTER_SIM=False, production_mode=False,
         output_dir=f"snapshots/turb_autodiff_Nx{Nx}",
     )

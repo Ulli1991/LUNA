@@ -1,0 +1,72 @@
+"""Boss-Bodenheimer time-evolution montage — the GANDALF Figure 21 analog.
+
+A 2×3 grid of column-density (log₁₀ Σ along the rotation axis) panels at the
+six GANDALF Fig 21 times. NB: the panel labels in Hubber+ 2018 Fig 21 read
+"0.16…0.36 Myr", but the §6.12 text states t_end = 0.04 Myr — the figure labels
+are a factor-of-10 typo; the real times are 0.016–0.036 Myr (≈ 0.9–2.1 t_ff),
+the collapse→fragmentation sequence. Those are all within our t_end = 0.04 Myr
+run, so no sink particles are needed for this montage.
+
+Reads snapshots/bb79_baro_Nx256 (override with LUNA_BB_SNAP).
+"""
+import os
+import glob
+
+import numpy as np
+import h5py
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from utils.figstyle import apply_style, FIGSIZE
+from scripts.validation.plots.bb79_iso_luna import luna_column_density
+
+apply_style()
+
+SNAP = os.environ.get("LUNA_BB_SNAP", "snapshots/bb79_baro_Nx256")
+TIMES_MYR = [0.016, 0.020, 0.024, 0.028, 0.032, 0.036]
+PC = 3.0856775814913673e18
+MYR = 1.0e6 * 3.15576e7
+UNIT_TIME_S = PC / 1.0e5                 # pc / (km/s)
+TIMES_CODE = [t * MYR / UNIT_TIME_S for t in TIMES_MYR]
+
+
+def main():
+    dirs = sorted(glob.glob(os.path.join(SNAP, "snapdir_*")))
+    if not dirs:
+        raise SystemExit(f"no snapshots under {SNAP}")
+    times = []
+    for d in dirs:
+        f = sorted(glob.glob(os.path.join(d, "*.hdf5")))[0]
+        with h5py.File(f, "r") as h:
+            times.append(float(h["cells"].attrs["time"]))
+    times = np.array(times)
+
+    Ss, ts, Ls = [], [], []
+    for tc in TIMES_CODE:
+        k = int(np.argmin(np.abs(times - tc)))
+        S, L, t = luna_column_density(dirs[k])
+        Ss.append(np.maximum(S, 1e-30)); ts.append(t); Ls.append(L)
+    vmin = np.log10(min(s.min() for s in Ss))
+    vmax = np.log10(max(s.max() for s in Ss))
+
+    fig, axes = plt.subplots(2, 3, figsize=(FIGSIZE[0] * 1.8, FIGSIZE[1] * 1.25))
+    im = None
+    for ax, S, L, tmyr in zip(axes.ravel(), Ss, Ls, TIMES_MYR):
+        im = ax.imshow(np.log10(S).T, origin="lower", extent=(0, L, 0, L),
+                       vmin=vmin, vmax=vmax, cmap="magma")
+        ax.grid(False); ax.set_xticks([]); ax.set_yticks([])
+        ax.text(0.05, 0.90, f"{tmyr * 1e3:.0f} kyr", transform=ax.transAxes,
+                color="w", fontsize=12, fontweight="bold")
+    fig.tight_layout()
+    fig.subplots_adjust(right=0.90)
+    cax = fig.add_axes([0.92, 0.12, 0.018, 0.76])
+    fig.colorbar(im, cax=cax, label=r"$\log_{10}\,\Sigma$")
+    os.makedirs("figures", exist_ok=True)
+    out = f"figures/bb79_montage_Nx{Ss[0].shape[0]}.png"
+    fig.savefig(out)
+    print(f"  wrote {out}  (times kyr: {[round(t*1e3) for t in TIMES_MYR]})")
+
+
+if __name__ == "__main__":
+    main()

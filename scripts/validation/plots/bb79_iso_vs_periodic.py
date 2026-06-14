@@ -69,7 +69,9 @@ def main():
                           extent=(0, L_iso, 0, L_iso),
                           vmin=vmin, vmax=vmax, cmap="magma")
     axes[0].grid(False)
-    axes[0].set_title(f"isolated BC (outflow + multipole-Dirichlet) — t={t_iso:.2f}")
+    axes[0].text(0.05, 0.92, f"isolated BC (outflow + multipole-Dirichlet) — t={t_iso:.2f}",
+                 transform=axes[0].transAxes, fontsize=11, color="white", fontweight="bold",
+                 bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
     axes[0].set_xlabel("x"); axes[0].set_ylabel("y")
     plt.colorbar(im0, ax=axes[0], shrink=0.85, label=r"$\log_{10}\Sigma$")
 
@@ -77,12 +79,12 @@ def main():
                           extent=(0, L_per, 0, L_per),
                           vmin=vmin, vmax=vmax, cmap="magma")
     axes[1].grid(False)
-    axes[1].set_title(f"periodic BC (Jeans swindle) — t={t_per:.2f}")
+    axes[1].text(0.05, 0.92, f"periodic BC (Jeans swindle) — t={t_per:.2f}",
+                 transform=axes[1].transAxes, fontsize=11, color="white", fontweight="bold",
+                 bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
     axes[1].set_xlabel("x"); axes[1].set_ylabel("y")
     plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10}\Sigma$")
 
-    fig.suptitle("BB79 256³ MinMod — BC diagnostic: isolated vs periodic\n"
-                 "Same hydro / limiter; cardinal-axis lines test")
     fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
     Nx_luna = S_iso.shape[0]   # column density is (Nx, Ny)

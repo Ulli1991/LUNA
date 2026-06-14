@@ -205,15 +205,13 @@ def main():
         (axes[1, 1], "T [K]", "log"),
     ]
     for ax, ylabel, yscale in panel_meta:
-        ax.axvline(R_s_analytic_pc, color="k", linestyle="--", lw=1.2,
+        ax.axvline(R_s_analytic_pc, color="0.5", linestyle="-", lw=1.0,
                    label=fr"$R_s$ analytic = {R_s_analytic_pc:.1f} pc")
         ax.set_xlabel("r [pc]"); ax.set_ylabel(ylabel)
         ax.set_xlim(0, R_xlim)
         ax.set_yscale(yscale)
         ax.legend()
         decorate(ax)
-    figR.suptitle(f"Sedov 3D radial-profile resolution study at t = {t_final_yr:.0f} yr",
-                  fontsize=11)
     figR.tight_layout()
     Path("figures").mkdir(exist_ok=True)
     figR.savefig("figures/sedov3d_radial.pdf")
@@ -224,7 +222,7 @@ def main():
     t_dense = np.linspace(max(t_yrs[0], 1.0), t_yrs[-1], 200)
     R_th = np.array([analytic_R_s(t) for t in t_dense])
     axR.loglog(t_yrs[1:], R_sim[1:], "o-", color="C0", label="LUNA peak-ρ location")
-    axR.loglog(t_dense, R_th, "k--", label=r"$R_s(t) = \xi (E t^2/\rho_0)^{1/5}$, $\xi$=1.15")
+    axR.loglog(t_dense, R_th, "-", color="0.5", lw=1.0, label=r"$R_s(t) = \xi (E t^2/\rho_0)^{1/5}$, $\xi$=1.15")
     axR.set_xlabel("t [yr]"); axR.set_ylabel(r"$R_{shock}$ [pc]")
     axR.legend()
     decorate(axR)

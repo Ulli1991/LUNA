@@ -181,11 +181,11 @@ def compare_test(name, arepo_subdir, luna_subdir, target_t, out_path):
         cL, mL = radial_bins(LU["r"], LU[k], n_bins=40, r_max=r_max, log=True)
         if k == "v_r":
             ax.plot(cA, mA, "-", lw=2.0, color="C0", label="AREPO")
-            ax.plot(cL, mL, "--", lw=2.0, color="C1", label="LUNA")
+            ax.plot(cL, mL, "-", lw=2.0, color="C1", label="LUNA")
             ax.set_xscale("log")
         else:
             ax.loglog(cA, np.abs(mA), "-", lw=2.0, color="C0", label="AREPO")
-            ax.loglog(cL, np.abs(mL), "--", lw=2.0, color="C1", label="LUNA")
+            ax.loglog(cL, np.abs(mL), "-", lw=2.0, color="C1", label="LUNA")
         ax.set_xlabel(r"$r$"); ax.set_ylabel(ylab)
         ax.legend()
         decorate(ax)

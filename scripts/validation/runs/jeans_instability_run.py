@@ -146,7 +146,7 @@ def main():
     ax.semilogy(tt, A0 * np.exp(growth_rate * tt), "-", color="k",
                 label=fr"analytic  $A_0 e^{{\sigma t}}$, $\sigma$={growth_rate:.3f}")
     if np.isfinite(sigma_meas):
-        ax.semilogy(ts[mask], np.exp(intercept + slope * ts[mask]), "--",
+        ax.semilogy(ts[mask], np.exp(intercept + slope * ts[mask]), "-",
                     color="C3", label=fr"fit  $\sigma$={sigma_meas:.3f} (rel {rel:.1%})")
     ax.semilogy(ts, amps, "o", ms=6, color="C0", zorder=5,
                 label=r"LUNA  $|\delta\rho_k|/\rho_0$")

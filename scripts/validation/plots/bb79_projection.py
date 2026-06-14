@@ -116,16 +116,19 @@ def main():
     im0 = axes[0].imshow(np.log10(Sigma_A_pos).T, origin="lower",
                           extent=extent_A, vmin=vmin, vmax=vmax, cmap="magma")
     axes[0].grid(False)
-    axes[0].set_title(f"AREPO  (t={t_A:.2f})")
+    axes[0].text(0.05, 0.92, f"AREPO  (t={t_A:.2f})", transform=axes[0].transAxes,
+                 fontsize=11, color="white", fontweight="bold",
+                 bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
     axes[0].set_xlabel("x"); axes[0].set_ylabel("y")
     plt.colorbar(im0, ax=axes[0], shrink=0.85, label=r"$\log_{10} \Sigma$")
     im1 = axes[1].imshow(np.log10(Sigma_L_pos).T, origin="lower",
                           extent=extent_L, vmin=vmin, vmax=vmax, cmap="magma")
     axes[1].grid(False)
-    axes[1].set_title(f"LUNA   (t={t_L:.2f})")
+    axes[1].text(0.05, 0.92, f"LUNA   (t={t_L:.2f})", transform=axes[1].transAxes,
+                 fontsize=11, color="white", fontweight="bold",
+                 bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
     axes[1].set_xlabel("x"); axes[1].set_ylabel("y")
     plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10} \Sigma$")
-    fig.suptitle("Boss-Bodenheimer 1979: column density along z (rotation axis)")
     fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
     Nx_luna = Sigma_L.shape[0]   # LUNA column density is (Nx, Ny)

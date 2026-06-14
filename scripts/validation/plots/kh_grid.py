@@ -72,7 +72,9 @@ def main():
     for r, Nx in enumerate(NX_SCAN):
         axes[r, 0].set_ylabel(f"{Nx}²")
     for c, t in enumerate(SNAPSHOT_TIMES):
-        axes[0, c].set_title(f"t = {t}")
+        axes[0, c].text(0.05, 0.92, f"t = {t}", transform=axes[0, c].transAxes,
+                        fontsize=11, color="white", fontweight="bold",
+                        bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
 
     fig.tight_layout()
     Path("figures").mkdir(exist_ok=True)

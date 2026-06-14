@@ -85,9 +85,8 @@ def main():
     sweep_arr = np.array(sweep)
     ax[0].semilogy(sweep_arr, np.abs(1.0 - np.array(ratios)), "o-",
                    label=r"$|1-\phi_{\rm meas}/\phi_{\rm exact}|$")
-    ax[0].semilogy(sweep_arr, np.array(l2s), "s--", label=r"$L_2$ rel. error")
+    ax[0].semilogy(sweep_arr, np.array(l2s), "s-", label=r"$L_2$ rel. error")
     ax[0].set_xlabel("extra V-cycles"); ax[0].set_ylabel("error")
-    ax[0].set_title(f"FMG Poisson convergence, $N$={N}, $k=2\\pi/L$")
     ax[0].legend(loc="best")
     decorate(ax[0])
     # (b) recovered vs analytic potential profile
@@ -95,7 +94,6 @@ def main():
     ax[1].plot(x, phi_best, "o", ms=4, color="C0",
                label=f"FMG (ratio {ratios[-1]:.3f})")
     ax[1].set_xlabel("x"); ax[1].set_ylabel(r"$\phi$")
-    ax[1].set_title("potential profile")
     ax[1].legend(loc="best")
     decorate(ax[1])
     fig.tight_layout()
