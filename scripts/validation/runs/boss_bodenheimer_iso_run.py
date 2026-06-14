@@ -33,6 +33,8 @@ def main():
     t_Myr = float(os.environ.get("LUNA_BB_TEND_MYR", "0.04"))
     hydro_bc = int(os.environ.get("LUNA_BB_HYDRO_BC", "4"))   # 4 = diode (outflow-only)
     riemann = os.environ.get("LUNA_BB_RIEMANN", "hllc")
+    sinks = os.environ.get("LUNA_BB_SINKS", "0") == "1"       # on-the-fly sink particles
+    sink_fac = float(os.environ.get("LUNA_BB_SINK_FAC", "1.0"))  # ρ_create = fac·ρ_AD
 
     # star-formation units: pc, M_sun, km/s
     units = UnitSystem(UnitLength_in_cm=PC, UnitMass_in_g=MSUN,
@@ -69,6 +71,20 @@ def main():
         clear_output_dir=True,
         enable_x64=True, enable_checkpointing=False,
     )
+    if sinks:
+        # spawn sinks once a core crosses ρ_create = sink_fac · ρ_AD (the density
+        # where the barotropic EOS stiffens — the first hydrostatic core). Hybrid
+        # gravity: mesh Poisson for gas + gas→sink, direct N-body for sink↔sink.
+        rho_create_code = sink_fac * 1.0e-14 / units.UnitDensity_in_cgs
+        overrides.update(
+            sinks_enabled=True, sink_max_count=4,
+            sink_creation_density=rho_create_code,
+            sink_accretion_radius=0.0, sink_softening=0.0,
+            sink_creation_separation=0.0,
+            output_dir=f"snapshots/bb79_baro_Nx{Nx}{suffix}_sinks",
+        )
+        print(f"  SINKS on: ρ_create={rho_create_code:.3e} code "
+              f"({sink_fac}·ρ_AD), N_max=4")
     print(f"BB79 (physical/barotropic): Nx={Nx}, R={R_pc} pc, rho0=1.44e-17, A=0.5, "
           f"beta=0.16, T0=10K, rho_AD=1e-14, BC={hydro_bc}, riemann={riemann}, "
           f"t_end={t_Myr} Myr ({t_end:.4f} code), G_code={units.GravityConstant:.4e}")

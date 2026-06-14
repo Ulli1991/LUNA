@@ -16,6 +16,8 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 
 apply_style()
 
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
 ISO_DIR  = "/raven/u/uli/jax-hydro/snapshots/bb_iso_minmod_Nx256"
 PER_DIR  = "/raven/u/uli/jax-hydro/snapshots/bb_periodic_minmod_Nx256"
 
@@ -70,7 +72,7 @@ def main():
                           vmin=vmin, vmax=vmax, cmap="magma")
     axes[0].grid(False)
     axes[0].text(0.05, 0.92, f"isolated BC (outflow + multipole-Dirichlet) — t={t_iso:.2f}",
-                 transform=axes[0].transAxes, fontsize=11, color="white", fontweight="bold",
+                 transform=axes[0].transAxes, fontsize=LABEL_FS, color="white", fontweight="bold",
                  bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
     axes[0].set_xlabel("x"); axes[0].set_ylabel("y")
     plt.colorbar(im0, ax=axes[0], shrink=0.85, label=r"$\log_{10}\Sigma$")
@@ -80,7 +82,7 @@ def main():
                           vmin=vmin, vmax=vmax, cmap="magma")
     axes[1].grid(False)
     axes[1].text(0.05, 0.92, f"periodic BC (Jeans swindle) — t={t_per:.2f}",
-                 transform=axes[1].transAxes, fontsize=11, color="white", fontweight="bold",
+                 transform=axes[1].transAxes, fontsize=LABEL_FS, color="white", fontweight="bold",
                  bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
     axes[1].set_xlabel("x"); axes[1].set_ylabel("y")
     plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10}\Sigma$")

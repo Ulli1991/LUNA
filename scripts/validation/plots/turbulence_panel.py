@@ -17,6 +17,8 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 apply_style()
 
 
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
 NX_LIST = [128, 256, 512, 1024]
 TARGET_T = 4.0
 
@@ -94,7 +96,7 @@ def main():
         if data[Nx] is None:
             ax.text(0.5, 0.5, f"missing\n{Nx}³",
                     ha="center", va="center", transform=ax.transAxes,
-                    fontsize=12, color="0.5")
+                    fontsize=LABEL_FS, color="0.5")
             ax.set_xticks([]); ax.set_yticks([])
             continue
         rho, t, Lx = data[Nx]
@@ -104,7 +106,7 @@ def main():
         ax.set_xticks([]); ax.set_yticks([])
         ax.text(0.03, 0.97, f"{Nx}³\nt={t:.2f}",
                 transform=ax.transAxes, ha="left", va="top",
-                color="white", fontsize=11,
+                color="white", fontsize=LABEL_FS,
                 bbox=dict(facecolor="black", alpha=0.55, edgecolor="none", pad=2))
 
     fig.tight_layout()

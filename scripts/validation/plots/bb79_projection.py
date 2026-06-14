@@ -17,6 +17,8 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 
 apply_style()
 
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
 
 AREPO_SNAP = "/raven/u/uli/arepo/run/examples/bb79_3d/output"
 LUNA_SNAP  = "/raven/u/uli/jax-hydro/snapshots/bb_Nx64"
@@ -117,7 +119,7 @@ def main():
                           extent=extent_A, vmin=vmin, vmax=vmax, cmap="magma")
     axes[0].grid(False)
     axes[0].text(0.05, 0.92, f"AREPO  (t={t_A:.2f})", transform=axes[0].transAxes,
-                 fontsize=11, color="white", fontweight="bold",
+                 fontsize=LABEL_FS, color="white", fontweight="bold",
                  bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
     axes[0].set_xlabel("x"); axes[0].set_ylabel("y")
     plt.colorbar(im0, ax=axes[0], shrink=0.85, label=r"$\log_{10} \Sigma$")
@@ -125,7 +127,7 @@ def main():
                           extent=extent_L, vmin=vmin, vmax=vmax, cmap="magma")
     axes[1].grid(False)
     axes[1].text(0.05, 0.92, f"LUNA   (t={t_L:.2f})", transform=axes[1].transAxes,
-                 fontsize=11, color="white", fontweight="bold",
+                 fontsize=LABEL_FS, color="white", fontweight="bold",
                  bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
     axes[1].set_xlabel("x"); axes[1].set_ylabel("y")
     plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10} \Sigma$")

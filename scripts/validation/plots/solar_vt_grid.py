@@ -14,6 +14,8 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 
 apply_style()
 
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
 
 # V&T (2025) 3-layer polytropic atmosphere — must match solar_convection_vt_2d.py
 _VT = dict(
@@ -122,7 +124,7 @@ def _plot_grid(field_key, label, outpath_stem, runs):
         if run is None:
             ax.text(0.5, 0.5, f"(no data yet)\nLHLLC Nx={Nx}",
                     ha="center", va="center", transform=ax.transAxes,
-                    fontsize=12, color="0.4")
+                    fontsize=LABEL_FS, color="0.4")
             ax.set_xticks([]); ax.set_yticks([])
             continue
         data = run[field_key].T
@@ -131,7 +133,7 @@ def _plot_grid(field_key, label, outpath_stem, runs):
                        cmap=cmap, vmin=vmin, vmax=vmax, aspect="equal",
                        interpolation="nearest")
         ax.text(0.05, 0.92, f"L-HLLC  Nx={Nx}  t={run['t']:.0f}",
-                transform=ax.transAxes, fontsize=11, color="white", fontweight="bold",
+                transform=ax.transAxes, fontsize=LABEL_FS, color="white", fontweight="bold",
                 bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
         ax.set_xlabel("x")
         if j_col == 0:

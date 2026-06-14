@@ -22,6 +22,8 @@ from file_io.read_snapshot import read_snapshot, find_snapshot_at_time
 from scripts.validation.athenak_io import load_2d as ak_load_2d
 
 
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
 SNAPSHOT_TIMES = [0.0, 1.0, 2.5, 4.0, 5.0]
 LX = LY = 2.0
 VMIN, VMAX = 0.9, 2.1
@@ -63,7 +65,7 @@ def main():
         ax.grid(False)
         ax.set_xticks([]); ax.set_yticks([])
         axes[0, c].text(0.05, 0.92, f"t = {t}", transform=axes[0, c].transAxes,
-                        fontsize=11, color="white", fontweight="bold",
+                        fontsize=LABEL_FS, color="white", fontweight="bold",
                         bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
 
     # AthenaK bottom row
@@ -77,8 +79,8 @@ def main():
         ax.grid(False)
         ax.set_xticks([]); ax.set_yticks([])
 
-    axes[0, 0].set_ylabel("LUNA", fontsize=11)
-    axes[1, 0].set_ylabel("AthenaK", fontsize=11)
+    axes[0, 0].set_ylabel("LUNA")
+    axes[1, 0].set_ylabel("AthenaK")
 
     fig.tight_layout()
     Path("figures").mkdir(exist_ok=True)

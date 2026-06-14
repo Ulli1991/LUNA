@@ -20,6 +20,8 @@ apply_style()
 from file_io.read_snapshot import read_snapshot, find_snapshot_at_time
 
 
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
 NX_SCAN = [1024, 2048, 4096, 8192]
 SNAPSHOT_TIMES = [0.0, 1.0, 2.5, 4.0, 5.0]
 LX = 2.0
@@ -58,16 +60,16 @@ def main():
             except FileNotFoundError as e:
                 ax.text(0.5, 0.5, f"no t≈{t_target}",
                         ha="center", va="center",
-                        transform=ax.transAxes, fontsize=8, color="0.5")
+                        transform=ax.transAxes, fontsize=LABEL_FS, color="0.5")
             ax.set_xticks([]); ax.set_yticks([])
 
     # Row labels (resolutions)
     for r, Nx in enumerate(available):
-        axes[r, 0].set_ylabel(f"{Nx}²", fontsize=11)
+        axes[r, 0].set_ylabel(f"{Nx}²")
     # Column labels (times)
     for c, t in enumerate(SNAPSHOT_TIMES):
         axes[0, c].text(0.05, 0.92, f"t = {t}", transform=axes[0, c].transAxes,
-                        fontsize=11, color="white", fontweight="bold",
+                        fontsize=LABEL_FS, color="white", fontweight="bold",
                         bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
 
     fig.tight_layout()

@@ -23,8 +23,10 @@ from scripts.validation.plots.bb79_iso_luna import luna_column_density
 
 apply_style()
 
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
 SNAP = os.environ.get("LUNA_BB_SNAP", "snapshots/bb79_baro_Nx256")
-TIMES_MYR = [0.016, 0.020, 0.024, 0.028, 0.032, 0.036]
+TIMES_MYR = [0.020, 0.025, 0.030, 0.0325, 0.035, 0.040]
 PC = 3.0856775814913673e18
 MYR = 1.0e6 * 3.15576e7
 UNIT_TIME_S = PC / 1.0e5                 # pc / (km/s)
@@ -56,14 +58,15 @@ def main():
         im = ax.imshow(np.log10(S).T, origin="lower", extent=(0, L, 0, L),
                        vmin=vmin, vmax=vmax, cmap="magma")
         ax.grid(False); ax.set_xticks([]); ax.set_yticks([])
-        ax.text(0.05, 0.90, f"{tmyr * 1e3:.0f} kyr", transform=ax.transAxes,
-                color="w", fontsize=12, fontweight="bold")
+        ax.text(0.05, 0.90, f"{tmyr * 1e3:g} kyr", transform=ax.transAxes,
+                color="w", fontsize=LABEL_FS, fontweight="bold")
     fig.tight_layout()
     fig.subplots_adjust(right=0.90)
     cax = fig.add_axes([0.92, 0.12, 0.018, 0.76])
     fig.colorbar(im, cax=cax, label=r"$\log_{10}\,\Sigma$")
     os.makedirs("figures", exist_ok=True)
-    out = f"figures/bb79_montage_Nx{Ss[0].shape[0]}.png"
+    tag = "_sinks" if "sink" in SNAP else ""
+    out = f"figures/bb79_montage_Nx{Ss[0].shape[0]}{tag}.png"
     fig.savefig(out)
     print(f"  wrote {out}  (times kyr: {[round(t*1e3) for t in TIMES_MYR]})")
 

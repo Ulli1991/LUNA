@@ -87,15 +87,6 @@ def setup_self_gravity(cfg, sharding, is_main_process: bool = True):
         gy = -(phi_pad[1:-1, 2:, 1:-1] - phi_pad[1:-1, :-2, 1:-1]) * inv_2dx
         gz = -(phi_pad[1:-1, 1:-1, 2:] - phi_pad[1:-1, 1:-1, :-2]) * inv_2dx
         new_mx = mx + dt * rho * gx
-        # Pre/post kick momentum: is new_mx growing as expected?
-        jax.debug.print(
-            "[self_grav] max|mx_pre|={pre} max|mx_post|={post} max|dmx|={dm} "
-            "corr(mx,gx)={c}",
-            pre=jnp.max(jnp.abs(mx)),
-            post=jnp.max(jnp.abs(new_mx)),
-            dm=jnp.max(jnp.abs(new_mx - mx)),
-            c=jnp.sum(mx * gx),
-        )
         new_my = my + dt * rho * gy
         new_mz = mz + dt * rho * gz
         mx_mid = 0.5 * (mx + new_mx)

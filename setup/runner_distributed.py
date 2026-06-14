@@ -140,7 +140,15 @@ def run_simulation_distributed(
     self_grav_state = setup_self_gravity(cfg, sharding, is_main_process)
     from sources.particles import setup_particles
     particle_state = setup_particles(cfg, sharding, is_main_process)
+    from sources.sinks import setup_sinks
+    sink_state = setup_sinks(cfg, sharding, is_main_process)
     cooling_solver = setup_cooling(cfg, is_main_process)
+    if sink_state is not None and self_grav_state is not None:
+        # the sink module does the gas self-gravity Poisson solve itself (so it
+        # can add the sink field to the same kick) — disable the standalone one.
+        self_grav_state = None
+    if sink_state is not None:
+        sink_state["carry"] = sink_state["state0"]   # (pos, vel, mass, active)
 
     # === WARMUP COMPILATION ===
     if is_main_process:
@@ -257,7 +265,7 @@ def run_simulation_distributed(
     # Returns the new U and the new forcing OU state (a, key). Pure — takes
     # the previous-iteration forcing state, returns the new one. Used in
     # the retry-on-NaN loop below.
-    def _attempt_step(U_in, dt, forcing_a, forcing_key, particle_pos):
+    def _attempt_step(U_in, dt, forcing_a, forcing_key, particle_pos, sink_carry):
         U_new = step_fn(U_in, dt)
         new_a, new_key = forcing_a, forcing_key
         if forcing_state is not None:
@@ -270,6 +278,10 @@ def run_simulation_distributed(
             U_new = ext_grav_state["apply"](U_new, dt)
         if self_grav_state is not None:
             U_new = self_grav_state["apply"](U_new, dt)
+        new_sink = sink_carry
+        if sink_state is not None:
+            # gas self-gravity + sink coupling (replaces standalone self-gravity)
+            U_new, new_sink = sink_state["apply"](U_new, sink_carry, dt)
         new_pos = particle_pos
         if particle_state is not None:
             U_new, new_pos = particle_state["apply"](U_new, particle_pos, dt)
@@ -279,7 +291,7 @@ def run_simulation_distributed(
             from hydro.cooling import apply_cooling
 
             U_new = apply_cooling(U_new, dt, cfg, cooling_solver)
-        return U_new, new_a, new_key, new_pos
+        return U_new, new_a, new_key, new_pos, new_sink
 
     while t < cfg.t_end:
         t_snapshot_local = (
@@ -306,14 +318,17 @@ def run_simulation_distributed(
         forcing_a_pre = forcing_state["a"] if forcing_state is not None else None
         forcing_key_pre = forcing_state["key"] if forcing_state is not None else None
         particle_pos_pre = particle_state["pos"] if particle_state is not None else None
-        U_sharded, fa_new, fk_new, ppos_new = _attempt_step(
-            U_sharded, dt, forcing_a_pre, forcing_key_pre, particle_pos_pre
+        sink_carry_pre = sink_state["carry"] if sink_state is not None else None
+        U_sharded, fa_new, fk_new, ppos_new, sink_new = _attempt_step(
+            U_sharded, dt, forcing_a_pre, forcing_key_pre, particle_pos_pre, sink_carry_pre
         )
         if forcing_state is not None:
             forcing_state["a"] = fa_new
             forcing_state["key"] = fk_new
         if particle_state is not None:
             particle_state["pos"] = ppos_new
+        if sink_state is not None:
+            sink_state["carry"] = sink_new
 
         t = new_t
         step += 1
@@ -341,6 +356,10 @@ def run_simulation_distributed(
                     f"📊 step={step:>7}  t={t:.5e}  min_rho={mr:.3e}  "
                     f"min_P={mp:.3e}  max_|v|={ms:.3e}  max_M={mM:.3e}  {eta_str}"
                 )
+                if sink_state is not None:
+                    _, _, _smass, _sact = sink_state["carry"]
+                    _n = int(jnp.sum(_sact)); _m = float(jnp.sum(_smass))
+                    print(f"   🟣 sinks: {_n} active, total M_sink={_m:.3e}")
                 with open(hist_path, "a") as fh:
                     fh.write(
                         f"{step},{t:.9e},{dt:.9e},{mr:.9e},{mp:.9e},"

@@ -21,6 +21,8 @@ from setup.distributed_setup import initialize_jax_distributed
 from main import run
 
 
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
 NX = 1024
 T_END = 1.0
 SNAPSHOT_TIMES = [0.0, 0.25, 0.5, 0.75, 1.0]
@@ -63,7 +65,7 @@ def main():
                   extent=(0, snap["Lx"], 0, snap["Ly"]),
                   vmin=VMIN, vmax=VMAX, cmap="magma",
                   interpolation="nearest", aspect="equal")
-        ax.text(0.05, 0.92, f"t = {t}", transform=ax.transAxes, fontsize=11,
+        ax.text(0.05, 0.92, f"t = {t}", transform=ax.transAxes, fontsize=LABEL_FS,
                 color="white", fontweight="bold",
                 bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
         ax.grid(False)

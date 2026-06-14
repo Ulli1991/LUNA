@@ -21,6 +21,8 @@ from setup.distributed_setup import initialize_jax_distributed
 from main import run
 
 
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
 NX_SCAN = [1024, 2048, 4096, 8192]
 SNAPSHOT_TIMES = [0.0, 1.0, 2.5, 4.0, 5.0]
 T_END = max(SNAPSHOT_TIMES)
@@ -73,7 +75,7 @@ def main():
         axes[r, 0].set_ylabel(f"{Nx}²")
     for c, t in enumerate(SNAPSHOT_TIMES):
         axes[0, c].text(0.05, 0.92, f"t = {t}", transform=axes[0, c].transAxes,
-                        fontsize=11, color="white", fontweight="bold",
+                        fontsize=LABEL_FS, color="white", fontweight="bold",
                         bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
 
     fig.tight_layout()

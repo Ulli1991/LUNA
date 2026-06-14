@@ -407,6 +407,20 @@ class Config:
     disc_damp_R_out: float = 2.2          # outer zone: damp where R > this
     disc_damp_rate: float = 5.0           # peak relaxation rate (1/code time)
 
+    # ---------------- Sink particles (on-the-fly, 3D; sources/sinks.py) -------
+    # Form sinks dynamically when a density peak exceeds sink_creation_density
+    # (and is far enough from existing sinks); accrete gas inside the accretion
+    # radius; integrate with gas + self-gravity by the hybrid scheme — mesh
+    # Poisson for gas self-gravity + gas→sink, direct N-body for sink→gas and
+    # sink→sink. Pre-allocated sink_max_count slots (static shapes; no recompile
+    # when a sink spawns). Requires SELF_GRAVITY-style config + SPATIAL_DIMENSION=3.
+    sinks_enabled: bool = False
+    sink_max_count: int = 4               # pre-allocated sink slots (BB79 needs ~2)
+    sink_creation_density: float = 0.0    # spawn a sink above this density (0 → never)
+    sink_accretion_radius: float = 0.0    # gas inside this radius accretes (0 → 2·dx)
+    sink_softening: float = 0.0           # ε for sink→gas / sink→sink (0 → 2·dx)
+    sink_creation_separation: float = 0.0  # min distance to an existing sink (0 → 4·dx)
+
     # -------------------------------------------------------------------------
     # Computed properties (lightweight, timing-related)
     # -------------------------------------------------------------------------

@@ -444,16 +444,22 @@ def _save_inversion_figure(delta_true, delta_est, rk, res, cfg):
     fig, ax = plt.subplots(1, 3, figsize=(FIGSIZE[0] * 2.0, FIGSIZE[1]))
     vmax = float(np.max(np.abs(dt_np)))
     a0 = ax[0].imshow(dt_np[:, :, zc], vmin=-vmax, vmax=vmax, cmap="RdBu_r")
-    ax[0].set_title(r"$\delta_{\rm true}$ (z-mid)"); plt.colorbar(a0, ax=ax[0], shrink=0.8)
+    plt.colorbar(a0, ax=ax[0], shrink=0.8)
     a1 = ax[1].imshow(de_np[:, :, zc], vmin=-vmax, vmax=vmax, cmap="RdBu_r")
-    ax[1].set_title(fr"$\delta_{{\rm recovered}}$ (res {res:.2f})"); plt.colorbar(a1, ax=ax[1], shrink=0.8)
+    plt.colorbar(a1, ax=ax[1], shrink=0.8)
+    ax[0].text(0.04, 0.96, r"$\delta_{\rm true}$", transform=ax[0].transAxes,
+               va="top", ha="left", fontsize=10,
+               bbox=dict(boxstyle="round", fc="white", ec="none", alpha=0.8))
+    ax[1].text(0.04, 0.96, fr"$\delta_{{\rm recovered}}$ (res {res:.2f})",
+               transform=ax[1].transAxes, va="top", ha="left", fontsize=10,
+               bbox=dict(boxstyle="round", fc="white", ec="none", alpha=0.8))
     for a in (ax[0], ax[1]):          # image panels: no grid over pixels
         a.grid(False); a.set_xticks([]); a.set_yticks([])
     ks = np.arange(1, len(rk))
-    ax[2].plot(ks, rk[1:], "o-", ms=5, label=r"$r(k)$")
+    ax[2].plot(ks, rk[1:], "o-", ms=5, label=r"$r(k)$ (scale-resolved recovery)")
     ax[2].axhline(0, color="k", lw=0.6); ax[2].set_ylim(-0.2, 1.05)
     ax[2].set_xlabel("k"); ax[2].set_ylabel(r"$r(k)$")
-    ax[2].set_title("scale-resolved recovery")
+    ax[2].legend(loc="lower left")
     decorate(ax[2])
     os.makedirs("figures", exist_ok=True)
     # tag by test problem AND dominant physics so the turbulence / self-gravity /
@@ -466,7 +472,6 @@ def _save_inversion_figure(delta_true, delta_est, rk, res, cfg):
         tag, label = base + "_selfgrav", f"{getattr(cfg,'test_problem','')} + self-gravity"
     else:
         tag, label = base, str(getattr(cfg, "test_problem", ""))
-    fig.suptitle(f"{label}: reverse-mode IC inversion", y=1.02, fontsize=12)
     out = f"figures/autodiff_ic_inversion_{tag}_Nx{cfg.Nx}.png"
     fig.tight_layout(); fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}", flush=True)
@@ -606,8 +611,9 @@ def _save_corrector_figure(e_plain, e_corr, rho_ref, rho_coarse, rho_corr, cfg):
               (rho_corr, f"coarse + CNN\n(err {e_corr[-1]:.2e})" if e_corr else "coarse+CNN")]
     for a, (rho, ttl) in zip(ax[:3], panels):
         im = a.imshow(rho.T, origin="lower", cmap="magma", vmin=vmin, vmax=vmax)
-        a.set_title(ttl, fontsize=11); a.grid(False)
-        a.set_xticks([]); a.set_yticks([])
+        a.grid(False); a.set_xticks([]); a.set_yticks([])
+        a.text(0.04, 0.96, ttl, transform=a.transAxes, va="top", ha="left",
+               fontsize=9, color="white")
     fig.colorbar(im, ax=ax[2], shrink=0.8, label=r"$\rho$")
 
     # (d) rollout error vs the fine reference
@@ -618,13 +624,10 @@ def _save_corrector_figure(e_plain, e_corr, rho_ref, rho_coarse, rho_corr, cfg):
         ax[3].semilogy((np.arange(len(e_corr)) + 1) * 25, e_corr, "s-",
                        color="C0", label=fr"+ CNN ({e_corr[-1]:.2e})")
     ax[3].set_xlabel("rollout step")
-    ax[3].set_ylabel("density rel. error")
-    ax[3].set_title("rollout error vs fine ref")
+    ax[3].set_ylabel("density rel. error vs fine ref")
     ax[3].legend(loc="upper left")
     decorate(ax[3])
 
-    fig.suptitle(fr"Solver-in-the-loop KH corrector ($N_c$={cfg.Nx}, fine $4\times$)",
-                 y=1.02, fontsize=12)
     fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
     out = f"figures/autodiff_corrector_Nc{cfg.Nx}.png"

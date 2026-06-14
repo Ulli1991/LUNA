@@ -15,6 +15,8 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 
 apply_style()
 
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
 
 # Unit conversion (Arepo: kpc / 1e10 Msun / km/s).
 _PROTON_MASS = 1.67262e-24   # g
@@ -101,7 +103,7 @@ def _plot_grid(field_key, cmap_name, vmin, vmax, label, outpath_stem, runs,
         if run is None:
             ax.text(0.5, 0.5, f"(no data yet)\nNx={Nx}",
                     ha="center", va="center", transform=ax.transAxes,
-                    fontsize=14, color="0.4")
+                    fontsize=LABEL_FS, color="0.4")
             ax.set_xticks([]); ax.set_yticks([])
             continue
         data = run[field_key].T
@@ -115,7 +117,7 @@ def _plot_grid(field_key, cmap_name, vmin, vmax, label, outpath_stem, runs,
                        interpolation="nearest")
         t_Myr = run["t"] * UnitTime_s / MYR
         ax.text(0.05, 0.92, f"Nx={Nx}    t={t_Myr:.1f} Myr",
-                transform=ax.transAxes, fontsize=11, color="white", fontweight="bold",
+                transform=ax.transAxes, fontsize=LABEL_FS, color="white", fontweight="bold",
                 bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
         ax.set_xlabel("x (kpc)")
         if j == 0:

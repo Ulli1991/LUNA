@@ -140,8 +140,8 @@ def main():
     plateau = float(min(l1s))
     ax.axhline(plateau, color="0.75", linestyle="-", lw=0.8, alpha=0.6, zorder=0)
 
-    ax.set_xlabel("resolution Nx", fontsize=11)
-    ax.set_ylabel(r"L1 error in density (vs linear analytic)", fontsize=11)
+    ax.set_xlabel("resolution Nx")
+    ax.set_ylabel(r"L1 error in density (vs linear analytic)")
     # Zoom y-axis to the data range
     ymin = 0.3 * plateau
     ymax = 3.0 * max(max(l1s), max(max(v[1]) for v in ak_results.values()) if ak_results else 0)

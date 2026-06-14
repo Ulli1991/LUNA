@@ -173,7 +173,6 @@ def _save_figure(obs_keys, J_ad, J_fd, v0, cfg, t_end):
     ax[0].set_xlim(lo, hi); ax[0].set_ylim(lo, hi)
     ax[0].set_xlabel("analytic Sedov-Taylor exponent")
     ax[0].set_ylabel("AD log-derivative")
-    ax[0].set_title(f"AD vs analytic ($N$={cfg['Nx']}, {cfg['n_steps']} steps)")
     ax[0].legend(loc="upper left")
     decorate(ax[0])
 
@@ -184,10 +183,9 @@ def _save_figure(obs_keys, J_ad, J_fd, v0, cfg, t_end):
     yy = np.arange(len(labels))
     ax[1].barh(yy, abserr, color="C1", zorder=3)
     ax[1].axvline(0.01, color="0.5", ls="-", lw=1.0, label=r"$10^{-2}$")
-    ax[1].set_yticks(yy); ax[1].set_yticklabels(labels, fontsize=9)
+    ax[1].set_yticks(yy); ax[1].set_yticklabels(labels)
     ax[1].set_xscale("log")
-    ax[1].set_xlabel(r"$|{\rm AD}-{\rm FD}|$")
-    ax[1].set_title("AD vs finite-difference cross-check")
+    ax[1].set_xlabel(r"$|{\rm AD}-{\rm FD}|$  (finite-difference cross-check)")
     ax[1].legend(loc="lower right")
     decorate(ax[1])
 

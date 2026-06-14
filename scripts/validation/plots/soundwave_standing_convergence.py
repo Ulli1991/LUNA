@@ -114,8 +114,8 @@ def main():
     ax.loglog(nx_ref, l1s[0] * (nx_ref / nx_ref[0]) ** -2,
               color="0.5", linestyle="-", lw=1.0, label=r"slope $-2$ (2nd order)")
 
-    ax.set_xlabel("resolution Nx", fontsize=11)
-    ax.set_ylabel(r"L1 error in density (vs analytic)", fontsize=11)
+    ax.set_xlabel("resolution Nx")
+    ax.set_ylabel(r"L1 error in density (vs analytic)")
     ax.legend(loc="upper right")
     decorate(ax)
     fig.tight_layout()
