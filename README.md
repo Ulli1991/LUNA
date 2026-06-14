@@ -134,13 +134,9 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 
 ### 4 · Signature — "LUNA out of the explosion set"
 
-![LUNA emerges from an optimized explosion set](figures/autodiff_luna_emergence_LUNA_Nx256.png)
+![LUNA assembled from an ensemble of colliding blast waves — time montage](figures/autodiff_blast_assembly_LUNA_Nx512.png)
 
-*Reverse-mode AD through the production solver finds an initial energy field — a "spark field" (left) — whose forward hydro evolution assembles the word **LUNA** in the density (middle) toward the target (right): the optimizer places high energy *around* the letters so the surrounding pressure compresses gas *into* them.*
-
-![A photograph reconstructed out of the explosion set — 1024² on 4 GPUs](figures/autodiff_luna_emergence_lubibi_Nx1024.png)
-
-*The same machinery at **1024² across 4 GPUs** reconstructing an arbitrary photograph: optimized initial conditions whose blast dynamics evolve into the target image. Differentiable hydro as a learned map from initial conditions to a chosen late-time morphology — and a multi-GPU scale demonstration in its own right.*
+*The signature demonstration. The initial condition is an ensemble of discrete blast **seeds** whose **positions and energies are both optimized** by reverse-mode AD through the production 2D solver (512², 4096 blasts, 4 GPUs). Each seed launches a Sedov blast; the snapshots (t = 0 → t_end, left to right) show the blast waves expanding and **colliding**, their overlapping shells assembling into the word **LUNA** — the merged shock network traces the letters (right panel) toward the target. The word is built by the explosion set itself — the differentiable solver finds where to place and how hard to detonate ~4000 blasts so their collisions spell LUNA. (The same blast-assembly method applied to an arbitrary photograph — you + Luna — is landing on the 4-GPU path.)*
 
 ### 5 · Application — M82 X-ray feedback sweep
 
