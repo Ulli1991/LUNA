@@ -70,9 +70,9 @@ def main():
 
     fig.tight_layout()
     Path("figures").mkdir(exist_ok=True)
-    fig.savefig("figures/square_advection.pdf")
-    fig.savefig("figures/square_advection.png", dpi=200)
-    print("Saved figures/square_advection.{pdf,png}")
+    fig.savefig(f"figures/square_advection_Nx{NX}.pdf")
+    fig.savefig(f"figures/square_advection_Nx{NX}.png", dpi=200)
+    print(f"Saved figures/square_advection_Nx{NX}.{{pdf,png}}")
 
 
 if __name__ == "__main__":

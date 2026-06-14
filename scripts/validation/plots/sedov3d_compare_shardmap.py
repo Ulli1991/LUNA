@@ -96,7 +96,7 @@ def main():
         decorate(ax)
 
     Path("figures").mkdir(exist_ok=True)
-    out = "figures/sedov_shardmap_vs_baseline.png"
+    out = f"figures/sedov_shardmap_vs_baseline_Nx{base['Nx']}.png"
     fig.savefig(out, bbox_inches="tight")
     print(f"Saved {out}")
 

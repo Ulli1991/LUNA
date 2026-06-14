@@ -341,7 +341,18 @@ def _save_inversion_figure(delta_true, delta_est, rk, res, cfg):
     ax[2].set_title("scale-resolved recovery")
     decorate(ax[2])
     os.makedirs("figures", exist_ok=True)
-    out = f"figures/autodiff_ic_inversion_Nx{cfg.Nx}.png"
+    # tag by test problem AND dominant physics so the turbulence / self-gravity /
+    # radiative-cooling / sedov inversions don't overwrite each other (the
+    # gravity and cooling cases both reuse the uniform Jeans-box IC).
+    base = str(getattr(cfg, "test_problem", "ic")).replace("-", "").replace("_", "")
+    if getattr(cfg, "cooling_enabled", False):
+        tag, label = base + "_cool", "radiative-cooling box"
+    elif getattr(cfg, "SELF_GRAVITY", False):
+        tag, label = base + "_selfgrav", f"{getattr(cfg,'test_problem','')} + self-gravity"
+    else:
+        tag, label = base, str(getattr(cfg, "test_problem", ""))
+    fig.suptitle(f"{label}: reverse-mode IC inversion", y=1.02, fontsize=12)
+    out = f"figures/autodiff_ic_inversion_{tag}_Nx{cfg.Nx}.png"
     fig.tight_layout(); fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}", flush=True)
 
@@ -444,11 +455,63 @@ def _corrector_training(U0, cfg, step_fn, compute_dt_fn, is_main):
             if i % 25 == 0:
                 errs.append(float(jnp.linalg.norm(U[0] - ref[i][0])
                                   / jnp.linalg.norm(ref[i][0])))
-        return errs
-    e_plain = rollout(step_c_j); e_corr = rollout(corr_j)
+        return errs, U
+    e_plain, U_plain = rollout(step_c_j)
+    e_corr, U_corr = rollout(corr_j)
     bp = e_plain[-1] if e_plain else float("nan")
     bc = e_corr[-1] if e_corr else float("nan")
     if is_main:
         print(f"  rollout rel-err(rho): coarse-only={bp:.3e}  +CNN={bc:.3e}  "
               f"(corr survived {len(e_corr)*25}/{n_steps} steps)", flush=True)
+        _save_corrector_figure(e_plain, e_corr,
+                               np.asarray(ref[-1][0]), np.asarray(U_plain[0]),
+                               np.asarray(U_corr[0]), cfg)
     return {"coarse_err": e_plain, "corr_err": e_corr, "weights": w}
+
+
+def _save_corrector_figure(e_plain, e_corr, rho_ref, rho_coarse, rho_corr, cfg):
+    """Solver-in-the-loop KH corrector (reproduces the diffhydro/Horowitz KH
+    example with the LUNA KH IC): density fields at the final time for the
+    downsampled fine reference, the plain coarse solver, and the coarse solver +
+    trained CNN corrector — plus the rollout error vs the fine reference. The
+    corrected coarse run should recover the fine KH roll-up the coarse run smears
+    out."""
+    import os
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from utils.figstyle import apply_style, decorate, FIGSIZE
+    apply_style()
+
+    fig, ax = plt.subplots(1, 4, figsize=(FIGSIZE[0] * 2.4, FIGSIZE[1] * 0.95))
+    vmin = float(min(rho_ref.min(), rho_coarse.min(), rho_corr.min()))
+    vmax = float(max(rho_ref.max(), rho_coarse.max(), rho_corr.max()))
+    panels = [(rho_ref, "fine reference\n(downsampled)"),
+              (rho_coarse, f"coarse solver\n(err {e_plain[-1]:.2e})" if e_plain else "coarse"),
+              (rho_corr, f"coarse + CNN\n(err {e_corr[-1]:.2e})" if e_corr else "coarse+CNN")]
+    for a, (rho, ttl) in zip(ax[:3], panels):
+        im = a.imshow(rho.T, origin="lower", cmap="magma", vmin=vmin, vmax=vmax)
+        a.set_title(ttl, fontsize=11); a.grid(False)
+        a.set_xticks([]); a.set_yticks([])
+    fig.colorbar(im, ax=ax[2], shrink=0.8, label=r"$\rho$")
+
+    # (d) rollout error vs the fine reference
+    if e_plain:
+        ax[3].semilogy((np.arange(len(e_plain)) + 1) * 25, e_plain, "o-",
+                       color="C3", label=fr"coarse ({e_plain[-1]:.2e})")
+    if e_corr:
+        ax[3].semilogy((np.arange(len(e_corr)) + 1) * 25, e_corr, "s-",
+                       color="C0", label=fr"+ CNN ({e_corr[-1]:.2e})")
+    ax[3].set_xlabel("rollout step")
+    ax[3].set_ylabel("density rel. error")
+    ax[3].set_title("rollout error vs fine ref")
+    ax[3].legend(loc="upper left")
+    decorate(ax[3])
+
+    fig.suptitle(fr"Solver-in-the-loop KH corrector ($N_c$={cfg.Nx}, fine $4\times$)",
+                 y=1.02, fontsize=12)
+    fig.tight_layout()
+    os.makedirs("figures", exist_ok=True)
+    out = f"figures/autodiff_corrector_Nc{cfg.Nx}.png"
+    fig.savefig(out); plt.close(fig)
+    print(f"  wrote {out}", flush=True)

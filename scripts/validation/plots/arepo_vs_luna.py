@@ -12,6 +12,7 @@ For BE / BB79 we plot at the simulation end time.
 from __future__ import annotations
 
 import os
+import re
 import glob
 import numpy as np
 import h5py
@@ -157,6 +158,14 @@ def compare_test(name, arepo_subdir, luna_subdir, target_t, out_path):
     if not arepo_path or not luna_path:
         print(f"  [skip] {name}: missing snapshots — arepo={arepo_path}, luna={luna_path}")
         return False
+
+    # Encode the LUNA resolution in the output filename so runs at different
+    # resolutions can't silently overwrite each other. Parse the trailing
+    # NxNN token from the luna subdir; fall back to the original name if absent.
+    m = re.search(r"Nx(\d+)", luna_subdir)
+    if m:
+        stem, ext = os.path.splitext(out_path)
+        out_path = f"{stem}_Nx{m.group(1)}{ext}"
 
     A = load_arepo(arepo_path)
     LU = load_luna(luna_path)

@@ -8,17 +8,17 @@
 #SBATCH --cpus-per-task=18
 #SBATCH --mem=60000
 #SBATCH --constraint="gpu"
-#SBATCH --gres=gpu:1
-#SBATCH --time=01:00:00
+#SBATCH --gres=gpu:a100:1
+#SBATCH --time=00:15:00
 
 module purge
 module load gcc/13 cuda/12
 source ~/jax-env/bin/activate
-cd /raven/u/uli/jax-hydro
-
-export LUNA_GRAV_NX=${LUNA_GRAV_NX:-64}
-export LUNA_GRAV_NSTEPS=${LUNA_GRAV_NSTEPS:-100}
-export LUNA_GRAV_ITER=${LUNA_GRAV_ITER:-60}
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+export JAX_PLATFORM_NAME=cuda
 export XLA_FLAGS="--xla_gpu_autotune_level=1"
-
-python -u -m scripts.autodiff.grav_inverse
+export LUNA_AD_PROBLEM=jeans
+export LUNA_AD_NX=${LUNA_AD_NX:-32}
+export LUNA_AD_NSTEPS=${LUNA_AD_NSTEPS:-120}
+export LUNA_AD_NITER=${LUNA_AD_NITER:-60}
+srun python -u -m scripts.validation.runs.ic_inversion_run

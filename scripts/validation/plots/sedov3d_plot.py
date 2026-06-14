@@ -240,8 +240,9 @@ def main():
 
     fig.tight_layout()
     Path("figures").mkdir(exist_ok=True)
-    fig.savefig("figures/sedov3d.pdf"); fig.savefig("figures/sedov3d.png", dpi=200)
-    print("Saved figures/sedov3d.{pdf,png}")
+    Nx_fig = final["Nx"]
+    fig.savefig(f"figures/sedov3d_Nx{Nx_fig}.pdf"); fig.savefig(f"figures/sedov3d_Nx{Nx_fig}.png", dpi=200)
+    print(f"Saved figures/sedov3d_Nx{Nx_fig}.{{pdf,png}}")
     print(f"R_s (sim, final) = {R_sim[-1]:.2f} pc")
     print(f"R_s (analytic, final) = {R_s_analytic_pc:.2f} pc")
 

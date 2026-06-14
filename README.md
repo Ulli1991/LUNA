@@ -56,14 +56,6 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Subsonic (M_rms = 0.3) driven isothermal turbulence at t ≈ 4 (≈1.2 turnover times): density slice through z = L/2 for a resolution sweep Nx³ ∈ {128³, 256³, 512³, 1024³}. Solenoidal-only OU forcing (Federrath/Schmidt 2010) on a 1³ periodic box, k_min=1, k_max=2 driving range, identical PRNG seed at every Nx so the driven realisation matches. EOS: LUNA solves γ=5/3 Euler internally for HLLC robustness, but the runner enforces p = c_s² ρ as an operator-split post-step projection (soft isothermal thermostat) — no spurious compressive heating accumulates. The 1024³ run is on a 2-node × 4-GPU schedule slot.*
 
-![V&T solar convection — δρ at t=50](figures/solar_vt_drho_grid.png)
-
-*2D Velasco-Romero & Teyssier (2025) 3-layer polytropic atmosphere with a buoyant Gaussian bubble (δρ/ρ_eq = −0.012, r_b = 0.5), well-balanced MUSCL-Hancock + MonCen + L-HLLC at CFL = 0.025, gravity along −y. Resolution scan Nx ∈ {256, 512, 1024, 2048} at t = 50 (early-phase bubble rise; chosen as the common pre-NaN snapshot across all four resolutions). Density perturbation δρ = ρ − ⟨ρ⟩_x (subtracted horizontal-mean at each height, isolates plume structure). Symmetric diverging colormap, 2–98 percentile. HLLC was removed from this scan: it NaN's around t ≈ 150–280 in this stratified low-Mach regime; L-HLLC's low-Mach correction (Velasco-Romero & Teyssier 2025) is what makes the integration possible at all.*
-
-![V&T solar convection — δT at t=50](figures/solar_vt_dT_grid.png)
-
-*Same setup and snapshot as above but showing the temperature deviation from the horizontal mean δT = T − ⟨T⟩_x — the V&T (2025) Figure 9 analogue. Symmetric diverging colormap. Empty panels are placeholders for runs still in flight.*
-
 ![M82 disk + CC85 starburst wind — log n_H at t = 60 Myr](figures/m82_wind_density.png)
 
 *3D M82-like starburst wind following the Schneider, Robertson & Thompson (2018) CC85 setup: rotating exponential isothermal gas disk (M_gas = 2.5 × 10⁹ M⊙, R_d = 1.6 kpc, R_trunc = 4.5 kpc, T = 10⁴ K) in vertical hydrostatic equilibrium within a static Miyamoto-Nagai stellar disk (M⋆ = 10¹⁰ M⊙, a = 0.8 kpc, b = 0.15 kpc) + NFW halo (M_vir = 5 × 10¹¹ M⊙, c = 20) potential, plus CC85 central spherical injection (R_⋆ = 300 pc; SFR = 12 M⊙/yr, η_M = 0.3, η_E = 0.6 → Ṁ = 3.6 M⊙/yr, Ė ≈ 2.3 × 10⁴² erg/s, v_∞ ≈ 1400 km/s). Hot CGM ambient (n = 10⁻⁴ cm⁻³, T = 10⁶ K) fills the rest of the 10 × 10 × 20 kpc box; Sutherland & Dopita (1993) CIE cooling integrated with Townsend (2009). x–z slice through y = Ly/2 of log₁₀ n_H at t = 60 Myr. Resolution scan Nx ∈ {128, 256, 512}; the 512 panel is a placeholder for a multi-node run still in flight.*
@@ -80,29 +72,25 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Spherically-averaged radial profiles of n_H, v_rad, and T at t = 60 Myr for each resolution. Computed by 3D binning in radius from the box center. Useful for direct comparison against the analytic CC85 solution (n ∝ r⁻², roughly constant v ∝ v_∞ outside R_⋆, and adiabatic T ∝ r⁻⁴ᐟ³ in the steady wind) and Schneider+ 2018 CGOLS Figure 4.*
 
-![Evrard collapse: LUNA vs AREPO radial profiles](figures/arepo_vs_luna_evrard.png)
+![Jeans instability: growth rate vs linear theory](figures/jeans_growth_Nx64.png)
 
-*Self-gravity validation against AREPO (Springel 2010 moving-mesh code) on Evrard's 1988 adiabatic spherical collapse at t = 0.8 (matches Springel 2010 Fig 41 reference time). Both codes run identical ICs in code units (M = R = G = 1, ρ ∝ 1/r, u₀ = 0.05, γ = 5/3) at 64³ initial cells in a periodic L = 4 box. LUNA fixed-grid (dashed) and AREPO moving Voronoi (solid) agree to within plotting precision on ρ, vᵣ, P from r ≈ 0.08 outward — the shock front, the v ≈ −1.4 free-fall region, and the static ambient all coincide. AREPO's adaptive mesh refines to r ≈ 0.005 and captures the post-bounce core at ρ ~ 150 that LUNA's fixed dx = 0.06 grid can't reach, reproducing the central-density underestimation Springel 2010 documented for fixed Cartesian meshes.*
+*Linear Jeans instability against analytic linear theory. Periodic self-gravitating box (64³) seeded with the growing Jeans eigenmode (adiabatic δP = c_s²δρ plus the matching longitudinal velocity), so the unstable mode grows as a clean exponential δρ ∝ e^{σt} with σ = √(4πGρ₀ − c_s²k²). LUNA's measured mode amplitude (points) and its log-slope fit track the analytic A₀e^{σt} (black) to **σ_meas = 5.34 vs σ_exact = 5.33 (0.06%)**. The underlying FMG multigrid Poisson solver is itself accurate to 0.08% on the analytic single-mode potential and converges to a 10⁻¹⁴ residual.*
 
-![Bonnor-Ebert sub-critical sphere: LUNA vs AREPO](figures/arepo_vs_luna_be_sub.png)
+![Evrard collapse: LUNA vs AREPO radial profiles](figures/arepo_vs_luna_evrard_Nx64.png)
 
-*Sub-critical isothermal Bonnor-Ebert sphere (ξₜ = 5 < 6.451) at t = 3.0, periodic L = 4, cs² = 1, G = 1. Smoothed cloud/ambient transition over 3 cells (analytic ρ jumps factor ~14 without smoothing). LUNA and AREPO agree on ρ, vᵣ, P throughout — both show outward drift driven by the IC's residual pressure/gravity mismatch at the cloud edge (a periodic-BC artefact, not a solver bug, since AREPO independently reproduces it).*
+*Evrard 1988 adiabatic spherical collapse vs AREPO (Springel 2010 moving-mesh code) at t = 0.8 (Springel 2010 Fig 41 reference time). Identical ICs in code units (M = R = G = 1, ρ ∝ 1/r, u₀ = 0.05, γ = 5/3) at 64³ in a periodic L = 4 box. LUNA (points) and AREPO (line) agree on ρ, vᵣ, P through the accretion shock at r ≈ 0.15, the vᵣ ≈ −1.4 free-fall envelope, and the static ambient. AREPO's adaptive mesh reaches the post-bounce central density that LUNA's fixed dx = 0.06 grid cannot.*
 
-![Bonnor-Ebert super-critical sphere: LUNA vs AREPO](figures/arepo_vs_luna_be_super.png)
+![Bonnor-Ebert sub-critical sphere: LUNA vs AREPO](figures/arepo_vs_luna_be_sub_Nx64.png)
 
-*Super-critical isothermal Bonnor-Ebert sphere (ξₜ = 10 > 6.451) at t = 3.0. Both codes show the same outward-flow profile after the initial collapse–bounce cycle, peaking at vᵣ ≈ 0.3. AREPO's moving mesh extends to smaller r and shows finer post-bounce structure, but the bulk profile matches LUNA to plotting precision.*
+*Sub-critical isothermal Bonnor-Ebert sphere (ξₜ = 5 < 6.451) vs AREPO at t = 3.0, periodic L = 4, c_s² = G = 1. LUNA and AREPO agree on ρ, vᵣ, P throughout; the slow outward drift is the IC's residual edge pressure/gravity mismatch (a periodic-BC artefact, reproduced independently by AREPO).*
 
-![Boss-Bodenheimer 1979: LUNA vs AREPO](figures/arepo_vs_luna_bb79.png)
+![Bonnor-Ebert super-critical sphere: LUNA vs AREPO](figures/arepo_vs_luna_be_super_Nx64.png)
 
-*Boss & Bodenheimer 1979 rotating isothermal collapse at t = 2.0 (β = 0.16 thermal/grav ratio, m = 2 perturbation amplitude 0.1, cs² = 0.25, γ = 5/3). Radial profiles overlap from r ≳ 0.1 outward; AREPO's adaptive mesh resolves the rotating central core down to r ≈ 0.02 with ρ ~ 1, while LUNA's fixed 64³ grid captures the bulk rotation profile.*
-
-![Boss-Bodenheimer 1979 column density: LUNA vs AREPO](figures/arepo_vs_luna_bb79_projection.png)
-
-*Same BB79 collapse, side-by-side column density along z (the rotation axis) at t = 2.0. Same colormap range, same 64² bin grid. Both codes show the central concentration at (x, y) ≈ (2, 2); AREPO's mesh adapts into the dense core (peak log₁₀Σ ≈ −0.17 vs LUNA's −0.57), while LUNA's fixed grid produces a smoother ambient. AREPO's ambient noise reflects sparse particle coverage where the moving mesh derefined — the real cell density in those regions is much lower than in the centre. Apples-to-apples ICs, same units, code-unit comparison.*
+*Super-critical isothermal Bonnor-Ebert sphere (ξₜ = 10 > 6.451) at t = 3.0. Both codes show the same post-bounce outward flow peaking at vᵣ ≈ 0.3; the bulk profiles match to plotting precision.*
 
 ![Boss-Bodenheimer 1979 with isolated BC — LUNA 64³ vs 256³](figures/bb79_iso_luna_64_vs_256_minmod.png)
 
-*BB79 with the **isolated** Poisson BC (multipole-Dirichlet halo + outflow hydro, no periodic-image saddle pileup), MinMod limiter, at t = 2.0. Both panels are LUNA — left is 64³, right is 256³, same colour scale. The 64³ run gives a smooth blob with a weak m=4 grid-aligned envelope; the 256³ run resolves the actual BB79 rotational-collapse morphology: a clumpy central core with substructure that is the signature of m=2 fragmentation. The thin orthogonal lines through (x, y) = (2, 2) are residual cardinal-axis artefacts from the outflow BC at the box face centres — present but much weaker than the corner-spike pattern we get with the sharper MC limiter (which also crashes at t ≈ 0.8 due to negative density at the central spike). MinMod survives the full t = 2.0 evolution; MC does not.*
+*Boss & Bodenheimer 1979 rotating isothermal collapse with the **isolated** Poisson BC (multipole-Dirichlet halo + outflow hydro, no periodic-image saddle), MinMod limiter, at t = 2.0. Both panels are LUNA: 64³ (left) gives a smooth under-resolved blob, while 256³ (right) resolves the m = 2 rotational-fragmentation morphology — a clumpy central bar with substructure.*
 
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution

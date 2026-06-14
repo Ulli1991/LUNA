@@ -85,7 +85,8 @@ def main():
                  "Same hydro / limiter; cardinal-axis lines test")
     fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
-    out = "figures/bb79_iso_vs_periodic_diagnostic.png"
+    Nx_luna = S_iso.shape[0]   # column density is (Nx, Ny)
+    out = f"figures/bb79_iso_vs_periodic_diagnostic_Nx{Nx_luna}.png"
     fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}")
 

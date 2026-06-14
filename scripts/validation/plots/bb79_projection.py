@@ -128,7 +128,8 @@ def main():
     fig.suptitle("Boss-Bodenheimer 1979: column density along z (rotation axis)")
     fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
-    out = "figures/arepo_vs_luna_bb79_projection.png"
+    Nx_luna = Sigma_L.shape[0]   # LUNA column density is (Nx, Ny)
+    out = f"figures/arepo_vs_luna_bb79_projection_Nx{Nx_luna}.png"
     fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}")
 

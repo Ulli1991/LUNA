@@ -177,14 +177,16 @@ def _save_figure(obs_keys, J_ad, J_fd, v0, cfg, t_end):
     ax[0].legend(loc="upper left")
     decorate(ax[0])
 
-    # (b) AD-vs-FD relative error per channel — the independent cross-check.
-    rel = np.abs(ad - fd) / (np.abs(fd) + 1e-3)
+    # (b) AD-vs-FD ABSOLUTE error per channel — the independent cross-check.
+    # (Absolute, not relative: several analytic exponents are exactly 0, where a
+    # relative error is ill-defined even though AD and FD agree to ~1e-3.)
+    abserr = np.abs(ad - fd)
     yy = np.arange(len(labels))
-    ax[1].barh(yy, rel, color="C1", zorder=3)
-    ax[1].axvline(0.01, color="k", ls="--", lw=1.2, label="1% threshold")
+    ax[1].barh(yy, abserr, color="C1", zorder=3)
+    ax[1].axvline(0.01, color="k", ls="--", lw=1.2, label=r"$10^{-2}$")
     ax[1].set_yticks(yy); ax[1].set_yticklabels(labels, fontsize=9)
     ax[1].set_xscale("log")
-    ax[1].set_xlabel(r"$|{\rm AD}-{\rm FD}|/|{\rm FD}|$")
+    ax[1].set_xlabel(r"$|{\rm AD}-{\rm FD}|$")
     ax[1].set_title("AD vs finite-difference cross-check")
     ax[1].legend(loc="lower right")
     decorate(ax[1])
@@ -193,9 +195,8 @@ def _save_figure(obs_keys, J_ad, J_fd, v0, cfg, t_end):
     os.makedirs("figures", exist_ok=True)
     out = "figures/autodiff_sedov_validation.png"
     fig.savefig(out)
-    maxrel = float(np.max(np.abs(ad - an)) )
-    print(f"\nRESULT sedov_ad: max|AD-analytic|={maxrel:.3e}  "
-          f"max|AD-FD|rel={float(np.max(rel)):.3e}", flush=True)
+    print(f"\nRESULT sedov_ad: max|AD-analytic|={float(np.max(np.abs(ad - an))):.3e}  "
+          f"max|AD-FD|abs={float(np.max(abserr)):.3e}", flush=True)
     print(f"  figure -> {out}", flush=True)
 
 
