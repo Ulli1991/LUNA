@@ -29,7 +29,7 @@ run scripts.validation.plots.square_advection
 run scripts.validation.plots.gresho_grid                  # gresho_vphi / density
 run scripts.validation.plots.cc85_wind_grid               # m82_wind_* + cc85_wind_*
 run scripts.validation.plots.turbulence_panel             # large (1024^3) reads
-run scripts.validation.plots.kh_grid                      # KH grid
+run scripts.validation.plots.kh_grid_plot                 # KH grid (READS snapshots; kh_grid is the RUNNER — do not use)
 run scripts.validation.plots.kh_8192_compare              # large (8192^2) read
 
 echo "=== DONE: regenerated figures ==="

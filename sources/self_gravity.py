@@ -21,6 +21,7 @@ from gravity.poisson_multigrid import (
     solve_poisson_fmg,
     solve_poisson_fmg_shardmap,
 )
+from gravity.poisson_diff import solve_poisson_fmg_diff
 from gravity.poisson_bc import make_halo_3d
 
 
@@ -165,17 +166,22 @@ def setup_self_gravity(cfg, sharding, is_main_process: bool = True):
                 rho_src = rho - jnp.mean(rho)
             else:
                 rho_src = rho
-            phi = solve_poisson_fmg(
+            # Differentiable Poisson: forward result is bit-identical to
+            # solve_poisson_fmg (same tuning forwarded), but reverse-mode uses
+            # the implicit adjoint (one extra solve) instead of unrolling every
+            # V-cycle — the latter OOMs through a multi-step inversion at 256³.
+            # custom_vjp nondiff args must be POSITIONAL.
+            phi = solve_poisson_fmg_diff(
                 rho_src,
                 dx,
                 fourpiG,
-                boundary=boundary,
-                n_levels=n_levels,
-                n_vcycles_per_level=n_vcycles_per_level,
-                n_extra_vcycles=n_extra_vcycles,
-                n_pre=n_pre,
-                n_post=n_post,
-                n_coarsest=n_coarsest,
+                boundary,
+                n_vcycles_per_level,
+                n_extra_vcycles,
+                n_levels,
+                n_pre,
+                n_post,
+                n_coarsest,
             )
             return _kick_body(U, phi, dt, halo_fn_local)
 

@@ -38,7 +38,7 @@ BOX_KPC = BOX_SIZE_PC * 1e-3                      # in code units
 NX = int(os.environ.get("LUNA_SEDOV_NX", "256"))
 T_END_YR = 1.0e4                                  # 10,000 yr
 T_END_CODE = T_END_YR * SEC_PER_YEAR / UNIT_TIME_S
-N_SNAPS = 10
+N_SNAPS = int(os.environ.get("LUNA_SEDOV_NSNAPS", "10"))   # benchmark sets =1
 TIME_BET_SNAPS = T_END_CODE / N_SNAPS
 
 

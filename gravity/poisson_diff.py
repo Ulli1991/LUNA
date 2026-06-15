@@ -38,22 +38,28 @@ from gravity.poisson_multigrid import solve_poisson_fmg, laplacian_7pt
 from gravity.poisson_bc import make_halo_3d
 
 
-@functools.partial(jax.custom_vjp, nondiff_argnums=(1, 2, 3, 4, 5))
+@functools.partial(jax.custom_vjp, nondiff_argnums=(1, 2, 3, 4, 5, 6, 7, 8, 9))
 def solve_poisson_fmg_diff(rho, dx, fourpiG, boundary,
-                            n_vcycles_per_level=1, n_extra_vcycles=1):
+                            n_vcycles_per_level=1, n_extra_vcycles=1,
+                            n_levels=None, n_pre=2, n_post=2, n_coarsest=50):
     """Differentiable FMG Poisson solve.
 
-    Identical to solve_poisson_fmg in the forward direction; reverse-mode
-    uses the implicit adjoint (one extra FMG solve), not unrolling.
+    Identical to solve_poisson_fmg in the forward direction (the full set of
+    multigrid tuning params — n_levels/n_pre/n_post/n_coarsest — is forwarded,
+    so swapping this in for solve_poisson_fmg leaves the forward result bit-
+    identical); reverse-mode uses the implicit adjoint (one extra FMG solve),
+    not V-cycle unrolling.
 
-    Note: n_extra_vcycles defaults to 1 here (vs 0 in the plain solver)
-    because gradient quality benefits from a tighter forward residual.
+    The extra tuning params are appended (not inserted) so existing positional
+    callers — e.g. tests/test_poisson_adjoint.py — keep working unchanged.
     """
     phi = solve_poisson_fmg(
         rho, dx, fourpiG,
         boundary=boundary,
+        n_levels=n_levels,
         n_vcycles_per_level=n_vcycles_per_level,
         n_extra_vcycles=n_extra_vcycles,
+        n_pre=n_pre, n_post=n_post, n_coarsest=n_coarsest,
     )
     if boundary == 0:
         # Pin the gauge: under periodic BC the Laplacian is singular on
@@ -66,16 +72,18 @@ def solve_poisson_fmg_diff(rho, dx, fourpiG, boundary,
     return phi
 
 
-def _fwd(rho, dx, fourpiG, boundary, n_vcycles_per_level, n_extra_vcycles):
+def _fwd(rho, dx, fourpiG, boundary, n_vcycles_per_level, n_extra_vcycles,
+         n_levels, n_pre, n_post, n_coarsest):
     phi = solve_poisson_fmg_diff(rho, dx, fourpiG, boundary,
-                                  n_vcycles_per_level, n_extra_vcycles)
+                                  n_vcycles_per_level, n_extra_vcycles,
+                                  n_levels, n_pre, n_post, n_coarsest)
     return phi, None     # nothing to save: the adjoint needs only Φ̄
 
 
 def _bwd(dx, fourpiG, boundary, n_vcycles_per_level, n_extra_vcycles,
-         residuals, phi_bar):
+         n_levels, n_pre, n_post, n_coarsest, residuals, phi_bar):
     # Adjoint solve:  A·λ = Φ̄   →   ρ̄ = 4πG · λ
-    # Reuse the same solver with fourpiG=1 so the RHS is Φ̄ itself.
+    # Reuse the same solver (same tuning) with fourpiG=1 so the RHS is Φ̄.
     if boundary == 0:
         # Gauge-pinned periodic map: Φ(ρ) = P·A⁻¹·(4πG ρ) with P = I − mean
         # (see _fwd). Its adjoint is ρ̄ = 4πG · P·A⁻¹·P · Φ̄ — project the
@@ -84,8 +92,10 @@ def _bwd(dx, fourpiG, boundary, n_vcycles_per_level, n_extra_vcycles,
     lam = solve_poisson_fmg(
         phi_bar, dx, 1.0,
         boundary=boundary,
+        n_levels=n_levels,
         n_vcycles_per_level=n_vcycles_per_level,
         n_extra_vcycles=n_extra_vcycles,
+        n_pre=n_pre, n_post=n_post, n_coarsest=n_coarsest,
     )
     if boundary == 0:
         lam = lam - jnp.mean(lam)

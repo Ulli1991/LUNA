@@ -74,7 +74,10 @@ def _plot_panel(ax, snap_idx, title):
     ax.set_xlim(0, 0.5)
     ax.set_xlabel("r")
     ax.set_ylabel(r"$v_\phi$")
-    ax.legend(loc="best")
+    # time label as in-axes text (top-left is empty for small r), not a title
+    ax.text(0.04, 0.96, title, transform=ax.transAxes, va="top", ha="left",
+            fontsize=10)
+    ax.legend(loc="upper right", fontsize=9, handlelength=1.4, labelspacing=0.3)
     decorate(ax)
 
 
