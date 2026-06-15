@@ -14,7 +14,7 @@ import jax.numpy as jnp
 
 # last layer: 8 = 4 conserved fields x 2 face-flux directions; the correction
 # is the discrete divergence of those fluxes -> conservative per channel.
-CHANNELS = [4, 48, 48, 48, 8]
+CHANNELS = [4, 64, 96, 96, 64, 8]
 
 
 def pool_factor(U, f):

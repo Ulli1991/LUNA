@@ -491,10 +491,10 @@ def _corrector_training(U0, cfg, step_fn, compute_dt_fn, is_main):
     from sources.ml_corrector import (cnn_init, cnn_correction, pool_factor,
                                        adam_init, adam_step)
 
-    f = 4
+    import os
+    f = int(os.environ.get("LUNA_KHC_F", "4"))   # coarse->fine gap (8x for the corrector)
     Nfx = f * int(cfg.Nx)
     Nfy = f * int(cfg.Ny)
-    import os
     n_steps = int(cfg.autodiff_n_steps)                       # eval horizon (~t=3)
     n_train = int(os.environ.get("LUNA_KHC_NTRAIN",           # train horizon (~t=1)
                                  str(max(1, n_steps // 3))))
@@ -628,24 +628,31 @@ def _save_corrector_figure(c_plain, c_corr, snap_ref, snap_plain, snap_corr,
         vmin = min(float(s[fld].min()) for s in snap_ref.values())
         vmax = max(float(s[fld].max()) for s in snap_ref.values())
         nC = len(mtimes)
-        fig, ax = plt.subplots(3, nC, figsize=(FIGSIZE[0] * nC * 0.40,
-                                               FIGSIZE[1] * 1.45))
+        # Match the kh_grid montage style: square 2.2" panels, in-panel
+        # white time labels on a translucent black box (no titles), row
+        # labels via set_ylabel, shared color range.
+        fig, ax = plt.subplots(3, nC, figsize=(2.2 * nC, 2.2 * 3),
+                               squeeze=False)
         for r, (rlab, snaps) in enumerate(rows):
             for c, i in enumerate(mtimes):
                 a = ax[r, c]
+                a.grid(False)
                 if i in snaps:
                     a.imshow(snaps[i][fld].T, origin="lower", cmap=cmap,
-                             vmin=vmin, vmax=vmax)
+                             vmin=vmin, vmax=vmax, interpolation="bilinear",
+                             aspect="equal")
                 else:
                     a.text(0.5, 0.5, "diverged", transform=a.transAxes,
-                           ha="center", va="center", fontsize=8, color="0.6")
-                a.set_xticks([]); a.set_yticks([]); a.grid(False)
+                           ha="center", va="center", fontsize=11, color="0.6")
+                a.set_xticks([]); a.set_yticks([])
                 if r == 0:
-                    a.text(0.5, 1.04, f"t = {i * dt_c:.2f}",
-                           transform=a.transAxes, ha="center", va="bottom",
-                           fontsize=9)
+                    a.text(0.05, 0.92, f"t = {i * dt_c:.1f}",
+                           transform=a.transAxes, fontsize=11, color="white",
+                           fontweight="bold",
+                           bbox=dict(facecolor="black", alpha=0.4,
+                                     edgecolor="none", pad=1.5))
                 if c == 0:
-                    a.set_ylabel(rlab, fontsize=10)
+                    a.set_ylabel(rlab)
         fig.tight_layout()
         out = f"figures/autodiff_corrector_{name}_Nc{cfg.Nx}.png"
         fig.savefig(out); plt.close(fig)
