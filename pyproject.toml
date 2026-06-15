@@ -9,7 +9,7 @@ description = "A differentiable JAX-based hydrodynamics code for stratified flow
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "BSD-3-Clause"}
-authors = [{name = "Ulrich Steinwandel"}]
+authors = [{name = "Ulrich Philipp Steinwandel"}]
 keywords = ["hydrodynamics", "JAX", "GPU", "astrophysics", "ISM", "MHD"]
 classifiers = [
     "Development Status :: 4 - Beta",

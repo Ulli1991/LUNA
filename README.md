@@ -98,7 +98,7 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 ## Differentiable simulation (autodiff)
 
-LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable (JAX), forward and reverse mode, through the *production* solver. The section follows one arc: **(1)** the gradients are validated against analytic ground truth, **(2)** put to work on inverse problems across physics regimes, **(3)** shown to scale across GPUs, **(4)** a signature demonstration, and **(5)** a tangible astrophysical application — the X-ray response of a galactic wind to its feedback.
+LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable (JAX), forward and reverse mode, through the *production* solver. The section follows one arc: **(1)** the gradients are validated against analytic ground truth, **(2)** put to work on inverse problems across physics regimes, **(3)** shown to scale across GPUs, **(4)** a signature demonstration, **(5)** a tangible astrophysical application — the X-ray response of a galactic wind to its feedback — and **(6)** machine learning embedded *inside* the solver, a solver-in-the-loop flux corrector trained through the rollout.
 
 ### 1 · Gradient correctness
 
@@ -120,11 +120,9 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 
 *Reverse-mode IC inversion, **radiatively-cooling** flow — recover the IC energy perturbation through the cooling solver; the r(k) cliff at k ≈ 4–5 is the dissipative recovery limit. With the turbulence panel above and the **self-gravitating** inversion (FMG-Poisson adjoint, landing at 256³ on the 4-GPU path), this mirrors the diffhydro "turbulent, self-gravitating, radiatively cooling" reconstruction trilogy — run here through LUNA's production solver.*
 
-![2D blast-to-target reconstruction](figures/autodiff_blast_reconstruction_Nx256.png)
+*The self-gravity adjoint is the differentiable FMG-Poisson solve (implicit-function custom-VJP, **finite-difference-verified** to machine precision), so the gravitational inversion backpropagates correctly through gravitational collapse. The blast morphology-reconstruction (an ensemble of Sedov blasts colliding into a target) is the signature demonstration of §4 below.*
 
-*Blast reconstruction (2D, 256²) — optimize the initial internal-energy field so an ensemble of Sedov blasts collides and merges into a prescribed target morphology (the diffhydro Fig-12 analog).*
-
-*Two more inverse problems are landing: **coupled-physics parameter recovery** (`eta_recovery`) — recover the CC85 wind loadings (η_M, η_E) by reverse-mode AD through cooling + self-gravity + external potential simultaneously, a closed-loop correctness check across the full physics stack ("we measure what we put in"); and the **solver-in-the-loop KH corrector** (a CNN flux correction trained reverse-mode through the unrolled rollout, Um+ 2020) — retrain in flight.*
+*One more inverse problem is landing: **coupled-physics parameter recovery** (`eta_recovery`) — recover the CC85 wind loadings (η_M, η_E) by reverse-mode AD through cooling + self-gravity + external potential simultaneously, a closed-loop correctness check across the full physics stack ("we measure what we put in"). The solver-in-the-loop KH corrector now has its own section (§6 below).*
 
 ### 3 · Scale
 
@@ -138,11 +136,23 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 
 *The signature demonstration (diffhydro Fig-12 "Blasts" analog). The free parameter is the **entire per-cell initial internal-energy field** e(𝐱,0) of a uniform medium at rest — no placed seeds — optimized by reverse-mode AD through the production 2D solver. The field is **initialized uniform** and matched to the target only after a **long evolution** (~0.4 domain sound-crossings): in a cold medium every energy peak launches an *outgoing* Sedov blast, so a target-shaped IC physically cannot survive — the only way to reach the late-time target is to seat scattered blast sites whose shells **collide and converge**. The left panel (the converged e(𝐱,0)) is therefore a **disordered ensemble of Sedov sites that does not spell anything**; the snapshots (left → right) show those blasts expanding, colliding, and merging into a curved network of shocks whose late-time energy forms the word **LUNA**. The word is produced by the collision dynamics, not the initial layout — the IC could not have been assembled by hand. (256², 4 GPUs; the same recipe applied to an arbitrary photograph — you + Luna — runs through the identical pipeline.)*
 
+![LUNA emerging from an optimized turbulent velocity field — time montage](figures/autodiff_turb_field_LUNA_Nx256.png)
+
+*The companion demonstration (diffhydro Fig-12 turbulence row). Here the driver is not blast waves but a **turbulent velocity field**: the free parameter is the band-limited initial velocity v(𝐱,0) of an isothermal, initially uniform-density gas, optimized by reverse-mode AD so that the gas it **stirs and compresses** has a late-time density matching the target. The left panel is the optimized velocity field — a multi-scale swirling stirring pattern that **does not spell anything**; the snapshots (left → right) show the uniform gas being advected and compressed along the field's converging streamlines into a filamentary network whose late-time **density** forms the word **LUNA**. The target emerges purely from the turbulent compression, the same way diffhydro reconstructs a turbulent velocity field against a projected-density target. (256², Mach ≈ 3, isothermal.)*
+
 ### 5 · Application — M82 X-ray feedback sweep
 
 ![M82 soft X-ray luminosity vs feedback loading, with the autodiff gradient](figures/autodiff_m82_xray_sweep.png)
 
 *The tangible payoff. How a galactic wind's soft X-ray luminosity L_X responds to its feedback loadings: L_X swept over the mass- and energy-loading (η_M, η_E) of the M82-like CC85 wind, with the **autodiff gradient ∂lnL_X/∂lnη** (single backward pass) giving the local slope — the efficient, differentiable alternative to a brute-force forward grid, and the bridge to the X-ray observables (XRISM-era L_X, T, σ) that constrain feedback in real starbursts. **Sweep landing.***
+
+### 6 · Solver-in-the-loop — embedded neural flux corrector
+
+![Kelvin-Helmholtz flux corrector: coarse vs coarse+CNN vs reference, t = 0.5 → 3.0](figures/autodiff_corrector_density_Nc32.png)
+
+![Kelvin-Helmholtz flux corrector: density MSE vs time, coarse vs corrected](figures/autodiff_corrector_mse_Nc32.png)
+
+*Machine learning **inside** the solver. A convolutional flux-correction network B_θ is embedded in the update, `U ← step(U, Δt) + ∇·B_θ(U)`, and trained end-to-end by reverse-mode AD through the **unrolled** coarse rollout against a downsampled high-resolution reference — the diffhydro §8 Kelvin-Helmholtz corrector, reproduced at their 128×256 reference / 1:2-box geometry. Because the correction is emitted as a flux divergence it is **conservative by construction**. Top: density at t = 0.5 → 3.0 for the coarse solver (over-diffuse billows), the coarse solver + CNN (sharp roll-up and vortex cores), and the fine reference. Bottom: density MSE vs the reference — trained only to t = 1 (dashed line), the corrected rollout (blue) stays ~an order of magnitude below the uncorrected coarse solver (red) and remains stable all the way to t = 3, i.e. **3× past the training horizon**.*
 
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
@@ -338,10 +348,10 @@ If you use this code in your research, please cite:
 
 ```bibtex
 @software{luna,
-  author = {Your Name},
-  title = {LUNA: A Differentiable Astrophysical MHD Code},
-  year = {2025},
-  url = {https://github.com/yourusername/luna}
+  author = {Steinwandel, Ulrich Philipp},
+  title  = {LUNA: A Differentiable Astrophysical Hydrodynamics Code},
+  year   = {2026},
+  url    = {https://github.com/usteinwandel/luna}
 }
 ```
 

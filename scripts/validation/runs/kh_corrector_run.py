@@ -22,13 +22,16 @@ from main import run
 
 def main():
     Nc = int(os.environ.get("LUNA_KHC_NX", "32"))
+    Ncy = int(os.environ.get("LUNA_KHC_NY", str(Nc)))     # 1:2 box -> set 2*Nc
     n_steps = int(os.environ.get("LUNA_KHC_NSTEPS", "200"))
     n_iter = int(os.environ.get("LUNA_KHC_NITER", "100"))
     dt = float(os.environ.get("LUNA_KHC_DT", "0.004"))
+    Ly = 2.0                  # shear layers at y=0.5,1.5; Lx follows aspect (square cells)
+    Lx = Ly * Nc / Ncy
 
     overrides = dict(
         test_problem="Kelvin-Helmholtz", SPATIAL_DIMENSION=2, BOUNDARY=0,
-        Nx=Nc, Ny=Nc, Lx=2.0, Ly=2.0, gamma=5.0 / 3.0,
+        Nx=Nc, Ny=Ncy, Lx=Lx, Ly=Ly, gamma=5.0 / 3.0,
         ORDER=1, LIMITER=1, CFL=0.4,
         # ---- AUTODIFF: solver-in-the-loop corrector training ----
         autodiff_mode=True,

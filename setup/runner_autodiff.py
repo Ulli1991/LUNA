@@ -491,16 +491,19 @@ def _corrector_training(U0, cfg, step_fn, compute_dt_fn, is_main):
     from sources.ml_corrector import (cnn_init, cnn_correction, pool_factor,
                                        adam_init, adam_step)
 
-    Nc = int(cfg.Nx)
     f = 4
-    Nf = f * Nc
-    n_steps = int(cfg.autodiff_n_steps)
+    Nfx = f * int(cfg.Nx)
+    Nfy = f * int(cfg.Ny)
+    import os
+    n_steps = int(cfg.autodiff_n_steps)                       # eval horizon (~t=3)
+    n_train = int(os.environ.get("LUNA_KHC_NTRAIN",           # train horizon (~t=1)
+                                 str(max(1, n_steps // 3))))
     n_iter = int(cfg.autodiff_n_iter)
     dt_c = (float(cfg.autodiff_fixed_dt) if cfg.autodiff_fixed_dt > 0
             else float(compute_dt_fn(U0)))
 
     # --- fine reference via the PRODUCTION setup at 4x res ---
-    fine_cfg = replace(cfg, Nx=Nf, Ny=Nf, autodiff_mode=False)
+    fine_cfg = replace(cfg, Nx=Nfx, Ny=Nfy, autodiff_mode=False)
     fmesh, _ = create_distributed_mesh(fine_cfg)
     Uf, _, _ = initialize_simulation_distributed(fine_cfg, fmesh)
     fgrid = GridParams.from_config(fine_cfg)
@@ -520,116 +523,147 @@ def _corrector_training(U0, cfg, step_fn, compute_dt_fn, is_main):
     ref = jnp.stack(ref)
     norm = jnp.std(ref, axis=(0, 2, 3)) + 1e-12
     if is_main:
-        print(f"  corrector: coarse {Nc}^2, fine {Nf}^2, {n_steps} steps, "
+        print(f"  corrector: coarse {cfg.Nx}x{cfg.Ny}, fine {Nfx}x{Nfy}, {n_steps} steps, "
               f"dt={dt_c:.4e}; fine reference built", flush=True)
 
     def corrected_step(w, U):
         return step_fn(U, dt_c) + cnn_correction(w, U, norm)
 
-    def window_loss(w, start, K):
-        U = jax.lax.dynamic_index_in_dim(ref, start, axis=0, keepdims=False)
-        def body(U, j):
-            U = corrected_step(w, U)
-            tgt = jax.lax.dynamic_index_in_dim(ref, start + 1 + j, axis=0,
-                                               keepdims=False)
-            return U, jnp.mean(((U - tgt) / norm[:, None, None]) ** 2)
-        _, errs = jax.lax.scan(body, U, jnp.arange(K))
-        return jnp.mean(errs)
+    # Full-horizon solver-in-the-loop loss (Um et al. 2020): unroll the
+    # corrected coarse rollout from the TRUE initial state and match the
+    # downsampled fine reference at every step. Training on the model's OWN
+    # drifted trajectory (not clean reference windows) removes the exposure
+    # bias that made the corrector regress at deployment. sqrt-checkpointing
+    # keeps reverse-mode memory bounded for long rollouts.
+    per = max(1, int(round(n_train ** 0.5)))
+    nchunk = (n_train + per - 1) // per
 
-    def batch_loss(w, starts, K):
-        return jnp.mean(jax.vmap(lambda s: window_loss(w, s, K))(starts))
+    def full_loss(w):
+        @jax.checkpoint
+        def chunk(carry, _):
+            U, i = carry
+            def body(c, _):
+                U, i = c
+                U = corrected_step(w, U)
+                tgt = jax.lax.dynamic_index_in_dim(
+                    ref, jnp.minimum(i + 1, n_train), axis=0, keepdims=False)
+                e = jnp.mean(((U - tgt) / norm[:, None, None]) ** 2)
+                return (U, i + 1), e
+            (U, i), errs = jax.lax.scan(body, (U, i), None, length=per)
+            return (U, i), jnp.sum(errs)
+        _, esum = jax.lax.scan(chunk, (ref[0], 0), None, length=nchunk)
+        return jnp.sum(esum) / (nchunk * per)
 
-    loss_grad = jax.jit(jax.value_and_grad(batch_loss), static_argnums=2)
+    loss_grad = jax.jit(jax.value_and_grad(full_loss))
 
     key = jax.random.PRNGKey(0)
     key, ki = jax.random.split(key)
     w = cnn_init(ki)
     opt = adam_init(w)
-    BATCH = 2
     t0 = time.time()
     for it in range(n_iter):
-        K = (32, 64, 128, max(16, min(256, n_steps - 1)))[min(3, it * 4 // n_iter)]
-        key, ks = jax.random.split(key)
-        starts = jax.random.randint(ks, (BATCH,), 0, n_steps - K - 1)
-        lr = 5.0e-4 * (0.1 ** (it / n_iter))
-        L, g = loss_grad(w, starts, K)
-        if not bool(jnp.isfinite(L)) or float(L) > 1.0:
+        warm = min(1.0, (it + 1) / 20.0)          # 20-iter warmup, avoids early blow-up
+        lr = warm * 4.0e-4 * (0.5 ** (it / max(1, n_iter // 4)))
+        L, g = loss_grad(w)
+        if not bool(jnp.isfinite(L)):
             continue
         gn = jnp.sqrt(sum(jnp.sum(W ** 2) + jnp.sum(b ** 2) for W, b in g))
         g = jax.tree.map(lambda x: x * jnp.minimum(1.0, 1.0 / (gn + 1e-12)), g)
         w, opt = adam_step(g, w, opt, lr)
         if is_main and (it % max(1, n_iter // 10) == 0 or it == n_iter - 1):
-            print(f"    it {it:4d}  K={K}  loss={float(L):.4e}", flush=True)
+            print(f"    it {it:4d}  loss={float(L):.4e}", flush=True)
     if is_main:
         print(f"  training: {time.time()-t0:.0f}s", flush=True)
 
-    # eval: full coarse rollout with/without corrector vs reference
+    # eval: coarse vs corrected rollout to the FULL horizon (3x the training
+    # horizon, ~t=3), capturing field snapshots at 6 montage times + density
+    # MSE vs time (diffhydro Fig 16 montage + Fig 17 MSE curve).
     step_c_j = jax.jit(lambda U: step_fn(U, dt_c))
     corr_j = jax.jit(lambda U: corrected_step(w, U))
+    mtimes = sorted(set(max(1, n_steps * k // 6) for k in range(1, 7)))
     def rollout(stepper):
-        U = ref[0]; errs = []
+        U = ref[0]; curve = []; snaps = {}
         for i in range(1, n_steps + 1):
             U = stepper(U)
             if not bool(jnp.all(jnp.isfinite(U))):
                 break
             if i % 25 == 0:
-                errs.append(float(jnp.linalg.norm(U[0] - ref[i][0])
-                                  / jnp.linalg.norm(ref[i][0])))
-        return errs, U
-    e_plain, U_plain = rollout(step_c_j)
-    e_corr, U_corr = rollout(corr_j)
-    bp = e_plain[-1] if e_plain else float("nan")
-    bc = e_corr[-1] if e_corr else float("nan")
+                curve.append((i * dt_c, float(jnp.mean((U[0] - ref[i][0]) ** 2))))
+            if i in mtimes:
+                snaps[i] = np.asarray(U)
+        return curve, snaps
+    c_plain, snap_plain = rollout(step_c_j)
+    c_corr, snap_corr = rollout(corr_j)
+    snap_ref = {i: np.asarray(ref[i]) for i in mtimes}
+    bp = c_plain[-1][1] if c_plain else float("nan")
+    bc = c_corr[-1][1] if c_corr else float("nan")
     if is_main:
-        print(f"  rollout rel-err(rho): coarse-only={bp:.3e}  +CNN={bc:.3e}  "
-              f"(corr survived {len(e_corr)*25}/{n_steps} steps)", flush=True)
-        _save_corrector_figure(e_plain, e_corr,
-                               np.asarray(ref[-1][0]), np.asarray(U_plain[0]),
-                               np.asarray(U_corr[0]), cfg)
-    return {"coarse_err": e_plain, "corr_err": e_corr, "weights": w}
+        print(f"  density MSE @ t_end: coarse-only={bp:.3e}  +CNN={bc:.3e}  "
+              f"(corr survived {len(c_corr)*25}/{n_steps} steps; "
+              f"trained to step {n_train})", flush=True)
+        _save_corrector_figure(c_plain, c_corr, snap_ref, snap_plain, snap_corr,
+                               mtimes, dt_c, n_train, cfg)
+    return {"coarse_mse": c_plain, "corr_mse": c_corr, "weights": w}
 
 
-def _save_corrector_figure(e_plain, e_corr, rho_ref, rho_coarse, rho_corr, cfg):
-    """Solver-in-the-loop KH corrector (reproduces the diffhydro/Horowitz KH
-    example with the LUNA KH IC): density fields at the final time for the
-    downsampled fine reference, the plain coarse solver, and the coarse solver +
-    trained CNN corrector — plus the rollout error vs the fine reference. The
-    corrected coarse run should recover the fine KH roll-up the coarse run smears
-    out."""
+def _save_corrector_figure(c_plain, c_corr, snap_ref, snap_plain, snap_corr,
+                           mtimes, dt_c, n_train, cfg):
+    """diffhydro Fig 16/17 analog for the solver-in-the-loop KH corrector.
+    Montage (Fig 16): density and total-energy fields with rows
+    {coarse / coarse+CNN / reference} across the montage times. MSE curve
+    (Fig 17): density MSE vs time for coarse vs corrected, with the training
+    horizon marked (the corrector should track the reference well past it)."""
     import os
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from utils.figstyle import apply_style, decorate, FIGSIZE
     apply_style()
-
-    fig, ax = plt.subplots(1, 4, figsize=(FIGSIZE[0] * 2.4, FIGSIZE[1] * 0.95))
-    vmin = float(min(rho_ref.min(), rho_coarse.min(), rho_corr.min()))
-    vmax = float(max(rho_ref.max(), rho_coarse.max(), rho_corr.max()))
-    panels = [(rho_ref, "fine reference\n(downsampled)"),
-              (rho_coarse, f"coarse solver\n(err {e_plain[-1]:.2e})" if e_plain else "coarse"),
-              (rho_corr, f"coarse + CNN\n(err {e_corr[-1]:.2e})" if e_corr else "coarse+CNN")]
-    for a, (rho, ttl) in zip(ax[:3], panels):
-        im = a.imshow(rho.T, origin="lower", cmap="magma", vmin=vmin, vmax=vmax)
-        a.grid(False); a.set_xticks([]); a.set_yticks([])
-        a.text(0.04, 0.96, ttl, transform=a.transAxes, va="top", ha="left",
-               fontsize=9, color="white")
-    fig.colorbar(im, ax=ax[2], shrink=0.8, label=r"$\rho$")
-
-    # (d) rollout error vs the fine reference
-    if e_plain:
-        ax[3].semilogy((np.arange(len(e_plain)) + 1) * 25, e_plain, "o-",
-                       color="C3", label=fr"coarse ({e_plain[-1]:.2e})")
-    if e_corr:
-        ax[3].semilogy((np.arange(len(e_corr)) + 1) * 25, e_corr, "s-",
-                       color="C0", label=fr"+ CNN ({e_corr[-1]:.2e})")
-    ax[3].set_xlabel("rollout step")
-    ax[3].set_ylabel("density rel. error vs fine ref")
-    ax[3].legend(loc="upper left")
-    decorate(ax[3])
-
-    fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
-    out = f"figures/autodiff_corrector_Nc{cfg.Nx}.png"
+    rows = [("coarse", snap_plain), ("coarse + CNN", snap_corr),
+            ("reference", snap_ref)]
+
+    # ---- Fig 16: density + total-energy montages ----
+    for fld, cmap, name in ((0, "magma", "density"), (-1, "inferno", "energy")):
+        vmin = min(float(s[fld].min()) for s in snap_ref.values())
+        vmax = max(float(s[fld].max()) for s in snap_ref.values())
+        nC = len(mtimes)
+        fig, ax = plt.subplots(3, nC, figsize=(FIGSIZE[0] * nC * 0.40,
+                                               FIGSIZE[1] * 1.45))
+        for r, (rlab, snaps) in enumerate(rows):
+            for c, i in enumerate(mtimes):
+                a = ax[r, c]
+                if i in snaps:
+                    a.imshow(snaps[i][fld].T, origin="lower", cmap=cmap,
+                             vmin=vmin, vmax=vmax)
+                else:
+                    a.text(0.5, 0.5, "diverged", transform=a.transAxes,
+                           ha="center", va="center", fontsize=8, color="0.6")
+                a.set_xticks([]); a.set_yticks([]); a.grid(False)
+                if r == 0:
+                    a.text(0.5, 1.04, f"t = {i * dt_c:.2f}",
+                           transform=a.transAxes, ha="center", va="bottom",
+                           fontsize=9)
+                if c == 0:
+                    a.set_ylabel(rlab, fontsize=10)
+        fig.tight_layout()
+        out = f"figures/autodiff_corrector_{name}_Nc{cfg.Nx}.png"
+        fig.savefig(out); plt.close(fig)
+        print(f"  wrote {out}", flush=True)
+
+    # ---- Fig 17: density MSE vs time ----
+    fig, a = plt.subplots(figsize=FIGSIZE)
+    if c_plain:
+        t, e = zip(*c_plain); a.semilogy(t, e, "o-", color="C3", label="coarse")
+    if c_corr:
+        t, e = zip(*c_corr); a.semilogy(t, e, "s-", color="C0",
+                                        label="coarse + CNN")
+    a.axvline(n_train * dt_c, color="0.5", ls="--", lw=1)
+    a.text(n_train * dt_c, a.get_ylim()[1], " trained to here", fontsize=8,
+           va="top", ha="left", color="0.4")
+    a.set_xlabel("time"); a.set_ylabel("density MSE vs reference")
+    a.legend(loc="lower right"); decorate(a)
+    fig.tight_layout()
+    out = f"figures/autodiff_corrector_mse_Nc{cfg.Nx}.png"
     fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}", flush=True)

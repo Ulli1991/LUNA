@@ -52,13 +52,22 @@ def solve_poisson_fmg_diff(rho, dx, fourpiG, boundary,
 
     The extra tuning params are appended (not inserted) so existing positional
     callers — e.g. tests/test_poisson_adjoint.py — keep working unchanged.
+
+    Gradient accuracy: the implicit adjoint assumes Φ = A⁻¹(4πGρ) is solved to
+    tight tolerance.  Under PERIODIC BC the constant null-space makes the FMG
+    converge slowly, so a loose forward solve yields an inaccurate gradient (the
+    forward result is fine for physics, but the reverse-mode gradient is wrong).
+    We therefore floor the cycle counts in the differentiable path so both the
+    forward and adjoint solves are tight enough for FD-correct gradients.
     """
+    nvpl = max(int(n_vcycles_per_level), 2)
+    nev = max(int(n_extra_vcycles), 12 if boundary == 0 else 4)
     phi = solve_poisson_fmg(
         rho, dx, fourpiG,
         boundary=boundary,
         n_levels=n_levels,
-        n_vcycles_per_level=n_vcycles_per_level,
-        n_extra_vcycles=n_extra_vcycles,
+        n_vcycles_per_level=nvpl,
+        n_extra_vcycles=nev,
         n_pre=n_pre, n_post=n_post, n_coarsest=n_coarsest,
     )
     if boundary == 0:
@@ -89,12 +98,14 @@ def _bwd(dx, fourpiG, boundary, n_vcycles_per_level, n_extra_vcycles,
         # (see _fwd). Its adjoint is ρ̄ = 4πG · P·A⁻¹·P · Φ̄ — project the
         # cotangent into the zero-mean subspace, solve, project again.
         phi_bar = phi_bar - jnp.mean(phi_bar)
+    nvpl = max(int(n_vcycles_per_level), 2)
+    nev = max(int(n_extra_vcycles), 12 if boundary == 0 else 4)
     lam = solve_poisson_fmg(
         phi_bar, dx, 1.0,
         boundary=boundary,
         n_levels=n_levels,
-        n_vcycles_per_level=n_vcycles_per_level,
-        n_extra_vcycles=n_extra_vcycles,
+        n_vcycles_per_level=nvpl,
+        n_extra_vcycles=nev,
         n_pre=n_pre, n_post=n_post, n_coarsest=n_coarsest,
     )
     if boundary == 0:
