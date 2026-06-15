@@ -132,11 +132,11 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 
 ### 6 · Solver-in-the-loop — embedded neural flux corrector
 
-![Kelvin-Helmholtz flux corrector: coarse vs coarse+CNN vs reference, t = 0.5 → 3.0](figures/autodiff_corrector_density_Nc32.png)
+![Kelvin-Helmholtz flux corrector: coarse vs coarse+CNN vs reference, t = 0.5 → 3.0](figures/autodiff_corrector_density_Nc128.png)
 
-![Kelvin-Helmholtz flux corrector: density MSE vs time, coarse vs corrected](figures/autodiff_corrector_mse_Nc32.png)
+![Kelvin-Helmholtz flux corrector: density MSE vs time, coarse vs corrected](figures/autodiff_corrector_mse_Nc128.png)
 
-*Machine learning **inside** the solver. A convolutional flux-correction network B_θ is embedded in the update, `U ← step(U, Δt) + ∇·B_θ(U)`, and trained end-to-end by reverse-mode AD through the **unrolled** coarse rollout against a downsampled high-resolution reference — the diffhydro §8 Kelvin-Helmholtz corrector, reproduced at their 128×256 reference / 1:2-box geometry. Because the correction is emitted as a flux divergence it is **conservative by construction**. Top: density at t = 0.5 → 3.0 for the coarse solver (over-diffuse billows), the coarse solver + CNN (sharp roll-up and vortex cores), and the fine reference. Bottom: density MSE vs the reference — trained only to t = 1 (dashed line), the corrected rollout (blue) stays ~an order of magnitude below the uncorrected coarse solver (red) and remains stable all the way to t = 3, i.e. **3× past the training horizon**.*
+*Machine learning **inside** the solver. A convolutional flux-correction network B_θ is embedded in the update, `U ← step(U, Δt) + ∇·B_θ(U)`, and trained end-to-end by reverse-mode AD through the **unrolled** coarse rollout against a downsampled high-resolution reference — the diffhydro §8.1 Kelvin-Helmholtz corrector, reproduced on **our own 2D KH instability**. Following §8.1 the shear layer is seeded with **broadband white noise** so a turbulent, multi-scale layer develops that the coarse grid cannot resolve; the target is a **self-referential** LUNA run at 8× resolution (**128² coarse → 1024² fine**, downsampled to the coarse grid — no external code in the loop). Because the correction is emitted as a flux divergence it is **conservative by construction**. Top: density at t = 0.5 → 3.0 for the coarse solver, the coarse solver + CNN, and the downsampled fine reference. Bottom: density MSE vs the reference — trained only to t = 1 (dashed line), the corrected rollout remains stable and tracks the reference well past the training horizon, to t = 3 (**3× past training**), where accumulated phase drift in the nonlinear regime dominates the pointwise error for both.*
 
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
