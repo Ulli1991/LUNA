@@ -134,9 +134,9 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 
 ### 4 · Signature — "LUNA out of the explosion set"
 
-![LUNA assembled from an ensemble of colliding blast waves — time montage](figures/autodiff_blast_assembly_LUNA_Nx512.png)
+![LUNA emerging from a colliding-blast network — time montage](figures/autodiff_blast_field_LUNA_Nx256.png)
 
-*The signature demonstration. The initial condition is an ensemble of discrete blast **seeds** whose **positions and energies are both optimized** by reverse-mode AD through the production 2D solver (512², 4096 blasts, 4 GPUs). Each seed launches a Sedov blast; the snapshots (t = 0 → t_end, left to right) show the blast waves expanding and **colliding**, their overlapping shells assembling into the word **LUNA** — the merged shock network traces the letters (right panel) toward the target. The word is built by the explosion set itself — the differentiable solver finds where to place and how hard to detonate ~4000 blasts so their collisions spell LUNA. (The same blast-assembly method applied to an arbitrary photograph — you + Luna — is landing on the 4-GPU path.)*
+*The signature demonstration (diffhydro Fig-12 "Blasts" analog). The free parameter is the **entire per-cell initial internal-energy field** e(𝐱,0) of a uniform medium at rest — no placed seeds — optimized by reverse-mode AD through the production 2D solver. The field is **initialized uniform** and matched to the target only after a **long evolution** (~0.4 domain sound-crossings): in a cold medium every energy peak launches an *outgoing* Sedov blast, so a target-shaped IC physically cannot survive — the only way to reach the late-time target is to seat scattered blast sites whose shells **collide and converge**. The left panel (the converged e(𝐱,0)) is therefore a **disordered ensemble of Sedov sites that does not spell anything**; the snapshots (left → right) show those blasts expanding, colliding, and merging into a curved network of shocks whose late-time energy forms the word **LUNA**. The word is produced by the collision dynamics, not the initial layout — the IC could not have been assembled by hand. (256², 4 GPUs; the same recipe applied to an arbitrary photograph — you + Luna — runs through the identical pipeline.)*
 
 ### 5 · Application — M82 X-ray feedback sweep
 
