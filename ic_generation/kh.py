@@ -60,11 +60,23 @@ def kelvin_helmholtz(cfg, x_slice=None, y_slice=None):
 
     rho = 1.0 + 0.5 * delta * (jnp.tanh((Y - Y1) / a) - jnp.tanh((Y - Y2) / a))
     ux = -U0 * ((jnp.tanh((Y - Y1) / a) - jnp.tanh((Y - Y2) / a)) - 1.0)
-    uy = (
-        A
-        * jnp.sin(2 * jnp.pi * X)
-        * (jnp.exp(-((Y - Y1) ** 2) / sigma**2) + jnp.exp(-((Y - Y2) ** 2) / sigma**2))
-    )
+    envelope = jnp.exp(-((Y - Y1) ** 2) / sigma**2) + jnp.exp(-((Y - Y2) ** 2) / sigma**2)
+
+    # Seeding. Default: a single clean sin mode (the convergent KH used by the
+    # kh_grid resolution series). With LUNA_KH_NOISE>0: PURE broadband white
+    # noise and NO seeded mode -- the diffhydro §8.1 corrector regime, where a
+    # turbulent multi-scale shear layer develops that a coarse grid cannot
+    # resolve. Reproducible: noise is built on the FULL grid from a fixed seed
+    # then sliced to the local shard, so coarse = downsampled(fine) is exact.
+    import os
+    noise_amp = float(os.environ.get("LUNA_KH_NOISE", "0.0"))
+    if noise_amp > 0.0:
+        import numpy as _np
+        _rng = _np.random.default_rng(1234)
+        nloc = jnp.asarray(_rng.standard_normal((Nx, Ny))[x_start:x_end, y_start:y_end])
+        uy = noise_amp * nloc * envelope
+    else:
+        uy = A * jnp.sin(2 * jnp.pi * X) * envelope
 
     p = jnp.ones((Nx_local, Ny_local)) * 10.0
     E = p / (gamma - 1.0) + 0.5 * rho * (ux**2 + uy**2)
