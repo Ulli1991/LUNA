@@ -44,18 +44,6 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Sedov 3D resolution study: spherically-averaged radial profiles at t = 10⁴ yr of number density n [cm⁻³], radial velocity v_r [km/s], pressure P [erg/cm³], and temperature T [K] for every LUNA Sedov run on disk (currently Nx=128³, 256³, 512³). Curves shaded by resolution; dashed line marks the analytic Sedov-Taylor shock radius. As Nx increases the shock peak sharpens toward the Rankine-Hugoniot strong-shock ratio (ρ₂/ρ₁ = 4 for γ=5/3) while the central rarefaction deepens.*
 
-![Driven isothermal turbulence: 2×2 resolution montage](figures/turbulence_panel.png)
-
-*Subsonic (M_rms = 0.3) driven isothermal turbulence at t ≈ 4 (≈1.2 turnover times): density slice through z = L/2 for a resolution sweep Nx³ ∈ {128³, 256³, 512³, 1024³}. Solenoidal-only OU forcing (Federrath/Schmidt 2010) on a 1³ periodic box, k_min=1, k_max=2 driving range, identical PRNG seed at every Nx so the driven realisation matches. EOS: LUNA solves γ=5/3 Euler internally for HLLC robustness, but the runner enforces p = c_s² ρ as an operator-split post-step projection (soft isothermal thermostat) — no spurious compressive heating accumulates. The 1024³ run is on a 2-node × 4-GPU schedule slot.*
-
-![M82 disk + CC85 starburst wind — log n_H at t = 60 Myr](figures/m82_wind_density.png)
-
-*3D M82-like starburst wind following the Schneider, Robertson & Thompson (2018) CC85 setup: rotating exponential isothermal gas disk (M_gas = 2.5 × 10⁹ M⊙, R_d = 1.6 kpc, R_trunc = 4.5 kpc, T = 10⁴ K) in vertical hydrostatic equilibrium within a static Miyamoto-Nagai stellar disk (M⋆ = 10¹⁰ M⊙, a = 0.8 kpc, b = 0.15 kpc) + NFW halo (M_vir = 5 × 10¹¹ M⊙, c = 20) potential, plus CC85 central spherical injection (R_⋆ = 300 pc; SFR = 12 M⊙/yr, η_M = 0.3, η_E = 0.6 → Ṁ = 3.6 M⊙/yr, Ė ≈ 2.3 × 10⁴² erg/s, v_∞ ≈ 1400 km/s). Hot CGM ambient (n = 10⁻⁴ cm⁻³, T = 10⁶ K) fills the rest of the 10 × 10 × 20 kpc box; Sutherland & Dopita (1993) CIE cooling integrated with Townsend (2009). x–z slice through y = Ly/2 of log₁₀ n_H at t = 60 Myr. Resolution scan Nx ∈ {128, 256, 512}; the 512 panel is a placeholder for a multi-node run still in flight.*
-
-![M82 wind — radial profiles](figures/m82_wind_radial_profiles.png)
-
-*Spherically-averaged radial profiles of n_H, v_rad, and T at t = 60 Myr for each resolution. Computed by 3D binning in radius from the box center. Useful for direct comparison against the analytic CC85 solution (n ∝ r⁻², roughly constant v ∝ v_∞ outside R_⋆, and adiabatic T ∝ r⁻⁴ᐟ³ in the steady wind) and Schneider+ 2018 CGOLS Figure 4.*
-
 ![Jeans instability: growth rate vs linear theory across resolutions](figures/jeans_growth.png)
 
 *Linear Jeans instability against analytic linear theory. Periodic self-gravitating box seeded with the growing Jeans eigenmode (adiabatic δP = c_s²δρ plus the matching longitudinal velocity), so the unstable mode grows as a clean exponential δρ ∝ e^{σt} with σ = √(4πGρ₀ − c_s²k²). LUNA's measured mode amplitude (points) at **N = 32³, 64³, 128³, 256³** all track the analytic A₀e^{σt} (black) to **σ_meas = 5.32–5.34 vs σ_exact = 5.334 (≤ 0.3%)**, converging with resolution. The underlying FMG multigrid Poisson solver is itself accurate to 0.08% on the analytic single-mode potential and converges to a 10⁻¹⁴ residual.*
@@ -86,13 +74,9 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 
 ### 3 · Inverse modeling — IC recovery through cooling and self-gravity
 
-![Radiative-cooling IC inversion](figures/autodiff_ic_inversion_JeansInstability3D_cool_Nx32.png)
+![IC recovery — radiative cooling (top) and self-gravity (bottom)](figures/autodiff_ic_recovery_Nx.png)
 
-*Reverse-mode IC inversion, **radiatively-cooling** flow — recover the initial energy perturbation from the evolved state by reverse-mode AD through the production cooling solver. δ_true vs δ_recovered; the spectral correlation r(k) ≈ 1 out to k ≈ 4–5 then collapses — the dissipative recovery limit set by cooling. (Low-resolution demo at Nx 32; the 256³ version runs on the same 4-GPU auto-sharded adjoint path.)*
-
-![Self-gravitating IC inversion](figures/autodiff_ic_inversion_JeansInstability3D_selfgrav_Nx64.png)
-
-*Reverse-mode IC inversion, **self-gravitating** collapse — recover the initial density perturbation through LUNA's differentiable FMG-Poisson solve. The gravity adjoint is an implicit-function custom-VJP, **finite-difference-verified to machine precision**, so the gradient backpropagates correctly through gravitational collapse. With the cooling panel above, this covers IC recovery through both radiative cooling and self-gravity, run through LUNA's production solver. (Nx 64; 256³ on the same sharded path.)*
+*Reverse-mode IC inversion through two different physics modules; each panel shows δ_true, δ_recovered, and the spectral correlation r(k). **Top — radiatively-cooling flow:** recover the initial energy perturbation from the evolved state by reverse-mode AD through the production cooling solver. r(k) ≈ 1 out to k ≈ 4–5 then collapses — the dissipative recovery limit set by cooling (low-resolution demo at Nx 32; the 256³ version runs on the same 4-GPU auto-sharded adjoint path). **Bottom — self-gravitating collapse:** recover the initial density perturbation through LUNA's differentiable FMG-Poisson solve. The gravity adjoint is an implicit-function custom-VJP, **finite-difference-verified to machine precision**, so the gradient backpropagates correctly through gravitational collapse (Nx 64; 256³ on the same sharded path). Together the two panels cover IC recovery through both radiative cooling and self-gravity, run through LUNA's production solver.*
 
 ### 4 · Solver-in-the-loop — embedded neural flux corrector
 
@@ -103,6 +87,20 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 ![Kelvin-Helmholtz flux corrector: density MSE vs time, coarse vs corrected](figures/autodiff_corrector_mse_Nc32.png)
 
 *Density MSE vs the 256² reference over the rollout. Trained only to t = 2 (dashed line, into the nonlinear billow phase), the corrected rollout (blue) stays **roughly an order of magnitude below** the uncorrected coarse solver (red) and remains stable to t = 3, cutting the t = 3 density error by **~70%**. The residual gap is the tightest spiral windings of the reference — some of which is below what a 32² grid can represent.*
+
+## Science applications
+
+![Driven isothermal turbulence: 2×2 resolution montage](figures/turbulence_panel.png)
+
+*Subsonic (M_rms = 0.3) driven isothermal turbulence at t ≈ 4 (≈1.2 turnover times): density slice through z = L/2 for a resolution sweep Nx³ ∈ {128³, 256³, 512³, 1024³}. Solenoidal-only OU forcing (Federrath/Schmidt 2010) on a 1³ periodic box, k_min=1, k_max=2 driving range, identical PRNG seed at every Nx so the driven realisation matches. EOS: LUNA solves γ=5/3 Euler internally for HLLC robustness, but the runner enforces p = c_s² ρ as an operator-split post-step projection (soft isothermal thermostat) — no spurious compressive heating accumulates. The 1024³ run is on a 2-node × 4-GPU schedule slot.*
+
+![M82 disk + CC85 starburst wind — log n_H at t = 60 Myr](figures/m82_wind_density.png)
+
+*3D M82-like starburst wind following the Schneider, Robertson & Thompson (2018) CC85 setup: rotating exponential isothermal gas disk (M_gas = 2.5 × 10⁹ M⊙, R_d = 1.6 kpc, R_trunc = 4.5 kpc, T = 10⁴ K) in vertical hydrostatic equilibrium within a static Miyamoto-Nagai stellar disk (M⋆ = 10¹⁰ M⊙, a = 0.8 kpc, b = 0.15 kpc) + NFW halo (M_vir = 5 × 10¹¹ M⊙, c = 20) potential, plus CC85 central spherical injection (R_⋆ = 300 pc; SFR = 12 M⊙/yr, η_M = 0.3, η_E = 0.6 → Ṁ = 3.6 M⊙/yr, Ė ≈ 2.3 × 10⁴² erg/s, v_∞ ≈ 1400 km/s). Hot CGM ambient (n = 10⁻⁴ cm⁻³, T = 10⁶ K) fills the rest of the 10 × 10 × 20 kpc box; Sutherland & Dopita (1993) CIE cooling integrated with Townsend (2009). x–z slice through y = Ly/2 of log₁₀ n_H at t = 60 Myr. Resolution scan Nx ∈ {128, 256, 512}; the 512 panel is a placeholder for a multi-node run still in flight.*
+
+![M82 wind — radial profiles](figures/m82_wind_radial_profiles.png)
+
+*Spherically-averaged radial profiles of n_H, v_rad, and T at t = 60 Myr for each resolution. Computed by 3D binning in radius from the box center. Useful for direct comparison against the analytic CC85 solution (n ∝ r⁻², roughly constant v ∝ v_∞ outside R_⋆, and adiabatic T ∝ r⁻⁴ᐟ³ in the steady wind) and Schneider+ 2018 CGOLS Figure 4.*
 
 ## Appendix — parallel scaling (shard_map validation)
 
