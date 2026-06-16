@@ -60,9 +60,9 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Spherically-averaged radial profiles of n_H, v_rad, and T at t = 60 Myr for each resolution. Computed by 3D binning in radius from the box center. Useful for direct comparison against the analytic CC85 solution (n ∝ r⁻², roughly constant v ∝ v_∞ outside R_⋆, and adiabatic T ∝ r⁻⁴ᐟ³ in the steady wind) and Schneider+ 2018 CGOLS Figure 4.*
 
-![Jeans instability: growth rate vs linear theory](figures/jeans_growth_Nx64.png)
+![Jeans instability: growth rate vs linear theory across resolutions](figures/jeans_growth.png)
 
-*Linear Jeans instability against analytic linear theory. Periodic self-gravitating box (64³) seeded with the growing Jeans eigenmode (adiabatic δP = c_s²δρ plus the matching longitudinal velocity), so the unstable mode grows as a clean exponential δρ ∝ e^{σt} with σ = √(4πGρ₀ − c_s²k²). LUNA's measured mode amplitude (points) and its log-slope fit track the analytic A₀e^{σt} (black) to **σ_meas = 5.34 vs σ_exact = 5.33 (0.06%)**. The underlying FMG multigrid Poisson solver is itself accurate to 0.08% on the analytic single-mode potential and converges to a 10⁻¹⁴ residual.*
+*Linear Jeans instability against analytic linear theory. Periodic self-gravitating box seeded with the growing Jeans eigenmode (adiabatic δP = c_s²δρ plus the matching longitudinal velocity), so the unstable mode grows as a clean exponential δρ ∝ e^{σt} with σ = √(4πGρ₀ − c_s²k²). LUNA's measured mode amplitude (points) at **N = 32³, 64³, 128³, 256³** all track the analytic A₀e^{σt} (black) to **σ_meas = 5.32–5.34 vs σ_exact = 5.334 (≤ 0.3%)**, converging with resolution. The underlying FMG multigrid Poisson solver is itself accurate to 0.08% on the analytic single-mode potential and converges to a 10⁻¹⁴ residual.*
 
 ![Evrard collapse: LUNA resolution convergence vs AREPO](figures/gravity_convergence_evrard.png)
 
