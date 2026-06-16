@@ -71,10 +71,11 @@ def main():
             if os.environ.get("LUNA_MESH_SHAPE") else None
         ),
         USE_SHARDMAP=os.environ.get("LUNA_USE_SHARDMAP", "0") == "1",
-        # float32 for the 1024^3 multi-node run — float64 + workspace overflows 40 GB
-        # per A100 and triggers an XLA collective-combiner bug. Sedov visualization
-        # doesn't need float64 precision.
-        enable_x64=False,
+        # Precision via LUNA_X64 env (default float32). float64 doubles the
+        # working set, so large grids per A100 (e.g. 1024^3 on few GPUs) can OOM
+        # / trip the XLA collective-combiner bug — use more GPUs there. The
+        # code-vs-code scaling benchmark sets LUNA_X64=1 to match AthenaK (FP64).
+        enable_x64=os.environ.get("LUNA_X64", "0") == "1",
         enable_checkpointing=False,
     )
     print(f"Sedov 3D Arepo run: box={BOX_SIZE_PC} pc, Nx={NX}, t_end={T_END_YR} yr "

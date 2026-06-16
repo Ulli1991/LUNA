@@ -45,13 +45,19 @@ def boss_bodenheimer_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     m = int(getattr(cfg, "bb_m", 2))
     amb_frac = float(getattr(cfg, "bb_rho_ambient_frac", 1.0e-3))
     beta = float(getattr(cfg, "bb_beta", 0.16))              # E_rot/|E_grav|
+    omega_rad_s = float(getattr(cfg, "bb_omega_rad_s", 0.0))  # explicit physical Ω
     G_code = float(getattr(cfg, "GRAVITATIONAL_G", 1.0))
 
     rho_bar = rho0_cgs / u.UnitDensity_in_cgs                 # code density
     R = R_pc * PC_CM / u.UnitLength_in_cm                     # code length
-    # Rigid-body Ω from the dimensionless rotation parameter β = E_rot/|E_grav|:
-    # for a uniform sphere Ω² = 3βGM/R³ = 4π β G ρ̄  (the canonical BB79 number).
-    omega = np.sqrt(4.0 * np.pi * beta * G_code * rho_bar)
+    # Rigid-body Ω. Prefer an explicit physical rate (bb_omega_rad_s, rad/s) so
+    # we can pin the reference value exactly (SEREN Ω=1.6e-12 rad/s); otherwise
+    # derive from β (uniform sphere Ω²=3βGM/R³=4πβGρ̄). Note β=0.16 gives only
+    # Ω=1.39e-12 here, so the two are NOT interchangeable.
+    if omega_rad_s > 0.0:
+        omega = omega_rad_s * u.UnitTime_in_s                 # rad/s -> rad/code-time
+    else:
+        omega = np.sqrt(4.0 * np.pi * beta * G_code * rho_bar)
     rho_amb = amb_frac * rho_bar
 
     # barotropic EOS parameters (for the IC pressure; runner enforces evolution)

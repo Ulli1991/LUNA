@@ -30,7 +30,7 @@ MYR = 1.0e6 * 3.15576e7
 
 def main():
     Nx = int(os.environ.get("LUNA_BB_NX", "64"))
-    t_Myr = float(os.environ.get("LUNA_BB_TEND_MYR", "0.04"))
+    t_Myr = float(os.environ.get("LUNA_BB_TEND_MYR", "0.06"))   # cover SEREN Fig 13 (to 55 kyr)
     hydro_bc = int(os.environ.get("LUNA_BB_HYDRO_BC", "4"))   # 4 = diode (outflow-only)
     riemann = os.environ.get("LUNA_BB_RIEMANN", "hllc")
     sinks = os.environ.get("LUNA_BB_SINKS", "0") == "1"       # on-the-fly sink particles
@@ -39,7 +39,7 @@ def main():
     # star-formation units: pc, M_sun, km/s
     units = UnitSystem(UnitLength_in_cm=PC, UnitMass_in_g=MSUN,
                        UnitVelocity_in_cm_per_s=1.0e5)
-    R_pc = 0.01
+    R_pc = 3.2e16 / PC                   # SEREN R = 3.2e16 cm = 0.010370 pc
     box_fac = float(os.environ.get("LUNA_BB_BOXFAC", "2.0"))
     L = box_fac * R_pc                   # box = box_fac·R (default 2R: Truelove-safe
                                          # at 256³, ~7.6 cells per λ_J at ρ_AD)
@@ -57,11 +57,11 @@ def main():
         ORDER=1, LIMITER=0, CFL=0.3,
         riemann_solver=riemann,
         units=units,
-        t_end=t_end, time_bet_snaps=t_end / 30,
+        t_end=t_end, time_bet_snaps=t_end / 60,   # ~1 kyr cadence -> land near 25/33/55 kyr
         SELF_GRAVITY=True, GRAVITATIONAL_G=units.GravityConstant,
         POISSON_MAX_CYCLES=20,
-        # ---- paper IC (physical cgs); Ω derived from β=0.16 ----
-        bb_rho0_cgs=1.44e-17, bb_R_pc=R_pc, bb_beta=0.16,
+        # ---- paper IC (physical cgs); SEREN Ω pinned directly ----
+        bb_rho0_cgs=1.44e-17, bb_R_pc=R_pc, bb_omega_rad_s=1.6e-12,
         bb_amp=0.5, bb_m=2, bb_rho_ambient_frac=1.0e-3,
         # ---- barotropic EOS ----
         barotropic_eos=True, barotropic_T0_K=10.0,
@@ -75,7 +75,7 @@ def main():
         # spawn sinks once a core crosses ρ_create = sink_fac · ρ_AD (the density
         # where the barotropic EOS stiffens — the first hydrostatic core). Hybrid
         # gravity: mesh Poisson for gas + gas→sink, direct N-body for sink↔sink.
-        rho_create_code = sink_fac * 1.0e-14 / units.UnitDensity_in_cgs
+        rho_create_code = sink_fac * 2.0e-12 / units.UnitDensity_in_cgs   # SEREN ρ_SINK=2e-12
         overrides.update(
             sinks_enabled=True, sink_max_count=4,
             sink_creation_density=rho_create_code,
@@ -85,8 +85,8 @@ def main():
         )
         print(f"  SINKS on: ρ_create={rho_create_code:.3e} code "
               f"({sink_fac}·ρ_AD), N_max=4")
-    print(f"BB79 (physical/barotropic): Nx={Nx}, R={R_pc} pc, rho0=1.44e-17, A=0.5, "
-          f"beta=0.16, T0=10K, rho_AD=1e-14, BC={hydro_bc}, riemann={riemann}, "
+    print(f"BB79 (physical/barotropic): Nx={Nx}, R={R_pc:.5f} pc, rho0=1.44e-17, A=0.5, "
+          f"Omega=1.6e-12, T0=10K, rho_AD=1e-14, rho_SINK=2e-12, BC={hydro_bc}, riemann={riemann}, "
           f"t_end={t_Myr} Myr ({t_end:.4f} code), G_code={units.GravityConstant:.4e}")
     initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
     overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
