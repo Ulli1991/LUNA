@@ -82,39 +82,15 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 ## Differentiable simulation (autodiff)
 
-LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable (JAX), forward and reverse mode, through the *production* solver. The section follows one arc: **(1)** the gradients are validated against analytic ground truth, **(2)** put to work on inverse problems across physics regimes, **(3)** shown to scale across GPUs, **(4)** a signature demonstration, **(5)** a tangible astrophysical application — the X-ray response of a galactic wind to its feedback — and **(6)** machine learning embedded *inside* the solver, a solver-in-the-loop flux corrector trained through the rollout.
+LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable (JAX), forward and reverse mode, through the *production* solver. Four demonstrations: **(1)** the gradients are validated against **analytic** ground truth; **(2)** a signature showcase — an arbitrary late-time target reconstructed by optimizing the initial conditions through a long, nonlinear evolution; **(3)** inverse modeling — recovering initial conditions through radiative cooling and self-gravity; and **(4)** machine learning embedded *inside* the solver, a solver-in-the-loop flux corrector trained through the rollout.
 
 ### 1 · Gradient correctness
 
 ![Sedov autodiff: AD vs analytic exponents + FD cross-check](figures/autodiff_sedov_validation.png)
 
-*Forward-mode AD through the full Sedov blast (32³, 200 steps) reproduces the **analytic** self-similar exponents — ∂lnR/∂lnE = +1/5, ∂lnR/∂lnρ₀ = −1/5, the KE/TE energy partition, the Rankine-Hugoniot density jump — every point on the y = x line (left), matching central finite differences to < 10⁻² (right). The gradient is checked against **analytic ground truth**, not just FD — a standard prior differentiable-hydro work does not meet.*
+*Forward-mode AD through the full Sedov blast (32³, 200 steps) reproduces the **analytic** self-similar exponents — ∂lnR/∂lnE = +1/5, ∂lnR/∂lnρ₀ = −1/5, the KE/TE energy partition, the Rankine-Hugoniot density jump — every point on the y = x line (left), matching central finite differences to < 10⁻² (right). The gradient is checked against **analytic ground truth**, not just FD — a bar that standard prior differentiable-hydro work does not meet.*
 
-![Autodiff through adaptive timestepping](figures/autodiff_dtmode_fd.png)
-
-*Gradients through adaptive timestepping. ∂lnL_X/∂lnη for the M82 wind (32×32×64 → 10 Myr), AD vs central FD under three dt treatments. Fixed dt and fully-differentiated adaptive dt are FD-exact (< 10⁻³); `stop_gradient` on the CFL dt drops the dt-sensitivity path (≈ 13 % on η_M, ≈ 59 % on η_E) — so differentiating an adaptive-dt run must hold dt fixed or differentiate it.*
-
-### 2 · Inverse modeling — IC and parameter reconstruction
-
-![Turbulence IC inversion: reverse-mode recovery + r(k)](figures/autodiff_ic_inversion_DrivenTurbulence3D_Nx32.png)
-
-*Reverse-mode IC inversion, **turbulent** flow — recover the initial low-k density field from the evolved OU-driven state by reverse-mode AD through the production solver. δ_true vs δ_recovered; r(k) ≈ 1 through the forcing band (k ≤ 4) then collapses — the recoverability cliff set by chaotic mixing.*
-
-![Radiative-cooling IC inversion](figures/autodiff_ic_inversion_JeansInstability3D_cool_Nx32.png)
-
-*Reverse-mode IC inversion, **radiatively-cooling** flow — recover the IC energy perturbation through the cooling solver; the r(k) cliff at k ≈ 4–5 is the dissipative recovery limit. With the turbulence panel above and the **self-gravitating** inversion (FMG-Poisson adjoint, landing at 256³ on the 4-GPU path), this mirrors the diffhydro "turbulent, self-gravitating, radiatively cooling" reconstruction trilogy — run here through LUNA's production solver.*
-
-*The self-gravity adjoint is the differentiable FMG-Poisson solve (implicit-function custom-VJP, **finite-difference-verified** to machine precision), so the gravitational inversion backpropagates correctly through gravitational collapse. The blast morphology-reconstruction (an ensemble of Sedov blasts colliding into a target) is the signature demonstration of §4 below.*
-
-*One more inverse problem is landing: **coupled-physics parameter recovery** (`eta_recovery`) — recover the CC85 wind loadings (η_M, η_E) by reverse-mode AD through cooling + self-gravity + external potential simultaneously, a closed-loop correctness check across the full physics stack ("we measure what we put in"). The solver-in-the-loop KH corrector now has its own section (§6 below).*
-
-### 3 · Scale
-
-![Differentiable simulation at 256³ on 4 GPUs](figures/autodiff_scale_256.png)
-
-*Differentiable at production resolution. Forward-mode ∂lnL_X/∂lnη on the M82 wind at **256×256×512 across 4 GPUs** (auto-sharded), FD-validated (η_M to a relative 3×10⁻⁴) — the adjoint at diffhydro-parity resolution on multiple devices. The 256³ reverse-mode IC inversions run on the same sharded path.*
-
-### 4 · Signature — "LUNA out of the explosion set"
+### 2 · Signature — "LUNA out of the explosion set"
 
 ![LUNA emerging from a colliding-blast network — time montage](figures/autodiff_blast_field_LUNA_Nx256.png)
 
@@ -124,13 +100,17 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 
 *The companion demonstration (diffhydro Fig-12 turbulence row). Here the driver is not blast waves but a **turbulent velocity field**: the free parameter is the band-limited initial velocity v(𝐱,0) of an isothermal, initially uniform-density gas, optimized by reverse-mode AD so that the gas it **stirs and compresses** has a late-time density matching the target. The left panel is the optimized velocity field — a multi-scale swirling stirring pattern that **does not spell anything**; the snapshots (left → right) show the uniform gas being advected and compressed along the field's converging streamlines into a filamentary network whose late-time **density** forms the word **LUNA**. The target emerges purely from the turbulent compression, the same way diffhydro reconstructs a turbulent velocity field against a projected-density target. (256², Mach ≈ 3, isothermal.)*
 
-### 5 · Application — M82 X-ray feedback sweep
+### 3 · Inverse modeling — IC recovery through cooling and self-gravity
 
-![M82 soft X-ray luminosity vs feedback loading, with the autodiff gradient](figures/autodiff_m82_xray_sweep.png)
+![Radiative-cooling IC inversion](figures/autodiff_ic_inversion_JeansInstability3D_cool_Nx32.png)
 
-*The tangible payoff. How a galactic wind's soft X-ray luminosity L_X responds to its feedback loadings: L_X swept over the mass- and energy-loading (η_M, η_E) of the M82-like CC85 wind, with the **autodiff gradient ∂lnL_X/∂lnη** (single backward pass) giving the local slope — the efficient, differentiable alternative to a brute-force forward grid, and the bridge to the X-ray observables (XRISM-era L_X, T, σ) that constrain feedback in real starbursts. **Sweep landing.***
+*Reverse-mode IC inversion, **radiatively-cooling** flow — recover the initial energy perturbation from the evolved state by reverse-mode AD through the production cooling solver. δ_true vs δ_recovered; the spectral correlation r(k) ≈ 1 out to k ≈ 4–5 then collapses — the dissipative recovery limit set by cooling. (Low-resolution demo at Nx 32; the 256³ version runs on the same 4-GPU auto-sharded adjoint path.)*
 
-### 6 · Solver-in-the-loop — embedded neural flux corrector
+![Self-gravitating IC inversion](figures/autodiff_ic_inversion_JeansInstability3D_selfgrav_Nx64.png)
+
+*Reverse-mode IC inversion, **self-gravitating** collapse — recover the initial density perturbation through LUNA's differentiable FMG-Poisson solve. The gravity adjoint is an implicit-function custom-VJP, **finite-difference-verified to machine precision**, so the gradient backpropagates correctly through gravitational collapse. With the cooling panel, this mirrors the diffhydro self-gravitating + radiatively-cooling reconstruction set — run here through LUNA's production solver. (Nx 64; 256³ on the same sharded path.)*
+
+### 4 · Solver-in-the-loop — embedded neural flux corrector
 
 ![Kelvin-Helmholtz flux corrector: coarse vs coarse+CNN vs reference, t = 0.5 → 3.0](figures/autodiff_corrector_density_Nc32.png)
 
