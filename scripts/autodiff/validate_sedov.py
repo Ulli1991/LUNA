@@ -164,26 +164,34 @@ def _save_figure(obs_keys, J_ad, J_fd, v0, cfg, t_end):
 
     fig, ax = plt.subplots(1, 2, figsize=(FIGSIZE[0] * 2, FIGSIZE[1]))
 
+    # one distinct color per quantity — shared between the left points and the
+    # right bars so each (observable, channel) is identifiable across panels.
+    colors = plt.cm.tab10(np.arange(len(labels)) % 10)
+
     # (a) AD vs analytic — points on y=x validate the gradient against theory.
     lo = min(an.min(), ad.min()) - 0.15
     hi = max(an.max(), ad.max()) + 0.15
     ax[0].plot([lo, hi], [lo, hi], "-", color="0.5", lw=1.0, zorder=1,
                label=r"$y=x$")
-    ax[0].scatter(an, ad, s=55, color="C0", zorder=3, label="forward-mode AD")
+    for x, y, lab, c in zip(an, ad, labels, colors):
+        ax[0].scatter(x, y, s=70, color=c, zorder=3,
+                      edgecolor="k", linewidth=0.4, label=lab)
     ax[0].set_xlim(lo, hi); ax[0].set_ylim(lo, hi)
     ax[0].set_xlabel("analytic Sedov-Taylor exponent")
     ax[0].set_ylabel("AD log-derivative")
-    ax[0].legend(loc="upper left")
+    ax[0].legend(loc="upper left", fontsize=7, framealpha=0.9)
     decorate(ax[0])
 
-    # (b) AD-vs-FD ABSOLUTE error per channel — the independent cross-check.
+    # (b) AD-vs-FD ABSOLUTE error per channel — same colors link back to (a).
     # (Absolute, not relative: several analytic exponents are exactly 0, where a
     # relative error is ill-defined even though AD and FD agree to ~1e-3.)
     abserr = np.abs(ad - fd)
     yy = np.arange(len(labels))
-    ax[1].barh(yy, abserr, color="C1", zorder=3)
+    ax[1].barh(yy, abserr, color=colors, zorder=3)
     ax[1].axvline(0.01, color="0.5", ls="-", lw=1.0, label=r"$10^{-2}$")
     ax[1].set_yticks(yy); ax[1].set_yticklabels(labels)
+    for tick, c in zip(ax[1].get_yticklabels(), colors):
+        tick.set_color(c)
     ax[1].set_xscale("log")
     ax[1].set_xlabel(r"$|{\rm AD}-{\rm FD}|$  (finite-difference cross-check)")
     ax[1].legend(loc="lower right")

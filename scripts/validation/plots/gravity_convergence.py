@@ -63,7 +63,7 @@ def main():
                       label=fr"LUNA $N={N}^3$")
 
         ax.set_xlabel(r"$r$"); ax.set_ylabel(r"$\rho$")
-        ax.set_ylim(bottom=2e-2)      # crop the low-density numerical floor
+        ax.set_xlim(left=2e-2)        # x-axis runs from 2e-2
         ax.legend(loc="best")
         decorate(ax)
         fig.tight_layout()
