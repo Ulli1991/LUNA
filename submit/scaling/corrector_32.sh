@@ -20,5 +20,5 @@ cd /raven/u/uli/jax-hydro
 # recover. dt=0.004 (CFL 0.325 at 32^2). 750 steps -> t=3 (eval), train to t=1
 # (step 250). Bilinear/kh_grid figure style.
 LUNA_KHC_NX=32 LUNA_KHC_F=8 LUNA_KHC_DT=0.004 \
-  LUNA_KHC_NSTEPS=750 LUNA_KHC_NTRAIN=250 LUNA_KHC_NITER=50 \
+  LUNA_KHC_NSTEPS=750 LUNA_KHC_NTRAIN=500 LUNA_KHC_NITER=150 \
   python -u -m scripts.validation.runs.kh_corrector_run

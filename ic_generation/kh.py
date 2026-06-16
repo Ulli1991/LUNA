@@ -64,10 +64,10 @@ def kelvin_helmholtz(cfg, x_slice=None, y_slice=None):
 
     # Seeding. Default: a single clean sin mode (the convergent KH used by the
     # kh_grid resolution series). With LUNA_KH_NOISE>0: PURE broadband white
-    # noise and NO seeded mode -- the diffhydro §8.1 corrector regime, where a
-    # turbulent multi-scale shear layer develops that a coarse grid cannot
-    # resolve. Reproducible: noise is built on the FULL grid from a fixed seed
-    # then sliced to the local shard, so coarse = downsampled(fine) is exact.
+    # noise and NO seeded mode -- the diffhydro §8.1 turbulent regime (note:
+    # this makes the target effectively chaotic / hard for a corrector to
+    # track). Noise is built on the FULL grid from a fixed seed then sliced to
+    # the local shard, so coarse = downsampled(fine) is exact.
     import os
     noise_amp = float(os.environ.get("LUNA_KH_NOISE", "0.0"))
     if noise_amp > 0.0:
