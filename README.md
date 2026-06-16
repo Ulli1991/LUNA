@@ -48,10 +48,6 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 *Sedov 3D resolution study: spherically-averaged radial profiles at t = 10⁴ yr of number density n [cm⁻³], radial velocity v_r [km/s], pressure P [erg/cm³], and temperature T [K] for every LUNA Sedov run on disk (currently Nx=128³, 256³, 512³). Curves shaded by resolution; dashed line marks the analytic Sedov-Taylor shock radius. As Nx increases the shock peak sharpens toward the Rankine-Hugoniot strong-shock ratio (ρ₂/ρ₁ = 4 for γ=5/3) while the central rarefaction deepens.*
 
-![Sedov 1024³: shard_map vs auto-sharded radial profiles](figures/sedov_shardmap_vs_baseline.png)
-
-*Sedov 3D 1024³ at t = 10⁴ yr on 32 A100s: shard_map (explicit per-shard `jax.lax.ppermute` halos, red dashed) vs the auto-sharded `NamedSharding + jnp.pad` baseline (blue solid). Radial profiles of density, radial velocity, and pressure overlay: shock peak ρ agrees to **+0.13%** and shock radius to **−3.8%** (≈1 radial bin out of 64). Validates the shard_map refactor while it cuts wall-clock from 6 h 52 min (auto-sharded) to **9 min 17 s** on the same hardware (~44× speed-up, dispatch-fix + JIT-fusion + explicit halo).*
-
 ![Driven isothermal turbulence: 2×2 resolution montage](figures/turbulence_panel.png)
 
 *Subsonic (M_rms = 0.3) driven isothermal turbulence at t ≈ 4 (≈1.2 turnover times): density slice through z = L/2 for a resolution sweep Nx³ ∈ {128³, 256³, 512³, 1024³}. Solenoidal-only OU forcing (Federrath/Schmidt 2010) on a 1³ periodic box, k_min=1, k_max=2 driving range, identical PRNG seed at every Nx so the driven realisation matches. EOS: LUNA solves γ=5/3 Euler internally for HLLC robustness, but the runner enforces p = c_s² ρ as an operator-split post-step projection (soft isothermal thermostat) — no spurious compressive heating accumulates. The 1024³ run is on a 2-node × 4-GPU schedule slot.*
@@ -113,6 +109,12 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 ![Kelvin-Helmholtz flux corrector: density MSE vs time, coarse vs corrected](figures/autodiff_corrector_mse_Nc32.png)
 
 *Machine learning **inside** the solver. A convolutional flux-correction network B_θ is embedded in the update, `U ← step(U, Δt) + ∇·B_θ(U)`, and trained end-to-end by reverse-mode AD through the **unrolled** coarse rollout against a downsampled high-resolution reference — the diffhydro §8.1 Kelvin-Helmholtz corrector, reproduced on **our own 2D KH instability**. The point of the corrector is to compensate for *under-resolution*, so the coarse grid is deliberately starved: **32² coarse → 256² fine (8×)**, a **self-referential** LUNA target downsampled to the coarse grid (no external code in the loop). Because the correction is emitted as a flux divergence it is **conservative by construction**. Top: density at t = 0.5 → 3.0. The bare 32² solver (over-diffuse) barely rolls up at all; the 32² solver **+ CNN** recovers the billows and their vortex cores, closely tracking the 256² reference. Bottom: density MSE vs the reference — trained to t = 2 (dashed line, into the nonlinear billow phase), the corrected rollout stays **roughly an order of magnitude below** the uncorrected solver across the rollout and remains stable to t = 3, cutting the t = 3 density error by **~70%**. The residual gap is the tightest spiral windings of the reference — some of which is below what a 32² grid can represent.*
+
+## Appendix — parallel scaling (shard_map validation)
+
+![Sedov 1024³: shard_map vs auto-sharded radial profiles](figures/sedov_shardmap_vs_baseline.png)
+
+*Sedov 3D 1024³ at t = 10⁴ yr on 32 A100s: shard_map (explicit per-shard `jax.lax.ppermute` halos, red dashed) vs the auto-sharded `NamedSharding + jnp.pad` baseline (blue solid). Radial profiles of density, radial velocity, and pressure overlay: shock peak ρ agrees to **+0.13%** and shock radius to **−3.8%** (≈1 radial bin out of 64). Validates the shard_map refactor while it cuts wall-clock from 6 h 52 min (auto-sharded) to **9 min 17 s** on the same hardware (~44× speed-up, dispatch-fix + JIT-fusion + explicit halo).*
 
 **Key Features:**
 - ✅ Single-GPU and multi-GPU (JAX sharding) execution
