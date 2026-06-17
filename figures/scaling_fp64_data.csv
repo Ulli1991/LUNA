@@ -1,0 +1,12 @@
+test,Nx,GPUs,LUNA_Gcells_s,AthenaK_Gcells_s
+weak,32,1,0.055,0.011
+weak,64,2,0.315,0.082
+weak,128,4,0.851,0.368
+weak,256,8,1.569,1.492
+weak,512,16,3.844,3.948
+weak,1024,32,7.428,
+weak,2048,64,,
+weak,4096,128,,
+strong,1024,32,7.428,
+strong,1024,64,,
+strong,1024,128,,
