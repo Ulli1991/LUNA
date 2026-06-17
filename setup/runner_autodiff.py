@@ -150,9 +150,200 @@ def build_simulate(U0_ref, cfg, step_fn, compute_dt_fn, sharding,
 # Entry: dispatched by main.run when cfg.autodiff_mode
 # ---------------------------------------------------------------------------
 
+def _render_text_target(Nx, text, lo, hi):
+    """Render `text` to an Nx x Nx target field (hi on the glyphs, lo elsewhere)
+    -- the late-time morphology the forward run is optimized to form."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from jax.image import resize as jresize
+    fig = plt.figure(figsize=(4, 4), dpi=100)
+    fig.patch.set_facecolor("black")
+    ax = fig.add_axes([0, 0, 1, 1]); ax.set_facecolor("black"); ax.axis("off")
+    ax.text(0.5, 0.5, text, ha="center", va="center", color="white",
+            fontsize=260.0 / max(1, len(text)), fontweight="bold",
+            transform=ax.transAxes)
+    fig.canvas.draw()
+    buf = np.asarray(fig.canvas.buffer_rgba())[..., 0].astype(np.float64) / 255.0
+    plt.close(fig)
+    r = np.asarray(jresize(jnp.asarray(buf), (Nx, Nx), method="linear"))
+    return lo + (hi - lo) * r[::-1].T
+
+
+def _luna_emergence(step_fn, U0, cfg, is_main):
+    """Reverse-mode IC optimization so the LATE-TIME field forms a target image
+    (the word 'LUNA') purely from the dynamics -- diffhydro Fig. 12. The free
+    parameter is the FULL per-cell IC field; nothing is placed by hand.
+
+    driver='blast': the free internal-energy field e(x,0) of a uniform medium at
+    rest; scattered Sedov sites collide and merge into the target (paper fig19
+    top row). The turbulence driver (fig19 bottom) is added separately.
+    """
+    import time
+    driver = getattr(cfg, "autodiff_emergence_driver", "blast")
+    Nx, gamma, L, rho0 = cfg.Nx, float(cfg.gamma), cfg.Lx, 1.0
+    dx = L / Nx
+    n_steps = int(getattr(cfg, "autodiff_n_steps", 300))
+    n_iter = int(getattr(cfg, "autodiff_n_iter", 200))
+    lr = float(getattr(cfg, "autodiff_emergence_lr", 0.2))
+    text = getattr(cfg, "autodiff_emergence_target", "LUNA")
+    contrast = float(getattr(cfg, "autodiff_emergence_contrast", 4.0))
+    cfl = float(getattr(cfg, "autodiff_emergence_cfl", 0.25))
+
+    if driver == "blast":
+        # free internal-energy field e(x,0), uniform medium at rest; sigmoid-
+        # bounded to [e_floor, e_max] (positivity + CFL stability).
+        match = getattr(cfg, "autodiff_emergence_match", "e")
+        e_floor = 1.0
+        e_max = e_floor * float(getattr(cfg, "autodiff_emergence_emax", 50.0))
+        dt = cfl * dx / float(jnp.sqrt(gamma * (gamma - 1.0) * e_max / rho0))
+
+        def e_of(theta):
+            return e_floor + (e_max - e_floor) * jax.nn.sigmoid(theta)
+
+        def build_from_theta(theta):
+            z = jnp.zeros((Nx, Nx))
+            return jnp.stack([jnp.full((Nx, Nx), rho0), z, z, e_of(theta)], axis=0)
+
+        def body(U, _):
+            return step_fn(U, dt), None
+
+        def internal_e(U):
+            return U[-1] - 0.5 * (U[1] ** 2 + U[2] ** 2) / U[0]
+
+        observe = (lambda U: U[0]) if match == "rho" else internal_e
+        lo = rho0 if match == "rho" else e_floor
+        rng = np.random.RandomState(0)
+        theta0 = jnp.asarray(-3.0 + 0.3 * rng.standard_normal((Nx, Nx)))
+        nparams = Nx * Nx
+
+        def first_panel(theta):
+            return (np.log10(np.maximum(np.asarray(e_of(theta)), 1e-30)),
+                    "optimized e(x,0)", "inferno")
+
+    elif driver == "turbulence":
+        # free band-limited velocity v(x,0) (coarse control grid upsampled,
+        # tanh-bounded) of uniform isothermal gas; thermostat each step.
+        Nc = int(getattr(cfg, "autodiff_emergence_nc", 32))
+        cs2 = 1.0
+        v_max = float(getattr(cfg, "autodiff_emergence_mach", 3.0)) * float(np.sqrt(cs2))
+        dt = cfl * dx / float(np.sqrt(gamma * cs2 + v_max ** 2))
+
+        def v_of(theta):
+            vx = jax.image.resize(theta[0], (Nx, Nx), method="linear")
+            vy = jax.image.resize(theta[1], (Nx, Nx), method="linear")
+            return v_max * jnp.tanh(vx), v_max * jnp.tanh(vy)
+
+        def build_from_theta(theta):
+            vx, vy = v_of(theta)
+            rho = jnp.full((Nx, Nx), rho0)
+            E = cs2 * rho0 / (gamma - 1.0) + 0.5 * rho0 * (vx ** 2 + vy ** 2)
+            return jnp.stack([rho, rho0 * vx, rho0 * vy, E], axis=0)
+
+        def body(U, _):
+            U = step_fn(U, dt)                                  # + isothermal thermostat
+            ke = 0.5 * (U[1] ** 2 + U[2] ** 2) / U[0]
+            return U.at[-1].set(cs2 * U[0] / (gamma - 1.0) + ke), None
+
+        observe = lambda U: U[0]
+        lo = rho0
+        rng = np.random.RandomState(0)
+        theta0 = jnp.asarray(0.3 * rng.standard_normal((2, Nc, Nc)))
+        nparams = 2 * Nc * Nc
+
+        def first_panel(theta):
+            vx, vy = v_of(theta)
+            return np.asarray(jnp.sqrt(vx ** 2 + vy ** 2)), "optimized v(x,0)", "cividis"
+    else:
+        raise NotImplementedError(f"luna_emergence driver '{driver}' unknown")
+
+    tgt_np = _render_text_target(Nx, text, lo, lo * contrast)
+    tgt = jnp.asarray(tgt_np)
+    per = max(1, int(round(n_steps ** 0.5)))
+    nchunk = (n_steps + per - 1) // per
+
+    def simulate(theta):
+        U = build_from_theta(theta)
+        @jax.checkpoint
+        def chunk(U, _):
+            U, _ = jax.lax.scan(body, U, None, length=per); return U, None
+        Uf, _ = jax.lax.scan(chunk, U, None, length=nchunk)
+        return Uf
+
+    def loss(theta):
+        return jnp.mean((observe(simulate(theta)) - tgt) ** 2)
+
+    theta = theta0
+    if is_main:
+        print(f"  luna_emergence[{driver}]: Nx={Nx} ({nparams} free params), "
+              f"n_steps={n_steps}, n_iter={n_iter}, target='{text}'", flush=True)
+    loss_grad = jax.jit(jax.value_and_grad(loss))
+    m = jnp.zeros_like(theta); v = jnp.zeros_like(theta)
+    t0 = time.time()
+    for it in range(n_iter):
+        L_, g = loss_grad(theta)
+        m = 0.9 * m + 0.1 * g
+        v = 0.999 * v + 0.001 * g * g
+        bc1 = 1 - 0.9 ** (it + 1); bc2 = 1 - 0.999 ** (it + 1)
+        theta = theta - lr * (m / bc1) / (jnp.sqrt(v / bc2) + 1e-8)
+        if is_main and (it % max(1, n_iter // 12) == 0 or it == n_iter - 1):
+            print(f"    it {it:4d}  L={float(L_):.3e}", flush=True)
+    if not is_main:
+        return {"loss": None, "driver": driver}
+    print(f"  done ({time.time()-t0:.0f}s)", flush=True)
+
+    fracs = [0.0, 0.12, 0.30, 0.55, 1.0]          # time montage of the optimized IC
+    panel0, panel0_lab, panel0_cmap = first_panel(theta)
+    frames = []
+    for f in fracs:
+        ns = int(round(f * n_steps))
+        U = build_from_theta(theta)
+        if ns > 0:
+            U, _ = jax.lax.scan(body, U, None, length=ns)
+        frames.append(np.asarray(observe(U)))
+    _save_emergence_montage(panel0, panel0_lab, panel0_cmap, frames, fracs,
+                            tgt_np, Nx, text, driver)
+    return {"loss": float(loss(theta)), "Nx": Nx, "driver": driver}
+
+
+def _save_emergence_montage(panel0, panel0_lab, panel0_cmap, frames, fracs,
+                            tgt, Nx, label, driver):
+    import os
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from utils.figstyle import apply_style, FIGSIZE
+    apply_style()
+    n = len(frames) + 1
+    fig, ax = plt.subplots(1, n, figsize=(FIGSIZE[0] * n * 0.62, FIGSIZE[1] * 0.95))
+    vmx = float(np.percentile(np.concatenate([f.ravel() for f in frames]), 99.5))
+    ax[0].imshow(panel0.T, origin="lower", cmap=panel0_cmap)
+    ax[0].text(0.04, 0.96, panel0_lab, transform=ax[0].transAxes,
+               va="top", ha="left", color="white", fontsize=10)
+    final_lab = "stirred -> target" if driver == "turbulence" else "merged -> target"
+    for a, fr, fc in zip(ax[1:], frames, fracs):
+        a.imshow(fr.T, origin="lower", cmap="viridis", vmin=float(tgt.min()), vmax=vmx)
+        lab = final_lab if fc == 1.0 else f"t = {fc:.2f} t_end"
+        a.text(0.04, 0.96, lab, transform=a.transAxes, va="top", ha="left",
+               color="white", fontsize=10)
+    for a in ax:
+        a.grid(False); a.set_xticks([]); a.set_yticks([])
+    fig.tight_layout()
+    os.makedirs("figures", exist_ok=True)
+    safe = label.replace(" ", "").replace("/", "_").split(".")[0]
+    out = f"figures/autodiff_luna_emergence_{driver}_{safe}_Nx{Nx}.png"
+    fig.savefig(out); plt.close(fig)
+    print(f"  wrote {out}", flush=True)
+
+
 def run_simulation_autodiff(U0, cfg, grid, step_fn, compute_dt_fn, sharding,
                             is_main_process=True):
     task = getattr(cfg, "autodiff_task", "xray_sensitivity")
+
+    # IC-field optimization so the late-time field forms a target image (fig19);
+    # builds its own forward from step_fn, so it doesn't use build_simulate.
+    if task == "luna_emergence":
+        return _luna_emergence(step_fn, U0, cfg, is_main_process)
 
     # Solver-in-the-loop: a coarse/fine problem that builds its own KH
     # reference, so it doesn't use the single-resolution build_simulate.

@@ -87,6 +87,21 @@ class Config:
     # process, periodic + Neumann BC only. See docs/multigrid_poisson_plan.md
     SELF_GRAVITY: bool = False
     GRAVITATIONAL_G: float = 1.0          # G in code units (set per problem)
+    # Cosmological (comoving) integration. When False (default) the code
+    # integrates the standard Newtonian Euler equations. Cosmological problems
+    # (currently only the Zeldovich pancake) require this True and abort
+    # otherwise — see is_cosmological() and the guard in main.run.
+    CosmologicalIntegration: bool = False
+    # Cosmology + Zel'dovich-pancake knobs (only used when CosmologicalIntegration).
+    cosmo_Omega_m: float = 1.0      # EdS default -> D(a)=a, clean analytic check
+    cosmo_Omega_L: float = 0.0
+    cosmo_H0: float = 1.0           # H0 in code units
+    a_init: float = 0.3             # initial scale factor (start redshift)
+    a_end: float = 1.0              # final scale factor (z=0)
+    dloga_max: float = 0.01         # cap on d(ln a) per step
+    zel_a_caustic: float = 1.5      # pancake caustic scale factor (sets amplitude)
+    zel_cs_frac: float = 1.0e-2     # initial sound speed / peak velocity (cold gas)
+    cosmo_p_floor: float = 0.0      # pressure/temperature floor (0 = off)
     # Jeans-instability IC knobs (only used by test_problem='Jeans-Instability-3D')
     jeans_rho0: float = 1.0
     jeans_P0: float = 1.0
@@ -249,6 +264,17 @@ class Config:
     autodiff_task: str = "xray_sensitivity"
     autodiff_n_iter: int = 100            # optimizer iterations for inversions
     autodiff_ic_field: str = "density"    # ic_inversion: perturb "density" or "energy"
+    # luna_emergence task: optimize the IC field so the late-time field forms a
+    # target image (the word "LUNA") purely from the dynamics (paper fig19).
+    autodiff_emergence_driver: str = "blast"   # "blast" | "turbulence"
+    autodiff_emergence_target: str = "LUNA"
+    autodiff_emergence_emax: float = 50.0      # blast: max internal energy (x floor)
+    autodiff_emergence_contrast: float = 4.0   # target hi/lo ratio
+    autodiff_emergence_match: str = "e"        # observe "e" (internal energy) | "rho"
+    autodiff_emergence_cfl: float = 0.25       # fixed-dt CFL for the long rollout
+    autodiff_emergence_lr: float = 0.2         # Adam learning rate
+    autodiff_emergence_nc: int = 32            # turbulence: control-grid side (band-limit)
+    autodiff_emergence_mach: float = 3.0       # turbulence: stirring Mach number
 
     # ---------------- Restart / Checkpoint ----------------
     # Enable restart from checkpoint

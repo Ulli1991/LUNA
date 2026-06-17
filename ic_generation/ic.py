@@ -40,6 +40,7 @@ from .soundwave_advected import soundwave_advected
 from .soundwave_advected2d import soundwave_advected2d
 from .woodward_colella import woodward_colella
 from .disc_planet_2d import disc_planet_2d
+from .zeldovich import zeldovich_pancake_3d
 
 # test_problem name -> (ic_function, ndim).
 # Every IC function accepts the slice kwargs matching its dimensionality
@@ -81,6 +82,7 @@ _IC_REGISTRY = {
     "Pulsating-Polytrope-3D": (pulsating_polytrope_3d, 3),
     "Maclaurin-Spheroid-3D": (maclaurin_3d, 3),
     "Boss-Bodenheimer-3D": (boss_bodenheimer_3d, 3),
+    "Zeldovich-Pancake": (zeldovich_pancake_3d, 3),
 }
 
 
@@ -98,6 +100,21 @@ _EQ_REGISTRY = {
 def available_test_problems():
     """Return the list of supported test_problem names."""
     return list(_IC_REGISTRY.keys())
+
+
+# Cosmological problems require comoving integration (cfg.CosmologicalIntegration
+# = True); running them under Newtonian integration is a hard error (guarded in
+# main.run). For now the Zeldovich pancake is the only cosmological problem; its
+# IC is not yet registered in _IC_REGISTRY above — the name is reserved here so
+# the guard is live the moment the IC lands.
+_COSMOLOGICAL_PROBLEMS = frozenset({
+    "Zeldovich-Pancake",
+})
+
+
+def is_cosmological(test_problem):
+    """True if test_problem requires comoving (cosmological) integration."""
+    return test_problem in _COSMOLOGICAL_PROBLEMS
 
 
 def equilibrium_state(cfg, x_slice=None, y_slice=None, z_slice=None):

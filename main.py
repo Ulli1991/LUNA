@@ -26,6 +26,18 @@ def run(cfg):
     (run_simulation_autodiff) — same setup, mesh, step_fn, and sharding, just a
     different runner_distributed.
     """
+    # Cosmological problems must be integrated in comoving coordinates. Abort
+    # early (before any output side effects) if the comoving integrator is off.
+    from ic_generation.ic import is_cosmological
+    if is_cosmological(cfg.test_problem) and not getattr(
+        cfg, "CosmologicalIntegration", False
+    ):
+        raise ValueError(
+            f"test_problem '{cfg.test_problem}' requires comoving integration, "
+            f"but CosmologicalIntegration=False. Set CosmologicalIntegration=True "
+            f"to run cosmological problems."
+        )
+
     import jax
     from pathlib import Path
 
@@ -45,6 +57,14 @@ def run(cfg):
     if getattr(cfg, "autodiff_mode", False):
         from setup.runner_autodiff import run_simulation_autodiff
         return run_simulation_autodiff(
+            U_sharded, cfg, grid, step_fn, compute_dt_fn, sharding,
+            is_main_process=(jax.process_index() == 0),
+        )
+
+    # === Cosmological (comoving) run mode: super-comoving runner ===
+    if getattr(cfg, "CosmologicalIntegration", False):
+        from setup.runner_cosmo import run_simulation_cosmo
+        return run_simulation_cosmo(
             U_sharded, cfg, grid, step_fn, compute_dt_fn, sharding,
             is_main_process=(jax.process_index() == 0),
         )

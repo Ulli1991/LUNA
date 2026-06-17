@@ -60,6 +60,10 @@ LUNA evolves the Euler equations with an unsplit, second-order **MUSCL-Hancock**
 
 *Evrard 1988 adiabatic spherical collapse vs AREPO (Springel 2010 moving-mesh code) at t = 0.8 (Springel 2010 Fig 41 reference time). Identical ICs in code units (M = R = G = 1, ρ ∝ 1/r, u₀ = 0.05, γ = 5/3) in a periodic L = 4 box. The radial density profile is shown for LUNA at N = 64³, 128³, 256³ (coloured) against AREPO (black): LUNA converges toward the reference through the accretion shock at r ≈ 0.15 and the free-fall envelope as the grid is refined, with the higher-resolution runs reaching progressively deeper into the post-bounce central density that the coarse fixed grid cannot.*
 
+![Zel'dovich pancake: super-comoving cosmological integration vs analytic](figures/zeldovich_pancake_main.png)
+
+*Cosmological (super-comoving) integration — the **Zel'dovich pancake**, run end-to-end through `main` with the FMG multigrid self-gravity. A single sinusoidal mode collapses in an Einstein–de Sitter universe; LUNA integrates the **super-comoving** Euler equations (RAMSES / Martel–Shapiro variables ρ̃ = a³ρ, ṽ = a·v_pec, P̃ = a⁵P, super-comoving time dτ = dt/a²) with the gravity source coefficient **4πG → (3/2)Ωₘ a(τ)** and `dloga`-capped timesteps advanced through the cosmological a(τ) table. Evolved from z = 2.33 (a = 0.3) to **z = 0**, deep into the nonlinear regime (ρ̃_max grows 1 → 3, just shy of the caustic at z_c = −1/3): LUNA (red dashed) tracks the exact pre-caustic Zel'dovich solution (black) to **L1 = 2.3×10⁻³ (density), 3.9×10⁻³ (velocity)** in both the collapsing density pancake and the sawtooth peculiar velocity. This validates the comoving time integration and the multigrid Poisson coefficient swap — the gateway test toward cosmological-volume simulations.*
+
 ## Parallel scaling
 
 ![How the shard_map halo exchange works](figures/halo_exchange_shardmap.png)
