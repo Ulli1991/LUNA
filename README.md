@@ -60,10 +60,6 @@ LUNA evolves the Euler equations with an unsplit, second-order **MUSCL-Hancock**
 
 *Evrard 1988 adiabatic spherical collapse vs AREPO (Springel 2010 moving-mesh code) at t = 0.8 (Springel 2010 Fig 41 reference time). Identical ICs in code units (M = R = G = 1, ρ ∝ 1/r, u₀ = 0.05, γ = 5/3) in a periodic L = 4 box. The radial density profile is shown for LUNA at N = 64³, 128³, 256³ (coloured) against AREPO (black): LUNA converges toward the reference through the accretion shock at r ≈ 0.15 and the free-fall envelope as the grid is refined, with the higher-resolution runs reaching progressively deeper into the post-bounce central density that the coarse fixed grid cannot.*
 
-![Boss-Bodenheimer collapse with sink particles at 256³](figures/bb79_montage_Nx256_sinks.png)
-
-*Boss & Bodenheimer 1979 rotating protostellar collapse at 256³ with **on-the-fly sink particles** (`sources/sinks.py`), set up to match **SEREN (Hubber et al. 2011) §10.9** exactly: M = 1 M⊙, R = 3.2×10¹⁶ cm, ρ₀ = 1.44×10⁻¹⁷ g/cm³, ρ = ρ₀[1 + 0.5·sin 2φ], solid-body Ω = 1.6×10⁻¹² rad/s, **barotropic EOS** T(ρ) = 10 K·[1 + (ρ/10⁻¹⁴)^(γ−1)], sink formation at ρ = 2×10⁻¹² g/cm³, in physical (pc, M⊙, km/s) units. Column density log₁₀Σ [M⊙ pc⁻²] along the rotation axis, central ±0.005 pc, at t = 20, 25, 30, 32.5, 35, 40 kyr. The m = 2 perturbation collapses to a bar that fragments into the canonical **bar → binary**: two dense protostellar cores with trailing spiral arms. Sinks form in the cores and integrate by the hybrid scheme — multigrid Poisson for the gas self-gravity and gas→sink force, direct softened N-body for sink→gas and sink→sink (so the close protobinary is resolved, not grid-softened). Self-gravity uses the isolated multipole-Dirichlet Poisson BC + a diode (outflow-only) hydro BC.*
-
 ## Parallel scaling
 
 ![How the shard_map halo exchange works](figures/halo_exchange_shardmap.png)
@@ -109,6 +105,10 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 *Density MSE vs the 256² reference over the rollout. Trained only to t = 2 (dashed line, into the nonlinear billow phase), the corrected rollout (blue) stays **roughly an order of magnitude below** the uncorrected coarse solver (red) and remains stable to t = 3, cutting the t = 3 density error by **~70%**. The residual gap is the tightest spiral windings of the reference — some of which is below what a 32² grid can represent.*
 
 ## Science applications
+
+![Boss-Bodenheimer collapse with sink particles at 256³](figures/bb79_montage_Nx256_sinks.png)
+
+*Boss & Bodenheimer 1979 rotating protostellar collapse at 256³ with **on-the-fly sink particles** (`sources/sinks.py`), set up to match **SEREN (Hubber et al. 2011) §10.9** exactly: M = 1 M⊙, R = 3.2×10¹⁶ cm, ρ₀ = 1.44×10⁻¹⁷ g/cm³, ρ = ρ₀[1 + 0.5·sin 2φ], solid-body Ω = 1.6×10⁻¹² rad/s, **barotropic EOS** T(ρ) = 10 K·[1 + (ρ/10⁻¹⁴)^(γ−1)], sink formation at ρ = 2×10⁻¹² g/cm³, in physical (pc, M⊙, km/s) units. Column density log₁₀Σ [M⊙ pc⁻²] along the rotation axis, central ±0.005 pc, at t = 20, 25, 30, 32.5, 35, 40 kyr. The m = 2 perturbation collapses to a bar that fragments into the canonical **bar → binary**: two dense protostellar cores with trailing spiral arms. Sinks form in the cores and integrate by the hybrid scheme — multigrid Poisson for the gas self-gravity and gas→sink force, direct softened N-body for sink→gas and sink→sink (so the close protobinary is resolved, not grid-softened). Self-gravity uses the isolated multipole-Dirichlet Poisson BC + a diode (outflow-only) hydro BC.*
 
 ![Driven isothermal turbulence: 2×2 resolution montage](figures/turbulence_panel.png)
 
