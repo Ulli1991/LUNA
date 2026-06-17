@@ -58,6 +58,10 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 
 ## Parallel scaling
 
+![How the shard_map halo exchange works](figures/halo_exchange_shardmap.png)
+
+*How LUNA does multi-GPU communication. The global grid is split across the device mesh (top: one axis, `LUNA_MESH_SHAPE` picks the 3D split), and each GPU owns one tile. The MUSCL-Hancock stencil needs one cell beyond each tile edge — the **halo** — which lives on the neighbor GPU. LUNA fills it with explicit ring shifts: `jax.lax.ppermute(slab, 'x', perm_to_right)` sends every GPU's right-edge slab to neighbor `i+1` (becomes their left ghost), and `perm_to_left` does the mirror. That single collective is exactly an `MPI_Sendrecv` around a Cartesian ring — only the **1-cell boundary slab** crosses the wire (~5 MB/axis/GPU at 1024³ on 8 GPUs), the interior never moves. The difference from classic MPI: `ppermute` is a traced JAX op, so XLA fuses it with the stencil math **and reverse-mode autodiff flows straight through it** — which is what lets LUNA be distributed *and* differentiable at once (an `MPI_Send` is an opaque black box you can't backprop through). The alternative `jnp.pad` + auto-sharding path lets the compiler infer the comm, but it can balloon scratch buffers (~10 GB/shard) and run ~44× slower — see the [scaling appendix](#appendix--parallel-scaling-shard_map-validation) for the validation that the explicit-halo path gives bit-comparable results.*
+
 ![FP64 Sedov weak scaling: LUNA vs AthenaK](figures/scaling_weak_fp64.png)
 
 ![FP64 Sedov strong scaling: LUNA vs AthenaK](figures/scaling_strong_fp64.png)
