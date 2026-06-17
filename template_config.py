@@ -102,6 +102,12 @@ class Config:
     zel_a_caustic: float = 1.5      # pancake caustic scale factor (sets amplitude)
     zel_cs_frac: float = 1.0e-2     # initial sound speed / peak velocity (cold gas)
     cosmo_p_floor: float = 0.0      # pressure/temperature floor (0 = off)
+    # DM-only cosmological N-body (Cosmo-DM): collisionless particles from a
+    # MUSIC IC, evolved by super-comoving PM gravity (no gas grid).
+    CosmoDM: bool = False
+    music_ic_path: str = ""         # MUSIC/Gadget Arepo-HDF5 DM IC path
+    dm_softening: float = 0.0       # gravitational softening (0 -> PM cell size)
+    dm_eta: float = 0.025           # acceleration-timestep accuracy parameter
     # Jeans-instability IC knobs (only used by test_problem='Jeans-Instability-3D')
     jeans_rho0: float = 1.0
     jeans_P0: float = 1.0

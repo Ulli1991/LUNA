@@ -41,6 +41,12 @@ def run(cfg):
     import jax
     from pathlib import Path
 
+    # DM-only cosmological N-body: collisionless particles, no gas grid ->
+    # dispatch before the gas setup (mesh / U / step_fn are never built).
+    if getattr(cfg, "CosmoDM", False):
+        from setup.runner_cosmo_dm import run_simulation_cosmo_dm
+        return run_simulation_cosmo_dm(cfg, is_main_process=(jax.process_index() == 0))
+
     # Opt-in fresh-run wipe (validation analysis globs every snapdir, so stale
     # output from a prior run would corrupt it). Default-off keeps production /
     # checkpoint-restart safe. Only process 0 deletes; others wait below.

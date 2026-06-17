@@ -40,6 +40,7 @@ class ParticleMeshGravity:
         self.dx = cfg.Lx / cfg.Nx
         self.dV = self.dx ** 3
         self.inv_2dx = 0.5 / self.dx
+        self.inv_12dx = 1.0 / (12.0 * self.dx)   # 4th-order gradient prefactor
         self.G = float(getattr(cfg, "GRAVITATIONAL_G", 1.0))
         self.fourpiG = 4.0 * jnp.pi * self.G
 
@@ -68,8 +69,40 @@ class ParticleMeshGravity:
         return solve_poisson_fmg(rho_src, self.dx, self.fourpiG,
                                  boundary=self.boundary, **self._poisson_kw)
 
-    def grad_phi(self, phi):
-        """-∇φ on the grid (the gravitational acceleration field)."""
+    def _pad2(self, phi):
+        """Two-cell halo for the 4th-order gradient stencil."""
+        if self.boundary == 0:            # periodic
+            mode = "wrap"
+        elif self.boundary in (1, 2):     # Neumann / zero-gradient
+            mode = "edge"
+        else:
+            raise NotImplementedError(
+                "4th-order grad_phi supports periodic (0) or Neumann (1/2) "
+                f"boundaries; got boundary={self.boundary}. Use order=2 for "
+                "isolated (3).")
+        return jnp.pad(phi, ((2, 2), (2, 2), (2, 2)), mode=mode)
+
+    def grad_phi(self, phi, order=2):
+        """-∇φ on the grid (the gravitational acceleration field).
+
+        order=2 (default): 2nd-order centred difference, 1-cell halo, O(Δx²).
+        order=4: 4th-order centred difference, 2-cell halo,
+            ∂φ/∂x ≈ [φ(i-2) − 8φ(i-1) + 8φ(i+1) − φ(i+2)] / (12Δx),
+        cutting the force error to O(Δx⁴) and reducing grid-scale force
+        anisotropy -- the recommended PM force for the cosmological DM particles.
+        Periodic / Neumann boundaries only. The stencil is anti-symmetric, so a
+        CIC-deposit / CIC-gather pair stays self-force-free.
+        """
+        if order == 4:
+            pp = self._pad2(phi)
+            c = self.inv_12dx
+            gx = (pp[4:, 2:-2, 2:-2] - 8.0 * pp[3:-1, 2:-2, 2:-2]
+                  + 8.0 * pp[1:-3, 2:-2, 2:-2] - pp[:-4, 2:-2, 2:-2]) * c
+            gy = (pp[2:-2, 4:, 2:-2] - 8.0 * pp[2:-2, 3:-1, 2:-2]
+                  + 8.0 * pp[2:-2, 1:-3, 2:-2] - pp[2:-2, :-4, 2:-2]) * c
+            gz = (pp[2:-2, 2:-2, 4:] - 8.0 * pp[2:-2, 2:-2, 3:-1]
+                  + 8.0 * pp[2:-2, 2:-2, 1:-3] - pp[2:-2, 2:-2, :-4]) * c
+            return gx, gy, gz                 # already -∇φ (force)
         pp = self.halo_fn(phi)
         gx = -(pp[2:, 1:-1, 1:-1] - pp[:-2, 1:-1, 1:-1]) * self.inv_2dx
         gy = -(pp[1:-1, 2:, 1:-1] - pp[1:-1, :-2, 1:-1]) * self.inv_2dx
