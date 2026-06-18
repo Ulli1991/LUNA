@@ -38,22 +38,14 @@ def main():
     vmin = float(np.percentile(img, 45))
     vmax = float(np.percentile(img, 99.9))
     fig, ax = plt.subplots(figsize=(10, 10))
-    fig.patch.set_facecolor("black")
-    ax.set_facecolor("black")
     ax.imshow(img.T, origin="lower", cmap="magma", vmin=vmin, vmax=vmax,
               extent=[0, L, 0, L], interpolation="bilinear")
-    ax.set_xlabel("x  [Mpc/h]", color="0.85", fontsize=12)
-    ax.set_ylabel("y  [Mpc/h]", color="0.85", fontsize=12)
-    ax.tick_params(colors="0.6")
-    for s in ax.spines.values():
-        s.set_color("0.4")
-    ax.set_title(f"LUNA — dark matter at z = {z:.2f}   "
-                 f"(256³ particles, {L:.0f} Mpc/h, PM + multigrid gravity)",
-                 color="0.92", fontsize=12, pad=10)
+    ax.set_xlabel("x  [Mpc/h]", fontsize=12)
+    ax.set_ylabel("y  [Mpc/h]", fontsize=12)
     fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
     out = "figures/cosmo_dm_web.png"
-    fig.savefig(out, dpi=200, facecolor="black")
+    fig.savefig(out, dpi=200)
     print(f"# wrote {out}")
 
 
