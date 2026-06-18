@@ -115,6 +115,7 @@ class Config:
     cosmo_T_floor: float = 0.0      # temperature floor [K] (10 K is standard for cosmo runs)
     DualEnergy: bool = False        # Bryan+1995 dual-energy (track e_int, switch when KE>>e_int)
     cosmo_dual_eta: float = 1.0e-3  # dual-energy switch: use e_int when (E-KE)/E < eta
+    cosmo_debug: bool = False       # per-step gas/DM extrema diagnostics (blow-up debugging)
     cosmo_T_init: float = 0.0       # initial gas temperature [K]; 0 -> CMB 2.725(1+z)
     cosmo_mu: float = 1.22          # mean molecular weight (neutral primordial H+He)
     cosmo_snap_every: int = 0       # periodic gas+DM density snapshot every N steps (0 = end only)

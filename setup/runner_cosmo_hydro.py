@@ -61,6 +61,7 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
     mu = float(getattr(cfg, "cosmo_mu", 1.22))
     dual_energy = bool(getattr(cfg, "DualEnergy", False))     # Bryan+1995 dual-energy
     dual_eta = float(getattr(cfg, "cosmo_dual_eta", 1.0e-3))
+    debug = bool(getattr(cfg, "cosmo_debug", False))          # per-step extrema diagnostics
 
     pm = ParticleMeshGravity(cfg)
     dx = pm.dx
@@ -210,9 +211,23 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
     g_gas, g_dm, dmax = forces(U, dm_pos, coeff_fac * a)
     while a < a_end - 1e-9:
         gmax = float(jnp.max(jnp.sqrt(jnp.sum(g_dm ** 2, axis=1))))
-        dtau = min(float(compute_dt_fn(U)),                       # gas CFL
-                   dloga_max / (a * a * cosmo.H(a, H0)),          # expansion cap
-                   eta * np.sqrt(eps_soft / (gmax + 1e-30)))      # DM acceleration
+        dt_cfl = float(compute_dt_fn(U))                          # gas CFL
+        dt_dloga = dloga_max / (a * a * cosmo.H(a, H0))           # expansion cap
+        dt_accel = eta * np.sqrt(eps_soft / (gmax + 1e-30))       # DM acceleration
+        dtau = min(dt_cfl, dt_dloga, dt_accel)
+        if debug and is_main_process and (step % 10 == 0 or dtau < 1e-4
+                                          or float(dmax) > 150.0):
+            rho = U[0]
+            ke = 0.5 * (U[1] ** 2 + U[2] ** 2 + U[3] ** 2) / rho
+            P = (gamma - 1.0) * (U[-1] - ke)
+            cs = jnp.sqrt(gamma * jnp.abs(P) / jnp.abs(rho))
+            vmag = jnp.sqrt((U[1] ** 2 + U[2] ** 2 + U[3] ** 2)) / rho
+            lim = ("cfl", "dloga", "accel")[int(np.argmin([dt_cfl, dt_dloga, dt_accel]))]
+            print(f"[dbg] s={step} z={1/a-1:.2f} dt[cfl={dt_cfl:.2e} dl={dt_dloga:.2e} "
+                  f"ac={dt_accel:.2e}]->{lim}  rho[{float(jnp.min(rho)):.2e},"
+                  f"{float(jnp.max(rho)):.2e}] Pmin={float(jnp.min(P)):.2e} "
+                  f"csmax={float(jnp.max(cs)):.2e} vmax={float(jnp.max(vmag)):.2e} "
+                  f"gmax={gmax:.2e}", flush=True)
         if tau + dtau > tau_tab[-1]:
             dtau = tau_tab[-1] - tau
         a_next = a_of_tau(tau + dtau)
