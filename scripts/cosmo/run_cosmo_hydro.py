@@ -32,7 +32,7 @@ def main():
         cosmo_jeans_ncell=float(os.environ.get("LUNA_JEANS_N", "4")),
         dm_softening=float(os.environ.get("LUNA_SOFT", "0.0")),   # kpc/h; 0 -> PM cell
         cosmo_T_floor=float(os.environ.get("LUNA_TFLOOR", "10.0")),
-        cosmo_rho_floor=float(os.environ.get("LUNA_RHOFLOOR", "1e-4")),
+        cosmo_rho_floor=float(os.environ.get("LUNA_RHOFLOOR", "1e-3")),
         DualEnergy=os.environ.get("LUNA_DUAL", "0") == "1",
         cosmo_debug=os.environ.get("LUNA_DEBUG", "0") == "1",
         cosmo_snap_every=int(os.environ.get("LUNA_SNAP_EVERY", "50")),
