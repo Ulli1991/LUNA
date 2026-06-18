@@ -20,11 +20,12 @@ module load gcc/13 cuda/12
 source ~/jax-env/bin/activate
 export JAX_PLATFORM_NAME=cuda
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.92
+export PYTHONUNBUFFERED=1
 export LUNA_DM_SLAB=1
 export LUNA_DM_AEND=${LUNA_DM_AEND:-1.0}
-export LUNA_DM_VCYC=${LUNA_DM_VCYC:-4}
+export LUNA_DM_VCYC=${LUNA_DM_VCYC:-1}
 cd /raven/u/uli/jax-hydro
 echo "=== grid-sharded DM N-body: mesh=${LUNA_DM_MESH}^3 IC=${LUNA_DM_IC} on 4x A100 ==="
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
-python scripts/cosmo/run_cosmo_dm.py
+python -u scripts/cosmo/run_cosmo_dm.py
 echo "=== done ==="

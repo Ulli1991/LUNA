@@ -58,13 +58,18 @@ def main():
         delta = jnp.asarray(rng.standard_normal((N, N, N)))
         deltaS = jax.device_put(delta, NamedSharding(mesh, P("x", "y", "z")))
         nx_loc = N // ndev
-        nlev = min(_max_levels(N), int(np.log2(nx_loc)) + 1)
-        for nx in [int(x) for x in os.environ.get("LUNA_DBG_NX", "0").split(",")]:
-            sc, sr = _t(lambda nx=nx: solve_poisson_fmg_shardmap(
-                deltaS, dx, 1.0, boundary=0, mesh=mesh, n_levels=nlev,
-                n_extra_vcycles=nx))
-            print(f"  {N:>4} {nlev:>4} {nx:>3} | {'-':>8} {'-':>7} | "
-                  f"{sc:>9.1f} {sr:>7.2f}", flush=True)
+        nlev0 = min(_max_levels(N), int(np.log2(nx_loc)) + 1)
+        nlevs = [int(x) for x in os.environ.get("LUNA_DBG_NLEV", str(nlev0)).split(",")]
+        for nlev in nlevs:
+            xloc_coarse = nx_loc >> (nlev - 1)      # per-shard x at coarsest level
+            for nx in [int(x) for x in os.environ.get("LUNA_DBG_NX", "0").split(",")]:
+                print(f"  {N:>4} {nlev:>4} {nx:>3} | xloc_c={xloc_coarse:>3} | "
+                      f"compiling...", flush=True)
+                sc, sr = _t(lambda nlev=nlev, nx=nx: solve_poisson_fmg_shardmap(
+                    deltaS, dx, 1.0, boundary=0, mesh=mesh, n_levels=nlev,
+                    n_extra_vcycles=nx))
+                print(f"  {N:>4} {nlev:>4} {nx:>3} | xloc_c={xloc_coarse:>3} | "
+                      f"compile {sc:>8.1f}  run {sr:>7.2f}", flush=True)
         last_ok = N
 
     # component breakdown at the largest size that compiled
@@ -88,6 +93,23 @@ def main():
     ]:
         c, r = _t(fn)
         print(f"  {name:>9}: compile {c:8.1f}s  run {r:7.3f}s", flush=True)
+
+    # is argsort the exchange bottleneck? time a raw per-device argsort vs a
+    # cumsum-based compaction at the same buffer size.
+    print("\n# argsort vs cumsum at per-shard exchange buffer size", flush=True)
+    C = pg.shape[0] // ndev
+    key = jnp.asarray(rng.standard_normal((C,)))
+    msk = jnp.asarray(rng.random((C,)) > 0.5)
+    jas = jax.jit(lambda k: jnp.argsort(k))
+    def _compact(m):                       # O(n) compaction: dest = cumsum(mask)-1
+        idx = jnp.cumsum(m.astype(jnp.int32)) - 1
+        out = jnp.zeros((C,), jnp.int32).at[jnp.where(m, idx, C - 1)].set(jnp.arange(C))
+        return out
+    jcs = jax.jit(_compact)
+    ca, ra = _t(lambda: jas(key))
+    cc, rc = _t(lambda: jcs(msk))
+    print(f"  argsort C={C}: compile {ca:6.1f}s  run {ra:7.3f}s", flush=True)
+    print(f"  cumsum  C={C}: compile {cc:6.1f}s  run {rc:7.3f}s", flush=True)
 
 
 if __name__ == "__main__":

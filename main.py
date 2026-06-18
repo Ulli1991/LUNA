@@ -47,6 +47,13 @@ def run(cfg):
         from setup.runner_cosmo_dm import run_simulation_cosmo_dm
         return run_simulation_cosmo_dm(cfg, is_main_process=(jax.process_index() == 0))
 
+    # Coupled gas + DM cosmological box: gas meshed from MUSIC baryon IC, DM as
+    # particles, evolved under one joint potential. Builds its own grid/U/step_fn.
+    if getattr(cfg, "CosmoHydro", False):
+        from setup.runner_cosmo_hydro import run_simulation_cosmo_hydro_music
+        return run_simulation_cosmo_hydro_music(
+            cfg, is_main_process=(jax.process_index() == 0))
+
     # Opt-in fresh-run wipe (validation analysis globs every snapdir, so stale
     # output from a prior run would corrupt it). Default-off keeps production /
     # checkpoint-restart safe. Only process 0 deletes; others wait below.

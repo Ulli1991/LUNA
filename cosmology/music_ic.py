@@ -71,6 +71,54 @@ def read_music_dm_ic(path: str, part_type: int = 1) -> DMICs:
                  Omega_m=Om, Omega_L=OL, h=hub)
 
 
+@dataclass
+class GasICs:
+    """Baryon (PartType0) ICs from a MUSIC/Gadget HDF5 file -- SPH particles we
+    mesh onto the grid at startup."""
+    pos: np.ndarray        # (N,3) comoving positions
+    vel: np.ndarray        # (N,3) Gadget velocities (sqrt(a) dx/dt)
+    mass: np.ndarray       # (N,) particle masses
+    u_int: np.ndarray      # (N,) specific internal energy (Gadget units)
+    box_size: float
+    a: float
+    redshift: float
+    Omega_m: float
+    Omega_L: float
+    h: float
+
+    @property
+    def n_part(self) -> int:
+        return self.pos.shape[0]
+
+
+def read_music_gas_ic(path: str) -> GasICs:
+    """Read baryon (PartType0) ICs, including InternalEnergy, from MUSIC HDF5."""
+    import h5py
+
+    with h5py.File(path, "r") as f:
+        H = dict(f["Header"].attrs)
+        box = float(np.asarray(H["BoxSize"]).reshape(-1)[0])
+        a = float(H.get("Time", 1.0))
+        z = float(H.get("Redshift", 1.0 / a - 1.0))
+        Om = float(H.get("Omega0", H.get("OmegaMatter", 0.3)))
+        OL = float(H.get("OmegaLambda", 0.7))
+        hub = float(H.get("HubbleParam", 0.7))
+        g = f["PartType0"]
+        pos = np.asarray(g["Coordinates"], dtype=np.float64)
+        vel = (np.asarray(g["Velocities"], dtype=np.float64)
+               if "Velocities" in g else np.zeros_like(pos))
+        n = pos.shape[0]
+        if "Masses" in g:
+            mass = np.asarray(g["Masses"], dtype=np.float64)
+        else:
+            mtable = np.asarray(H["MassTable"], dtype=np.float64)
+            mass = np.full(n, mtable[0], dtype=np.float64)
+        u_int = (np.asarray(g["InternalEnergy"], dtype=np.float64)
+                 if "InternalEnergy" in g else np.zeros(n, dtype=np.float64))
+    return GasICs(pos=pos, vel=vel, mass=mass, u_int=u_int, box_size=box, a=a,
+                  redshift=z, Omega_m=Om, Omega_L=OL, h=hub)
+
+
 def write_synthetic_dm_ic(path: str, Np: int = 32, box: float = 1.0,
                           a: float = 0.02, Omega_m: float = 0.3,
                           Omega_L: float = 0.7, h: float = 0.7,

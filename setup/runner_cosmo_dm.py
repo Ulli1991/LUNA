@@ -207,7 +207,14 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
               f"{'delta_max':>10} {'max_occ':>8} {'n_bad':>6}")
 
     tau, step, t0 = 0.0, 0, time.time()
+    if is_main_process:
+        print("[cosmo-dm] compiling first PM force "
+              "(deposit -> FMG -> grad -> gather) ...", flush=True)
+    tc = time.time()
     g, dmax = force(posS, massS, actS, a)
+    jax.block_until_ready(g)
+    if is_main_process:
+        print(f"[cosmo-dm] first force compiled+ran in {time.time()-tc:.1f}s", flush=True)
     n_bad_tot = 0
     while a < a_end - 1e-9:
         gmag = jnp.sqrt(jnp.sum(g ** 2, axis=1))
@@ -231,7 +238,8 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         n_bad_tot += int(n_bad)
         if is_main_process and (step % 10 == 0 or a >= a_end - 1e-9):
             print(f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} {dloga:8.5f} "
-                  f"{float(dmax):10.3f} {int(max_occ):8d} {int(n_bad):6d}")
+                  f"{float(dmax):10.3f} {int(max_occ):8d} {int(n_bad):6d} "
+                  f"{(time.time()-t0)/step:6.2f}s/step", flush=True)
 
     if is_main_process:
         print(f"[cosmo-dm] done: {step} steps, a={a:.4f} (z={1/a-1:.4f}), "

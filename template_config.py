@@ -110,6 +110,14 @@ class Config:
     dm_eta: float = 0.025           # acceleration-timestep accuracy parameter
     dm_domain_decomp: bool = False  # grid-sharded slab decomposition (>512^3, multi-GPU)
     dm_capacity_factor: float = 1.5  # per-slab particle buffer headroom for clustering
+    CosmoHydro: bool = False        # coupled gas+DM box (gas meshed from MUSIC baryon IC)
+    cosmo_jeans_ncell: float = 0.0  # Truelove Jeans-floor cells (0 = off; ~4 for halos)
+    cosmo_T_floor: float = 0.0      # temperature floor [K] (10 K is standard for cosmo runs)
+    DualEnergy: bool = False        # Bryan+1995 dual-energy (track e_int, switch when KE>>e_int)
+    cosmo_dual_eta: float = 1.0e-3  # dual-energy switch: use e_int when (E-KE)/E < eta
+    cosmo_T_init: float = 0.0       # initial gas temperature [K]; 0 -> CMB 2.725(1+z)
+    cosmo_mu: float = 1.22          # mean molecular weight (neutral primordial H+He)
+    cosmo_snap_every: int = 0       # periodic gas+DM density snapshot every N steps (0 = end only)
     # Jeans-instability IC knobs (only used by test_problem='Jeans-Instability-3D')
     jeans_rho0: float = 1.0
     jeans_P0: float = 1.0
