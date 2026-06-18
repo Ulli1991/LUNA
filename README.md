@@ -126,6 +126,12 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 
 *Spherically-averaged radial profiles of n_H, v_rad, and T at t = 60 Myr for each resolution. Computed by 3D binning in radius from the box center. Useful for direct comparison against the analytic CC85 solution (n ∝ r⁻², roughly constant v ∝ v_∞ outside R_⋆, and adiabatic T ∝ r⁻⁴ᐟ³ in the steady wind) and Schneider+ 2018 CGOLS Figure 4.*
 
+## Cosmological dark matter (DM-only N-body)
+
+![LUNA dark-matter cosmic web at z=0](figures/cosmo_dm_web.png)
+
+*Dark-matter-only cosmological N-body run, end to end in LUNA: **256³ = 16.7M particles** in a 25 Mpc/h box, evolved from **z = 50 → z = 0**. The projected column density shows the fully-formed **cosmic web** — collapsed halos at the filament knots, filaments bridging them, voids between. Initial conditions come from **MUSIC** (Eisenstein–Hu ΛCDM, Arepo/Gadget HDF5) read straight into `main.run`, with box size and cosmology wired from the IC header. Gravity is the **particle-mesh multigrid Poisson** solver in super-comoving coordinates (`∇²φ̃ = (3/2)H₀²Ωₘa·δ`: CIC deposit → FMG multigrid → **4th-order force** → gather), advanced by a **KDK leapfrog** on an acceleration-limited timestep. The full z = 50 → 0 evolution (3,582 steps, δ_max → ~10⁵) ran in **135.8 s on a single A100**; the PM force is `shard_map`-parallel across GPUs (bit-identical to single-device). Gadget/Arepo units throughout (kpc/h, km/s, 10¹⁰ M⊙/h).*
+
 ## Appendix — parallel scaling (shard_map validation)
 
 ![Sedov 1024³: shard_map vs auto-sharded radial profiles](figures/sedov_shardmap_vs_baseline.png)
