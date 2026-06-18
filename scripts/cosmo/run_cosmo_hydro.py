@@ -31,6 +31,8 @@ def main():
         dloga_max=0.02,
         cosmo_jeans_ncell=float(os.environ.get("LUNA_JEANS_N", "4")),
         dm_softening=float(os.environ.get("LUNA_SOFT", "0.0")),   # kpc/h; 0 -> PM cell
+        dm_domain_decomp=os.environ.get("LUNA_DM_DD", "0") == "1",  # grid-sharded slab (>512^3)
+        dm_capacity_factor=float(os.environ.get("LUNA_DM_CAP", "1.5")),
         cosmo_T_floor=float(os.environ.get("LUNA_TFLOOR", "10.0")),
         cosmo_rho_floor=float(os.environ.get("LUNA_RHOFLOOR", "1e-3")),
         DualEnergy=os.environ.get("LUNA_DUAL", "0") == "1",

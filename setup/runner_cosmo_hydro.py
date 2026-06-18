@@ -297,6 +297,247 @@ def mesh_gas_to_grid(gas, pm, a):
     return jnp.stack([rho, mx, my, mz, E])
 
 
+def mesh_gas_to_grid_slab(gas, mesh, Nx, Ny, Nz, dx, box, a):
+    """Sharded one-time CIC mesh of MUSIC gas particles -> super-comoving conserved
+    grid (rho~, rho~v~, E~), each field a P('x',None,None) slab. The 5 conserved
+    fields are deposited as separate CIC-weighted scatters via cic_deposit_slab."""
+    import numpy as _np
+
+    from gravity.particle_mesh_shardmap import cic_deposit_slab, decompose_to_slabs
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    ndev = int(mesh.shape["x"])
+    vtil = _np.asarray(gas.vel) * (a ** 1.5)                  # super-comoving velocity
+    etil = (a ** 2) * _np.asarray(gas.u_int)                  # super-comoving specific u
+    m = _np.asarray(gas.mass)
+    # five conserved weights deposited as "mass": rho~, mom_{x,y,z}, E~
+    w = _np.stack([m, m * vtil[:, 0], m * vtil[:, 1], m * vtil[:, 2],
+                   m * (0.5 * _np.sum(vtil ** 2, axis=1) + etil)], axis=1)   # (N,5)
+    pos_g, w_g, _, act_g, _C = decompose_to_slabs(_np.asarray(gas.pos), w, m, Nx, ndev, dx, box)
+    posS = jax.device_put(jnp.asarray(pos_g), NamedSharding(mesh, P("x", None)))
+    actS = jax.device_put(jnp.asarray(act_g), NamedSharding(mesh, P("x")))
+    fields = []
+    for k in range(5):
+        wkS = jax.device_put(jnp.asarray(w_g[:, k]), NamedSharding(mesh, P("x")))
+        fields.append(cic_deposit_slab(posS, wkS, actS, Nx, Ny, Nz, dx, mesh))
+    return jnp.stack(fields)                                  # (5, Nx, Ny, Nz) P(None,'x',..)
+
+
+def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
+                    dm_pos, dm_p, dm_mass, is_main_process=True):
+    """Grid-sharded (1-D slab) coupled gas+DM. The gas grid + joint MG solve shard
+    along x (the hydro step_fn already carries its own halo exchange); DM particles
+    are spatially decomposed into per-slab fixed buffers and exchanged on drift.
+    Same super-comoving physics as run_simulation_cosmo_hydro -- only the data
+    layout differs, so the single joint solve per step deposits DM + gas density on
+    the sharded grid (deposit_slab -> solve_poisson_fmg_shardmap -> grad_phi_slab ->
+    gather_slab). Dual-energy is unavailable here (its upwind advection rolls along
+    the sharded x-axis); the density + temperature/Jeans floors carry stability."""
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    from gravity.particle_mesh_shardmap import (
+        cic_deposit_slab, decompose_to_slabs, exchange_particles_slab,
+        gather_accel_slab, grad_phi_slab)
+    from gravity.poisson_multigrid import _max_levels, solve_poisson_fmg_shardmap
+
+    cosmo = Cosmology(Omega_m=getattr(cfg, "cosmo_Omega_m", 1.0),
+                      Omega_L=getattr(cfg, "cosmo_Omega_L", 0.0))
+    H0 = float(getattr(cfg, "cosmo_H0", 1.0))
+    Om = float(getattr(cfg, "cosmo_Omega_m", 1.0))
+    a = float(getattr(cfg, "a_init", 0.3))
+    a_end = float(getattr(cfg, "a_end", 1.0))
+    dloga_max = float(getattr(cfg, "dloga_max", 0.01))
+    gamma = float(cfg.gamma)
+    box = float(cfg.Lx)
+    p_floor = float(getattr(cfg, "cosmo_p_floor", 0.0))
+    eta = float(getattr(cfg, "dm_eta", 0.025))
+    n_extra = int(getattr(cfg, "POISSON_FMG_EXTRA_VCYCLES", 2))
+    jeans_N = float(getattr(cfg, "cosmo_jeans_ncell", 0.0))
+    T_floor = float(getattr(cfg, "cosmo_T_floor", 0.0))
+    mu = float(getattr(cfg, "cosmo_mu", 1.22))
+    debug = bool(getattr(cfg, "cosmo_debug", False))
+
+    Nx = int(cfg.Nx)
+    Ny = int(getattr(cfg, "Ny", cfg.Nx))
+    Nz = int(getattr(cfg, "Nz", cfg.Nx))
+    dx = box / Nx
+    ndev = int(mesh.shape["x"])
+    if Nx % ndev:
+        raise ValueError(f"slab decomposition needs Nx ({Nx}) divisible by ndev ({ndev})")
+    nx_loc = Nx // ndev
+    n_levels = min(_max_levels(Nx), int(np.log2(nx_loc)) + 1)
+    coeff_fac = 1.5 * Om * H0 * H0
+    cap = float(getattr(cfg, "dm_capacity_factor", 1.5))
+    eps_soft = float(getattr(cfg, "dm_softening", 0.0)) or dx
+    rho_bar = float(jnp.mean(U[0]))
+    rho_floor = float(getattr(cfg, "cosmo_rho_floor", 0.0)) * rho_bar
+
+    # host-side spatial decomposition of the DM into per-slab fixed buffers
+    pos_g, mom_g, mass_g, act_g, C = decompose_to_slabs(
+        np.asarray(dm_pos), np.asarray(dm_p), np.asarray(dm_mass), Nx, ndev, dx, box, cap)
+    posS = jax.device_put(jnp.asarray(pos_g), NamedSharding(mesh, P("x", None)))
+    pS = jax.device_put(jnp.asarray(mom_g), NamedSharding(mesh, P("x", None)))
+    massS = jax.device_put(jnp.asarray(mass_g), NamedSharding(mesh, P("x")))
+    actS = jax.device_put(jnp.asarray(act_g), NamedSharding(mesh, P("x")))
+
+    a_tab, tau_tab = cosmo.build_a_of_tau(a, a_end + 0.05, H0)
+
+    def a_of_tau(t):
+        return float(np.interp(t, tau_tab, a_tab))
+
+    def forces(U_arr, pos, mass, active, a_kick):
+        """One joint solve on (gas + DM) density -> (gas force grid, DM accel)."""
+        rho_dm = cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh)
+        rho_tot = U_arr[0] + rho_dm
+        delta = rho_tot / jnp.mean(rho_tot) - 1.0
+        phi = solve_poisson_fmg_shardmap(
+            delta, dx, coeff_fac * a_kick, boundary=0, mesh=mesh,
+            n_levels=n_levels, n_extra_vcycles=n_extra)
+        g_gas = grad_phi_slab(phi, dx, mesh, order=2)         # gas force grid
+        g_dm = gather_accel_slab(grad_phi_slab(phi, dx, mesh, order=4),
+                                 pos, Nx, Ny, Nz, dx, mesh)   # DM accel at particles
+        return g_gas, g_dm, jnp.max(delta)
+
+    @jax.jit
+    def gas_kick(U_arr, g_gas, dt):
+        rho = U_arr[0]
+        gx, gy, gz = g_gas
+        mx, my, mz = U_arr[1], U_arr[2], U_arr[3]
+        nmx = mx + dt * rho * gx
+        nmy = my + dt * rho * gy
+        nmz = mz + dt * rho * gz
+        E = U_arr[-1] + dt * (0.5 * (mx + nmx) * gx + 0.5 * (my + nmy) * gy
+                              + 0.5 * (mz + nmz) * gz)
+        return jnp.stack([rho, nmx, nmy, nmz, E])
+
+    @jax.jit
+    def apply_rho_floor(U_arr, ct):
+        rho = U_arr[0]
+        bad = rho < rho_floor
+        rho_n = jnp.where(bad, rho_floor, rho)
+        mx = jnp.where(bad, 0.0, U_arr[1])
+        my = jnp.where(bad, 0.0, U_arr[2])
+        mz = jnp.where(bad, 0.0, U_arr[3])
+        eint_fl = jnp.maximum(ct * rho_floor / (gamma - 1.0), 1e-300)
+        E_n = jnp.where(bad, eint_fl, U_arr[-1])
+        return jnp.stack([rho_n, mx, my, mz, E_n])
+
+    @jax.jit
+    def apply_floor(U_arr, cj, ct):
+        rho = U_arr[0]
+        ke = 0.5 * (U_arr[1] ** 2 + U_arr[2] ** 2 + U_arr[3] ** 2) / rho
+        Pr = (gamma - 1.0) * (U_arr[-1] - ke)
+        Pmin = jnp.maximum(jnp.maximum(p_floor, ct * rho), cj * rho * rho)
+        return U_arr.at[-1].set(jnp.maximum(Pr, Pmin) / (gamma - 1.0) + ke)
+
+    def jeans_coeff(aa):
+        if jeans_N <= 0.0:
+            return 0.0
+        return coeff_fac * aa * (jeans_N * dx) ** 2 / (4.0 * np.pi ** 2 * rho_bar)
+
+    def temp_coeff(aa):
+        if T_floor <= 0.0:
+            return 0.0
+        return aa * aa * 8.2543e-3 * T_floor / mu
+
+    snap_every = int(getattr(cfg, "cosmo_snap_every", 0))
+    out_dir = getattr(cfg, "output_dir", "/ptmp/uli/jax-hydro/snapshots/cosmo_hydro")
+
+    def write_snap(a_now, U_arr, pos, mass, active):
+        import os
+
+        import h5py
+        os.makedirs(out_dir, exist_ok=True)
+        rho_dm = np.asarray(cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh))
+        fn = os.path.join(out_dir, f"coupled_a{a_now:.4f}.hdf5")
+        with h5py.File(fn, "w") as f:
+            f.attrs["a"] = a_now
+            f.attrs["z"] = 1.0 / a_now - 1.0
+            f.attrs["BoxSize"] = float(cfg.Lx)
+            f.create_dataset("rho_gas", data=np.asarray(U_arr[0], dtype=np.float32))
+            f.create_dataset("rho_dm", data=rho_dm.astype(np.float32))
+        print(f"[cosmo-hydro] wrote {fn}", flush=True)
+
+    if is_main_process:
+        m_gas = float(jnp.sum(U[0])) * dx ** 3
+        m_dm = float(jnp.sum(massS))
+        print(f"\n[cosmo-hydro] grid-sharded slab decomposition across {ndev} devices "
+              f"(nx_loc={nx_loc}, capacity {ndev*C} per slab)")
+        print(f"[cosmo-hydro] coupled gas+DM  a_init={a:.4f} (z={1/a-1:.2f}) -> "
+              f"a_end={a_end:.4f}  Om={Om} OL={cfg.cosmo_Omega_L} H0={H0:.4f}")
+        print(f"[cosmo-hydro] gas mass={m_gas:.4e}  DM mass={m_dm:.4e}  "
+              f"f_b={m_gas/(m_gas+m_dm):.3f}  (mesh={Nx}^3)")
+        print("[cosmo-hydro] compiling first joint force "
+              "(deposit -> FMG -> grad -> gather) ...", flush=True)
+
+    tau, step, t0 = 0.0, 0, time.time()
+    tc = time.time()
+    g_gas, g_dm, dmax = forces(U, posS, massS, actS, a)
+    jax.block_until_ready(g_dm)
+    if is_main_process:
+        print(f"[cosmo-hydro] first force compiled+ran in {time.time()-tc:.1f}s",
+              flush=True)
+    n_bad_tot = 0
+    while a < a_end - 1e-9:
+        gmag = jnp.sqrt(jnp.sum(g_dm ** 2, axis=1))
+        gmax = float(jnp.max(jnp.where(actS > 0, gmag, 0.0)))
+        dt_cfl = float(compute_dt_fn(U))
+        dt_dloga = dloga_max / (a * a * cosmo.H(a, H0))
+        dt_accel = eta * np.sqrt(eps_soft / (gmax + 1e-30))
+        dtau = min(dt_cfl, dt_dloga, dt_accel)
+        if debug and is_main_process and (step % 10 == 0 or float(dmax) > 150.0):
+            rho = U[0]
+            ke = 0.5 * (U[1] ** 2 + U[2] ** 2 + U[3] ** 2) / rho
+            Pr = (gamma - 1.0) * (U[-1] - ke)
+            lim = ("cfl", "dloga", "accel")[int(np.argmin([dt_cfl, dt_dloga, dt_accel]))]
+            print(f"[dbg] s={step} z={1/a-1:.2f} dt[cfl={dt_cfl:.2e} dl={dt_dloga:.2e} "
+                  f"ac={dt_accel:.2e}]->{lim}  rho[{float(jnp.min(rho)):.2e},"
+                  f"{float(jnp.max(rho)):.2e}] Pmin={float(jnp.min(Pr)):.2e} "
+                  f"gmax={gmax:.2e}", flush=True)
+        if tau + dtau > tau_tab[-1]:
+            dtau = tau_tab[-1] - tau
+        a_next = a_of_tau(tau + dtau)
+        dloga = np.log(a_next / a)
+        # DM half-kick @a, drift + exchange to owning slab, gas hydro flux,
+        # JOINT solve @a_next, gas kick + floors, DM closing half-kick.
+        pS = pS + g_dm * (0.5 * dtau)
+        posS = jnp.mod(posS + pS * dtau, box)
+        posS, pS, massS, actS, n_bad, max_occ = exchange_particles_slab(
+            posS, pS, massS, actS, Nx, dx, box, mesh)
+        U = step_fn(U, dtau)
+        g_gas, g_dm, dmax = forces(U, posS, massS, actS, a_next)
+        U = gas_kick(U, g_gas, dtau)
+        if rho_floor > 0.0:
+            U = apply_rho_floor(U, temp_coeff(a_next))
+        if p_floor > 0.0 or jeans_N > 0.0 or T_floor > 0.0:
+            U = apply_floor(U, jeans_coeff(a_next), temp_coeff(a_next))
+        pS = pS + g_dm * (0.5 * dtau)
+        tau += dtau
+        a = a_next
+        step += 1
+        n_bad_tot += int(n_bad)
+        if is_main_process and (step % 10 == 0 or a >= a_end - 1e-9):
+            print(f"[cosmo-hydro] {step:5d} {a:8.4f} {1/a-1:8.4f} {dloga:8.5f} "
+                  f"dmax={float(dmax):9.3f} rhomax={float(jnp.max(U[0])):10.3e} "
+                  f"occ={int(max_occ)} nbad={int(n_bad)} "
+                  f"{(time.time()-t0)/step:5.2f}s/st", flush=True)
+            if not np.isfinite(float(jnp.max(U[0]))):
+                print("[cosmo-hydro] non-finite gas state -- stopping")
+                break
+        if is_main_process and snap_every > 0 and step % snap_every == 0:
+            write_snap(a, U, posS, massS, actS)
+
+    if is_main_process:
+        m_gas = float(jnp.sum(U[0])) * dx ** 3
+        print(f"[cosmo-hydro] done: {step} steps, a={a:.4f} (z={1/a-1:.4f}), "
+              f"{time.time()-t0:.1f}s  (gas mass={m_gas:.4e}, "
+              f"cumulative out-of-slab: {n_bad_tot})")
+        write_snap(a, U, posS, massS, actS)
+    return U, posS, pS, a, step
+
+
 def run_simulation_cosmo_hydro_music(cfg, is_main_process=True):
     """Assemble a coupled gas+DM run from a MUSIC baryon IC and dispatch the
     coupled runner. Gas (PartType0) is meshed to the grid; DM (PartType1) stays
@@ -324,9 +565,29 @@ def run_simulation_cosmo_hydro_music(cfg, is_main_process=True):
             print(f"[cosmo-hydro] seeding gas T_init={T_init:.1f} K "
                   f"-> u={u_init:.3e} (km/s)^2 (MUSIC wrote no InternalEnergy)")
 
-    mesh, _ = create_distributed_mesh(cfg)
     grid = GridParams.from_config(cfg)
+    # >512^3: grid-sharded slab path -- gas grid + joint MG solve shard along x,
+    # DM decomposed into per-slab buffers. The hydro step_fn carries its own halos.
+    slab = bool(getattr(cfg, "dm_domain_decomp", False)) and jax.device_count() > 1
+    if slab:
+        from gravity.particle_mesh_shardmap import make_slab_mesh
+        mesh = make_slab_mesh(jax.devices())
+    else:
+        mesh, _ = create_distributed_mesh(cfg)
     compute_dt_fn, step_fn, _, sharding = create_solver_distributed(cfg, grid, mesh)
+
+    if slab:
+        Nx = int(cfg.Nx)
+        dx = float(cfg.Lx) / Nx
+        U = mesh_gas_to_grid_slab(gas, mesh, Nx, int(getattr(cfg, "Ny", cfg.Nx)),
+                                  int(getattr(cfg, "Nz", cfg.Nx)), dx, float(cfg.Lx), a)
+        if is_main_process:
+            print(f"[cosmo-hydro] MUSIC baryon IC: {gas.n_part} gas + {dm.n_part} DM, "
+                  f"box={cfg.Lx:.0f} kpc/h, z={1/a-1:.1f} (grid-sharded slab)")
+        return _run_slab_hydro(
+            U, cfg, step_fn, compute_dt_fn, mesh,
+            np.asarray(dm.pos), np.asarray(dm.vel) * (a ** 1.5), np.asarray(dm.mass),
+            is_main_process=is_main_process)
 
     pm = ParticleMeshGravity(cfg)
     U = mesh_gas_to_grid(gas, pm, a)
