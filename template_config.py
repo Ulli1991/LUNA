@@ -113,6 +113,7 @@ class Config:
     CosmoHydro: bool = False        # coupled gas+DM box (gas meshed from MUSIC baryon IC)
     cosmo_jeans_ncell: float = 0.0  # Truelove Jeans-floor cells (0 = off; ~4 for halos)
     cosmo_T_floor: float = 0.0      # temperature floor [K] (10 K is standard for cosmo runs)
+    cosmo_rho_floor: float = 0.0    # density floor as fraction of mean (0 = off; ~1e-4 typical)
     DualEnergy: bool = False        # Bryan+1995 dual-energy (track e_int, switch when KE>>e_int)
     cosmo_dual_eta: float = 1.0e-3  # dual-energy switch: use e_int when (E-KE)/E < eta
     cosmo_debug: bool = False       # per-step gas/DM extrema diagnostics (blow-up debugging)

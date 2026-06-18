@@ -70,6 +70,7 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
     # pancake units (H0 = 1) this reduces to (3/2) Omega_m a.
     coeff_fac = 1.5 * Om * H0 * H0
     rho_bar = float(jnp.mean(U[0]))                          # mean comoving gas density
+    rho_floor = float(getattr(cfg, "cosmo_rho_floor", 0.0)) * rho_bar   # density floor
 
     dm_pos = jnp.asarray(dm_pos)
     dm_p = jnp.asarray(dm_p)
@@ -132,6 +133,21 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
         if T_floor <= 0.0:
             return 0.0
         return aa * aa * 8.2543e-3 * T_floor / mu
+
+    @jax.jit
+    def apply_rho_floor(U_arr, ct):
+        """Reset near-vacuum cells to a quiescent floor: where rho~ < rho_floor,
+        clamp the density and ZERO the momentum so v = (rho~v~)/rho~ cannot blow up
+        as a cell drains into a collapsing halo (the z~7 density-positivity NaN)."""
+        rho = U_arr[0]
+        bad = rho < rho_floor
+        rho_n = jnp.where(bad, rho_floor, rho)
+        mx = jnp.where(bad, 0.0, U_arr[1])
+        my = jnp.where(bad, 0.0, U_arr[2])
+        mz = jnp.where(bad, 0.0, U_arr[3])
+        eint_fl = jnp.maximum(ct * rho_floor / (gamma - 1.0), 1e-300)
+        E_n = jnp.where(bad, eint_fl, U_arr[-1])           # bad cell: v=0, T = T_floor
+        return jnp.stack([rho_n, mx, my, mz, E_n])
 
     # --- Bryan+1995 dual-energy (operator-split, super-comoving) -------------
     inv_dx = 1.0 / dx
@@ -239,6 +255,8 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
         U = step_fn(U, dtau)
         g_gas, g_dm, dmax = forces(U, dm_pos, coeff_fac * a_next)
         U = gas_kick(U, g_gas, dtau)
+        if rho_floor > 0.0:
+            U = apply_rho_floor(U, temp_coeff(a_next))
         if dual_energy:
             U, ie = dual_energy_update(U, ie, dtau, temp_coeff(a_next), jeans_coeff(a_next))
         elif p_floor > 0.0 or jeans_N > 0.0 or T_floor > 0.0:

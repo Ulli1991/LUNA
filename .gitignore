@@ -46,3 +46,4 @@ checkpoints
 # Paper figure staging: ship the PNGs, not the tex source
 paper_figures/*.tex
 paper.tex
+amr_integration_brief.md
