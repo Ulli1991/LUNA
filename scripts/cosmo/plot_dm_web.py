@@ -7,9 +7,12 @@ lightly smoothed) -- the large-scale structure of the DM-only run.
   LUNA_DM_NBIN  projection resolution (default 1600)
 """
 import os
+import sys
 
 import h5py
 import numpy as np
+
+sys.path.insert(0, os.getcwd())
 
 
 def main():
@@ -34,18 +37,23 @@ def main():
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from utils.figstyle import FIGSIZE, apply_style, decorate
+    apply_style()
     L = box / 1000.0                                      # kpc/h -> Mpc/h
     vmin = float(np.percentile(img, 45))
     vmax = float(np.percentile(img, 99.9))
-    fig, ax = plt.subplots(figsize=(10, 10))
+    side = FIGSIZE[1] + 1.6                               # square panel, canonical scale
+    fig, ax = plt.subplots(figsize=(side, side))
     ax.imshow(img.T, origin="lower", cmap="magma", vmin=vmin, vmax=vmax,
               extent=[0, L, 0, L], interpolation="bilinear")
-    ax.set_xlabel("x  [Mpc/h]", fontsize=12)
-    ax.set_ylabel("y  [Mpc/h]", fontsize=12)
+    ax.set_xlabel("x  [Mpc/h]")
+    ax.set_ylabel("y  [Mpc/h]")
+    decorate(ax)
+    ax.grid(False)                                        # no grid over the image
     fig.tight_layout()
     os.makedirs("figures", exist_ok=True)
     out = "figures/cosmo_dm_web.png"
-    fig.savefig(out, dpi=200)
+    fig.savefig(out)
     print(f"# wrote {out}")
 
 

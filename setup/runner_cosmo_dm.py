@@ -45,6 +45,14 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     n_extra = int(getattr(cfg, "POISSON_FMG_EXTRA_VCYCLES", 2))
     n_levels = getattr(cfg, "POISSON_N_LEVELS", None)
 
+    # Grid-sharded (slab domain decomposition) path for grids beyond a single
+    # device. Shards the mesh + MG solve along x and decomposes the particles
+    # spatially; needed for >~512^3. Falls through to the particle-parallel
+    # (replicated-grid) path below for the single-device / small-grid case.
+    if getattr(cfg, "dm_domain_decomp", False) and jax.device_count() > 1:
+        return _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end,
+                         dloga_max, eta, n_extra, is_main_process)
+
     pm = ParticleMeshGravity(cfg)
     pos = jnp.asarray(ic.pos)                              # comoving kpc/h
     mass = jnp.asarray(ic.mass)
@@ -132,6 +140,109 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
               f"{time.time()-t0:.1f}s")
         _write_snapshot(cfg, np.asarray(pos), np.asarray(p) / a ** 1.5, a, ic)
     return {"a": a, "n_steps": step}
+
+
+def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
+              n_extra, is_main_process):
+    """Grid-sharded (1-D slab) DM N-body. Mesh + MG shard along x; particles are
+    spatially decomposed into per-slab fixed buffers and exchanged on drift.
+
+    Same super-comoving KDK leapfrog and comoving PM gravity as the
+    particle-parallel path -- only the data layout differs:
+      deposit_slab -> solve_poisson_fmg_shardmap -> grad_phi_slab -> gather_slab,
+    one MG solve per step (end-force reuse), exchange after each drift.
+    """
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    from gravity.particle_mesh_shardmap import (
+        cic_deposit_slab, decompose_to_slabs, exchange_particles_slab,
+        gather_accel_slab, grad_phi_slab, make_slab_mesh)
+    from gravity.poisson_multigrid import _max_levels, solve_poisson_fmg_shardmap
+
+    Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
+    dx = box / Nx
+    ndev = jax.device_count()
+    if Nx % ndev:
+        raise ValueError(f"slab decomposition needs Nx ({Nx}) divisible by ndev ({ndev})")
+    mesh = make_slab_mesh(jax.devices())
+    nx_loc = Nx // ndev
+    n_levels = min(_max_levels(Nx), int(np.log2(nx_loc)) + 1)
+    coeff_fac = 1.5 * Om * H0 * H0
+    cap = float(getattr(cfg, "dm_capacity_factor", 1.5))
+    eps_soft = float(getattr(cfg, "dm_softening", 0.0)) or dx
+
+    # host-side spatial decomposition into per-slab fixed-capacity buffers
+    pos0 = np.asarray(ic.pos)
+    mom0 = np.asarray(ic.vel) * (a ** 1.5)                 # canonical momentum p=a^2 xdot
+    mass0 = np.asarray(ic.mass)
+    pos_g, mom_g, mass_g, act_g, C = decompose_to_slabs(
+        pos0, mom0, mass0, Nx, ndev, dx, box, cap)
+    posS = jax.device_put(jnp.asarray(pos_g), NamedSharding(mesh, P("x", None)))
+    pS = jax.device_put(jnp.asarray(mom_g), NamedSharding(mesh, P("x", None)))
+    massS = jax.device_put(jnp.asarray(mass_g), NamedSharding(mesh, P("x")))
+    actS = jax.device_put(jnp.asarray(act_g), NamedSharding(mesh, P("x")))
+
+    a_tab, tau_tab = cosmo.build_a_of_tau(a, a_end + 0.05, H0)
+
+    def a_of_tau(t):
+        return float(np.interp(t, tau_tab, a_tab))
+
+    def force(pos, mass, active, a_kick):
+        rho = cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh)
+        delta = rho / jnp.mean(rho) - 1.0
+        phi = solve_poisson_fmg_shardmap(
+            delta, dx, coeff_fac * a_kick, boundary=0, mesh=mesh,
+            n_levels=n_levels, n_extra_vcycles=n_extra)
+        g = grad_phi_slab(phi, dx, mesh, order=4)
+        return gather_accel_slab(g, pos, Nx, Ny, Nz, dx, mesh), jnp.max(delta)
+
+    if is_main_process:
+        print(f"[cosmo-dm] grid-sharded slab decomposition across {ndev} devices "
+              f"(nx_loc={nx_loc}, capacity {ndev*C} for {ic.n_part} particles)")
+        print(f"[cosmo-dm] {ic.n_part} DM particles  box={box:.0f} kpc/h  "
+              f"mesh={Nx}^3  Om={Om} OL={cfg.cosmo_Omega_L} H0={H0:.5f}")
+        print(f"[cosmo-dm] a_init={a:.4f} (z={1/a-1:.2f}) -> a_end={a_end:.4f}")
+        print(f"[cosmo-dm] {'step':>5} {'a':>8} {'z':>8} {'dloga':>8} "
+              f"{'delta_max':>10} {'max_occ':>8} {'n_bad':>6}")
+
+    tau, step, t0 = 0.0, 0, time.time()
+    g, dmax = force(posS, massS, actS, a)
+    n_bad_tot = 0
+    while a < a_end - 1e-9:
+        gmag = jnp.sqrt(jnp.sum(g ** 2, axis=1))
+        gmax = float(jnp.max(jnp.where(actS > 0, gmag, 0.0)))   # active slots only
+        dtau = min(dloga_max / (a * a * cosmo.H(a, H0)),
+                   eta * np.sqrt(eps_soft / (gmax + 1e-30)))
+        if tau + dtau > tau_tab[-1]:
+            dtau = tau_tab[-1] - tau
+        a_next = a_of_tau(tau + dtau)
+        dloga = np.log(a_next / a)
+        # KDK: half-kick @a, drift, exchange to owning slab, refresh force @a_next, half-kick.
+        pS = pS + g * (0.5 * dtau)
+        posS = jnp.mod(posS + pS * dtau, box)
+        posS, pS, massS, actS, n_bad, max_occ = exchange_particles_slab(
+            posS, pS, massS, actS, Nx, dx, box, mesh)
+        g, dmax = force(posS, massS, actS, a_next)
+        pS = pS + g * (0.5 * dtau)
+        tau += dtau
+        a = a_next
+        step += 1
+        n_bad_tot += int(n_bad)
+        if is_main_process and (step % 10 == 0 or a >= a_end - 1e-9):
+            print(f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} {dloga:8.5f} "
+                  f"{float(dmax):10.3f} {int(max_occ):8d} {int(n_bad):6d}")
+
+    if is_main_process:
+        print(f"[cosmo-dm] done: {step} steps, a={a:.4f} (z={1/a-1:.4f}), "
+              f"{time.time()-t0:.1f}s  (cumulative out-of-slab events: {n_bad_tot})")
+        # gather active particles to host, restore Gadget velocity u = p / a^{3/2}
+        pos_h = np.asarray(posS)
+        mom_h = np.asarray(pS)
+        act_h = np.asarray(actS) > 0
+        sel = np.nonzero(act_h)[0]
+        _write_snapshot(cfg, pos_h[sel], mom_h[sel] / a ** 1.5, a, ic)
+    return {"a": a, "n_steps": step, "n_out_of_slab": n_bad_tot}
 
 
 def _write_snapshot(cfg, pos, vel_gadget, a, ic):

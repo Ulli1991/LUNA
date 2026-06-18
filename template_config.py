@@ -108,6 +108,8 @@ class Config:
     music_ic_path: str = ""         # MUSIC/Gadget Arepo-HDF5 DM IC path
     dm_softening: float = 0.0       # gravitational softening (0 -> PM cell size)
     dm_eta: float = 0.025           # acceleration-timestep accuracy parameter
+    dm_domain_decomp: bool = False  # grid-sharded slab decomposition (>512^3, multi-GPU)
+    dm_capacity_factor: float = 1.5  # per-slab particle buffer headroom for clustering
     # Jeans-instability IC knobs (only used by test_problem='Jeans-Instability-3D')
     jeans_rho0: float = 1.0
     jeans_P0: float = 1.0
