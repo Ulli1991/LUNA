@@ -65,12 +65,20 @@ def main():
             ctr = 0.5 * L
             ax.set_xlim(ctr - ZOOM_PC, ctr + ZOOM_PC)
             ax.set_ylim(ctr - ZOOM_PC, ctr + ZOOM_PC)
-        ax.text(0.05, 0.90, f"{tmyr * 1e3:g} kyr", transform=ax.transAxes,
+        # panel 0 carries the inset colorbar top-left, so drop its time label lower
+        ty = 0.74 if ax is axes.ravel()[0] else 0.90
+        ax.text(0.05, ty, f"{tmyr * 1e3:g} kyr", transform=ax.transAxes,
                 color="w", fontsize=LABEL_FS, fontweight="bold")
     fig.tight_layout()
-    fig.subplots_adjust(right=0.90)
-    cax = fig.add_axes([0.92, 0.12, 0.018, 0.76])
-    fig.colorbar(im, cax=cax, label=r"$\log_{10}\,\Sigma\ [\mathrm{M_\odot\,pc^{-2}}]$")
+    # colorbar as a compact horizontal inset in the TOP-LEFT of the first panel
+    ax0 = axes.ravel()[0]
+    cax = ax0.inset_axes([0.06, 0.86, 0.42, 0.045])
+    cb = fig.colorbar(im, cax=cax, orientation="horizontal")
+    cb.set_label(r"$\log_{10}\,\Sigma\ [\mathrm{M_\odot\,pc^{-2}}]$",
+                 color="w", fontsize=LABEL_FS)
+    cb.ax.xaxis.set_ticks_position("bottom")
+    cb.ax.tick_params(colors="w", labelsize=LABEL_FS - 2)
+    cb.outline.set_edgecolor("w")
     os.makedirs("figures", exist_ok=True)
     tag = "_sinks" if "sink" in SNAP else ""
     out = f"figures/bb79_montage_Nx{Ss[0].shape[0]}{tag}.png"
