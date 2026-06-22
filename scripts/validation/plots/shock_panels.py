@@ -128,7 +128,9 @@ def plot_one(problem_name, params):
         decorate(ax)
     axes[1, 0].set_xlabel("x")
     axes[1, 1].set_xlabel("x")
-    axes[0, 0].legend(loc="upper left", fontsize=8, handlelength=1.2,
+    # Woodward-Colella: top-left (clear there); Sod / Shu-Osher: bottom-left
+    leg_loc = "upper left" if slug == "woodward_colella" else "lower left"
+    axes[0, 0].legend(loc=leg_loc, fontsize=8, handlelength=1.2,
                       labelspacing=0.3, borderaxespad=0.3)
 
     fig.tight_layout()
