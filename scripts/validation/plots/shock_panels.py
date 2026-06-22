@@ -128,7 +128,7 @@ def plot_one(problem_name, params):
         decorate(ax)
     axes[1, 0].set_xlabel("x")
     axes[1, 1].set_xlabel("x")
-    axes[0, 0].legend(loc="best", fontsize=8, handlelength=1.2,
+    axes[0, 0].legend(loc="upper left", fontsize=8, handlelength=1.2,
                       labelspacing=0.3, borderaxespad=0.3)
 
     fig.tight_layout()

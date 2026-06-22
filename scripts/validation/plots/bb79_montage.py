@@ -65,14 +65,12 @@ def main():
             ctr = 0.5 * L
             ax.set_xlim(ctr - ZOOM_PC, ctr + ZOOM_PC)
             ax.set_ylim(ctr - ZOOM_PC, ctr + ZOOM_PC)
-        # panel 0 carries the inset colorbar top-left, so drop its time label lower
-        ty = 0.74 if ax is axes.ravel()[0] else 0.90
-        ax.text(0.05, ty, f"{tmyr * 1e3:g} kyr", transform=ax.transAxes,
+        ax.text(0.05, 0.90, f"{tmyr * 1e3:g} kyr", transform=ax.transAxes,
                 color="w", fontsize=LABEL_FS, fontweight="bold")
     fig.tight_layout()
-    # colorbar as a compact horizontal inset in the TOP-LEFT of the first panel
-    ax0 = axes.ravel()[0]
-    cax = ax0.inset_axes([0.06, 0.86, 0.42, 0.045])
+    # colorbar as a compact horizontal inset in the TOP-RIGHT panel, top-right corner
+    axc = axes.ravel()[2]
+    cax = axc.inset_axes([0.52, 0.86, 0.42, 0.045])
     cb = fig.colorbar(im, cax=cax, orientation="horizontal")
     cb.set_label(r"$\log_{10}\,\Sigma\ [\mathrm{M_\odot\,pc^{-2}}]$",
                  color="w", fontsize=LABEL_FS)

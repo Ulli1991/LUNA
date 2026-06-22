@@ -7,6 +7,7 @@ resolutions that haven't run yet.
 Output: figures/cc85_wind_density.{pdf,png}, cc85_wind_vradial.{pdf,png},
         cc85_wind_temperature.{pdf,png}
 """
+import gc
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -139,27 +140,32 @@ def _radial_profile(rho_code, vx, vy, vz, P_code, Lx, Ly, Lz, n_bins=64):
     """Spherically-average n_H, v_r, T into radial bins. r in kpc."""
     Nx_, Ny_, Nz_ = rho_code.shape
     dx = Lx / Nx_; dy = Ly / Ny_; dz = Lz / Nz_
-    x = (np.arange(Nx_) + 0.5) * dx - 0.5 * Lx
-    y = (np.arange(Ny_) + 0.5) * dy - 0.5 * Ly
-    z = (np.arange(Nz_) + 0.5) * dz - 0.5 * Lz
-    X, Y, Z = np.meshgrid(x, y, z, indexing="ij")
-    R = np.sqrt(X**2 + Y**2 + Z**2).ravel()
+    # SPARSE broadcasting (x/y/z are 1-D views, not three full N^3 meshgrids) so
+    # only R itself materialises -- at 1024^3 the old np.meshgrid held 3x8.6 GB of
+    # coordinate grids that, with the per-resolution snapshots never freed,
+    # OOM-killed the job. R is built once and reused for every histogram.
+    x = ((np.arange(Nx_) + 0.5) * dx - 0.5 * Lx)[:, None, None]
+    y = ((np.arange(Ny_) + 0.5) * dy - 0.5 * Ly)[None, :, None]
+    z = ((np.arange(Nz_) + 0.5) * dz - 0.5 * Lz)[None, None, :]
+    R = np.sqrt(x * x + y * y + z * z)                       # one N^3 array
 
-    rho_cgs = (rho_code * UnitDensity_cgs).ravel()
+    rho_cgs = rho_code * UnitDensity_cgs
     n_H = rho_cgs / (_MU * _PROTON_MASS)
     R_safe = np.where(R > 0, R, 1.0)
-    v_r = ((vx * X + vy * Y + vz * Z).ravel()) / R_safe
-    P_cgs = (P_code * UnitPressure_cgs).ravel()
-    T_cgs = (P_cgs / np.maximum(rho_cgs, 1e-40)) * (_MU * _PROTON_MASS / _KB)
+    v_r = (vx * x + vy * y + vz * z) / R_safe                # radial velocity, N^3
+    del R_safe
+    T_cgs = (P_code * UnitPressure_cgs / np.maximum(rho_cgs, 1e-40)) * (
+        _MU * _PROTON_MASS / _KB)
 
     r_max = min(0.5 * Lx, 0.5 * Ly, 0.5 * Lz)
     edges = np.linspace(0, r_max, n_bins + 1)
     centers = 0.5 * (edges[1:] + edges[:-1])
-    counts, _ = np.histogram(R, bins=edges)
-    counts = np.maximum(counts, 1)
-    n_prof, _ = np.histogram(R, bins=edges, weights=n_H)
-    v_prof, _ = np.histogram(R, bins=edges, weights=v_r)
-    T_prof, _ = np.histogram(R, bins=edges, weights=T_cgs)
+    Rf = R.ravel()
+    counts = np.maximum(np.histogram(Rf, bins=edges)[0], 1)
+    n_prof = np.histogram(Rf, bins=edges, weights=n_H.ravel())[0]
+    v_prof = np.histogram(Rf, bins=edges, weights=v_r.ravel())[0]
+    T_prof = np.histogram(Rf, bins=edges, weights=T_cgs.ravel())[0]
+    del R, Rf, rho_cgs, n_H, v_r, T_cgs
     return centers, n_prof / counts, v_prof / counts, T_prof / counts
 
 
@@ -178,6 +184,8 @@ def _plot_radial_profiles(runs, snapshots_root="snapshots"):
         axes[0].loglog(r, n_H, color=colors[i], lw=1.8, label=f"Nx={Nx}")
         axes[1].plot  (r, v_r, color=colors[i], lw=1.8, label=f"Nx={Nx}")
         axes[2].loglog(r, T,   color=colors[i], lw=1.8, label=f"Nx={Nx}")
+        del snap                                              # free the N^3 fields
+        gc.collect()                                          # before the next (bigger) Nx
 
     axes[0].set_xlabel("r (kpc)"); axes[0].set_ylabel(r"$n_{\rm H}\ [{\rm cm}^{-3}]$")
     axes[1].set_xlabel("r (kpc)"); axes[1].set_ylabel(r"$v_{\rm rad}\ [{\rm km\,s^{-1}}]$")

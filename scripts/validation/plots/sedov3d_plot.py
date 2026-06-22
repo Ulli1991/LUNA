@@ -204,13 +204,15 @@ def main():
         (axes[1, 0], "P [erg cm$^{-3}$]", "log"),
         (axes[1, 1], "T [K]", "log"),
     ]
-    for ax, ylabel, yscale in panel_meta:
+    for j, (ax, ylabel, yscale) in enumerate(panel_meta):
         ax.axvline(R_s_analytic_pc, color="0.5", linestyle="-", lw=1.0,
                    label=fr"$R_s$ analytic = {R_s_analytic_pc:.1f} pc")
         ax.set_xlabel("r [pc]"); ax.set_ylabel(ylabel)
         ax.set_xlim(0, R_xlim)
         ax.set_yscale(yscale)
-        ax.legend()
+        if j == 0:                                           # one compact legend only
+            ax.legend(fontsize=8, frameon=False, handlelength=1.4,
+                      labelspacing=0.3, borderpad=0.2)
         decorate(ax)
     figR.tight_layout()
     Path("figures").mkdir(exist_ok=True)
