@@ -85,7 +85,7 @@ def plot_one(problem_name, params):
     fig, axes = plt.subplots(2, 2, figsize=(FIGSIZE[0]*2*0.6, FIGSIZE[1]*2*0.6), sharex=True)
     panels = [
         (axes[0, 0], "rho",   "density"),
-        (axes[0, 1], "vx",    "v_x"),
+        (axes[0, 1], "vx",    r"$v_x$"),
         (axes[1, 0], "P",     "pressure"),
         (axes[1, 1], "e_int", "internal energy"),
     ]
