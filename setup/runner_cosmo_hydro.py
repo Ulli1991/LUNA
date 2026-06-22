@@ -71,6 +71,12 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
     coeff_fac = 1.5 * Om * H0 * H0
     rho_bar = float(jnp.mean(U[0]))                          # mean comoving gas density
     rho_floor = float(getattr(cfg, "cosmo_rho_floor", 0.0)) * rho_bar   # density floor
+    # low-density CFL guards (tame the v=p/rho and spurious-hot runaways in diffuse
+    # cells -- NOT the dense halos): velocity ceiling, temperature ceiling, and a
+    # buffer factor so the momentum reset catches cells *near* the floor too.
+    v_max = float(getattr(cfg, "cosmo_vmax", 0.0))           # |v~| ceiling (0 = off)
+    T_max = float(getattr(cfg, "cosmo_Tmax", 0.0))           # temperature ceiling [K] (0 = off)
+    floor_buffer = float(getattr(cfg, "cosmo_floor_buffer", 1.0))
 
     dm_pos = jnp.asarray(dm_pos)
     dm_p = jnp.asarray(dm_p)
@@ -134,19 +140,42 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
             return 0.0
         return aa * aa * 8.2543e-3 * T_floor / mu
 
+    def tempmax_coeff(aa):
+        # super-comoving e_int ceiling coefficient: e_int <= coeff(a) rho~/(gamma-1)
+        # caps T <= T_max, killing the spurious ~1e11 K diffuse cells.
+        if T_max <= 0.0:
+            return 0.0
+        return aa * aa * 8.2543e-3 * T_max / mu
+
     @jax.jit
-    def apply_rho_floor(U_arr, ct):
-        """Reset near-vacuum cells to a quiescent floor: where rho~ < rho_floor,
-        clamp the density and ZERO the momentum so v = (rho~v~)/rho~ cannot blow up
-        as a cell drains into a collapsing halo (the z~7 density-positivity NaN)."""
+    def apply_rho_floor(U_arr, ct, ctmax):
+        """Tame the low-density CFL pathology (diffuse cells, NOT dense halos):
+          (1) buffered density floor: where rho~ < floor_buffer*rho_floor, clamp
+              rho~ and ZERO momentum (v=(rho~v~)/rho~ blows up as rho~->floor);
+          (2) velocity ceiling: rescale momentum so |v~| <= v_max, preserving e_int
+              -- removes the v=p/rho runaway in near-floor cells (the dt killer);
+          (3) temperature ceiling: e_int <= ctmax*rho~/(gamma-1), preventing the
+              spurious ~1e11 K diffuse cells the total-energy scheme makes once KE
+              runs away. Floors (T_floor) still applied separately by apply_floor."""
         rho = U_arr[0]
-        bad = rho < rho_floor
+        mx, my, mz, E = U_arr[1], U_arr[2], U_arr[3], U_arr[-1]
+        bad = rho < rho_floor * floor_buffer               # (1)
         rho_n = jnp.where(bad, rho_floor, rho)
-        mx = jnp.where(bad, 0.0, U_arr[1])
-        my = jnp.where(bad, 0.0, U_arr[2])
-        mz = jnp.where(bad, 0.0, U_arr[3])
+        mx = jnp.where(bad, 0.0, mx)
+        my = jnp.where(bad, 0.0, my)
+        mz = jnp.where(bad, 0.0, mz)
         eint_fl = jnp.maximum(ct * rho_floor / (gamma - 1.0), 1e-300)
-        E_n = jnp.where(bad, eint_fl, U_arr[-1])           # bad cell: v=0, T = T_floor
+        E = jnp.where(bad, eint_fl, E)
+        ke = 0.5 * (mx * mx + my * my + mz * mz) / rho_n
+        eint = E - ke
+        if v_max > 0.0:                                     # (2)
+            v2 = (mx * mx + my * my + mz * mz) / (rho_n * rho_n)
+            scl = jnp.where(v2 > v_max * v_max, v_max / jnp.sqrt(v2 + 1e-300), 1.0)
+            mx, my, mz = mx * scl, my * scl, mz * scl
+            ke = 0.5 * (mx * mx + my * my + mz * mz) / rho_n
+        if T_max > 0.0:                                     # (3)
+            eint = jnp.minimum(eint, ctmax * rho_n / (gamma - 1.0))
+        E_n = ke + jnp.maximum(eint, 1e-300)
         return jnp.stack([rho_n, mx, my, mz, E_n])
 
     # --- Bryan+1995 dual-energy (operator-split, super-comoving) -------------
@@ -235,15 +264,24 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
                                           or float(dmax) > 150.0):
             rho = U[0]
             ke = 0.5 * (U[1] ** 2 + U[2] ** 2 + U[3] ** 2) / rho
-            P = (gamma - 1.0) * (U[-1] - ke)
+            eint = U[-1] - ke
+            P = (gamma - 1.0) * eint
             cs = jnp.sqrt(gamma * jnp.abs(P) / jnp.abs(rho))
             vmag = jnp.sqrt((U[1] ** 2 + U[2] ** 2 + U[3] ** 2)) / rho
+            sig = (vmag + cs).reshape(-1)                         # CFL signal speed
+            i = jnp.argmax(sig)                                   # worst-CFL cell
+            rf, Pf, ef = rho.reshape(-1)[i], P.reshape(-1)[i], eint.reshape(-1)[i]
+            vf, cf = vmag.reshape(-1)[i], cs.reshape(-1)[i]
+            Tcell = float(Pf) / (float(rf) + 1e-300) * mu / 8.2543e-3 / (a * a)
+            ke_eint = float(ke.reshape(-1)[i]) / (abs(float(ef)) + 1e-300)
             lim = ("cfl", "dloga", "accel")[int(np.argmin([dt_cfl, dt_dloga, dt_accel]))]
             print(f"[dbg] s={step} z={1/a-1:.2f} dt[cfl={dt_cfl:.2e} dl={dt_dloga:.2e} "
                   f"ac={dt_accel:.2e}]->{lim}  rho[{float(jnp.min(rho)):.2e},"
                   f"{float(jnp.max(rho)):.2e}] Pmin={float(jnp.min(P)):.2e} "
                   f"csmax={float(jnp.max(cs)):.2e} vmax={float(jnp.max(vmag)):.2e} "
-                  f"gmax={gmax:.2e}", flush=True)
+                  f"gmax={gmax:.2e} | worstCFL: rho={float(rf):.2e} P={float(Pf):.2e} "
+                  f"T={Tcell:.2e}K v={float(vf):.2e} cs={float(cf):.2e} "
+                  f"KE/eint={ke_eint:.2e}", flush=True)
         if tau + dtau > tau_tab[-1]:
             dtau = tau_tab[-1] - tau
         a_next = a_of_tau(tau + dtau)
@@ -256,7 +294,7 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
         g_gas, g_dm, dmax = forces(U, dm_pos, coeff_fac * a_next)
         U = gas_kick(U, g_gas, dtau)
         if rho_floor > 0.0:
-            U = apply_rho_floor(U, temp_coeff(a_next))
+            U = apply_rho_floor(U, temp_coeff(a_next), tempmax_coeff(a_next))
         if dual_energy:
             U, ie = dual_energy_update(U, ie, dtau, temp_coeff(a_next), jeans_coeff(a_next))
         elif p_floor > 0.0 or jeans_N > 0.0 or T_floor > 0.0:
@@ -373,6 +411,9 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     eps_soft = float(getattr(cfg, "dm_softening", 0.0)) or dx
     rho_bar = float(jnp.mean(U[0]))
     rho_floor = float(getattr(cfg, "cosmo_rho_floor", 0.0)) * rho_bar
+    v_max = float(getattr(cfg, "cosmo_vmax", 0.0))           # |v~| ceiling (0 = off)
+    T_max = float(getattr(cfg, "cosmo_Tmax", 0.0))           # temperature ceiling [K] (0 = off)
+    floor_buffer = float(getattr(cfg, "cosmo_floor_buffer", 1.0))
 
     # host-side spatial decomposition of the DM into per-slab fixed buffers
     pos_g, mom_g, mass_g, act_g, C = decompose_to_slabs(
@@ -387,8 +428,13 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     def a_of_tau(t):
         return float(np.interp(t, tau_tab, a_tab))
 
+    @jax.jit
     def forces(U_arr, pos, mass, active, a_kick):
-        """One joint solve on (gas + DM) density -> (gas force grid, DM accel)."""
+        """One joint solve on (gas + DM) density -> (gas force grid, DM accel).
+        MUST be jitted: solve_poisson_fmg_shardmap builds a fresh jitted FMG
+        closure (baking in fourpiG=coeff*a) on every call, so an unjitted forces
+        recompiles the entire multigrid every step (~23 s at 512^3/4-GPU). Jitting
+        traces the body once; the FMG then compiles once and every step cache-hits."""
         rho_dm = cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh)
         rho_tot = U_arr[0] + rho_dm
         delta = rho_tot / jnp.mean(rho_tot) - 1.0
@@ -413,15 +459,29 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         return jnp.stack([rho, nmx, nmy, nmz, E])
 
     @jax.jit
-    def apply_rho_floor(U_arr, ct):
+    def apply_rho_floor(U_arr, ct, ctmax):
+        """Three low-density CFL guards (see single-device path for the rationale):
+        (1) buffered density floor + momentum zero, (2) |v~| <= v_max velocity
+        ceiling preserving e_int, (3) e_int <= ctmax*rho~/(gamma-1) temp ceiling."""
         rho = U_arr[0]
-        bad = rho < rho_floor
+        mx, my, mz, E = U_arr[1], U_arr[2], U_arr[3], U_arr[-1]
+        bad = rho < rho_floor * floor_buffer
         rho_n = jnp.where(bad, rho_floor, rho)
-        mx = jnp.where(bad, 0.0, U_arr[1])
-        my = jnp.where(bad, 0.0, U_arr[2])
-        mz = jnp.where(bad, 0.0, U_arr[3])
+        mx = jnp.where(bad, 0.0, mx)
+        my = jnp.where(bad, 0.0, my)
+        mz = jnp.where(bad, 0.0, mz)
         eint_fl = jnp.maximum(ct * rho_floor / (gamma - 1.0), 1e-300)
-        E_n = jnp.where(bad, eint_fl, U_arr[-1])
+        E = jnp.where(bad, eint_fl, E)
+        ke = 0.5 * (mx * mx + my * my + mz * mz) / rho_n
+        eint = E - ke
+        if v_max > 0.0:
+            v2 = (mx * mx + my * my + mz * mz) / (rho_n * rho_n)
+            scl = jnp.where(v2 > v_max * v_max, v_max / jnp.sqrt(v2 + 1e-300), 1.0)
+            mx, my, mz = mx * scl, my * scl, mz * scl
+            ke = 0.5 * (mx * mx + my * my + mz * mz) / rho_n
+        if T_max > 0.0:
+            eint = jnp.minimum(eint, ctmax * rho_n / (gamma - 1.0))
+        E_n = ke + jnp.maximum(eint, 1e-300)
         return jnp.stack([rho_n, mx, my, mz, E_n])
 
     @jax.jit
@@ -441,6 +501,11 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         if T_floor <= 0.0:
             return 0.0
         return aa * aa * 8.2543e-3 * T_floor / mu
+
+    def tempmax_coeff(aa):
+        if T_max <= 0.0:
+            return 0.0
+        return aa * aa * 8.2543e-3 * T_max / mu
 
     snap_every = int(getattr(cfg, "cosmo_snap_every", 0))
     out_dir = getattr(cfg, "output_dir", "/ptmp/uli/jax-hydro/snapshots/cosmo_hydro")
@@ -489,13 +554,26 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         dtau = min(dt_cfl, dt_dloga, dt_accel)
         if debug and is_main_process and (step % 10 == 0 or float(dmax) > 150.0):
             rho = U[0]
-            ke = 0.5 * (U[1] ** 2 + U[2] ** 2 + U[3] ** 2) / rho
-            Pr = (gamma - 1.0) * (U[-1] - ke)
+            ke = 0.5 * (U[1] ** 2 + U[2] ** 2 + U[3] ** 2) / rho   # KE density
+            eint = U[-1] - ke                                      # internal-energy density
+            Pr = (gamma - 1.0) * eint
+            vmag = jnp.sqrt(U[1] ** 2 + U[2] ** 2 + U[3] ** 2) / rho
+            cs = jnp.sqrt(gamma * jnp.abs(Pr) / rho)
+            sig = (vmag + cs).reshape(-1)                          # CFL signal speed
+            i = jnp.argmax(sig)                                    # worst-CFL cell
+            rf, Pf, ef = rho.reshape(-1)[i], Pr.reshape(-1)[i], eint.reshape(-1)[i]
+            kf, vf, cf = ke.reshape(-1)[i], vmag.reshape(-1)[i], cs.reshape(-1)[i]
+            # T_phys ~ (P/rho)*mu/(kB/m_p)/a^2 ; ke/eint flags cold KE-dominated cells
+            Tcell = float(Pf) / (float(rf) + 1e-300) * mu / 8.2543e-3 / (a * a)
+            ke_eint = float(kf) / (abs(float(ef)) + 1e-300)
             lim = ("cfl", "dloga", "accel")[int(np.argmin([dt_cfl, dt_dloga, dt_accel]))]
             print(f"[dbg] s={step} z={1/a-1:.2f} dt[cfl={dt_cfl:.2e} dl={dt_dloga:.2e} "
                   f"ac={dt_accel:.2e}]->{lim}  rho[{float(jnp.min(rho)):.2e},"
                   f"{float(jnp.max(rho)):.2e}] Pmin={float(jnp.min(Pr)):.2e} "
-                  f"gmax={gmax:.2e}", flush=True)
+                  f"csmax={float(jnp.max(cs)):.2e} vmax={float(jnp.max(vmag)):.2e} "
+                  f"gmax={gmax:.2e} | worstCFL: rho={float(rf):.2e} P={float(Pf):.2e} "
+                  f"T={Tcell:.2e}K v={float(vf):.2e} cs={float(cf):.2e} "
+                  f"KE/eint={ke_eint:.2e}", flush=True)
         if tau + dtau > tau_tab[-1]:
             dtau = tau_tab[-1] - tau
         a_next = a_of_tau(tau + dtau)
@@ -510,7 +588,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         g_gas, g_dm, dmax = forces(U, posS, massS, actS, a_next)
         U = gas_kick(U, g_gas, dtau)
         if rho_floor > 0.0:
-            U = apply_rho_floor(U, temp_coeff(a_next))
+            U = apply_rho_floor(U, temp_coeff(a_next), tempmax_coeff(a_next))
         if p_floor > 0.0 or jeans_N > 0.0 or T_floor > 0.0:
             U = apply_floor(U, jeans_coeff(a_next), temp_coeff(a_next))
         pS = pS + g_dm * (0.5 * dtau)

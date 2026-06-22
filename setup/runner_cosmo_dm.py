@@ -188,7 +188,11 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     def a_of_tau(t):
         return float(np.interp(t, tau_tab, a_tab))
 
+    @jax.jit
     def force(pos, mass, active, a_kick):
+        # MUST be jitted: solve_poisson_fmg_shardmap rebuilds a fresh jitted FMG
+        # closure each call, so an unjitted force recompiles the multigrid every
+        # step. Jitting traces the body once -> FMG compiles once, steps cache-hit.
         rho = cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh)
         delta = rho / jnp.mean(rho) - 1.0
         phi = solve_poisson_fmg_shardmap(

@@ -114,6 +114,9 @@ class Config:
     cosmo_jeans_ncell: float = 0.0  # Truelove Jeans-floor cells (0 = off; ~4 for halos)
     cosmo_T_floor: float = 0.0      # temperature floor [K] (10 K is standard for cosmo runs)
     cosmo_rho_floor: float = 0.0    # density floor as fraction of mean (0 = off; 1e-3 default in run)
+    cosmo_vmax: float = 0.0         # |v~| velocity ceiling, code units (0 = off); tames v=p/rho runaways
+    cosmo_Tmax: float = 0.0         # temperature ceiling [K] (0 = off); kills spurious ~1e11 K diffuse cells
+    cosmo_floor_buffer: float = 1.0  # momentum-zero cells within this factor of rho_floor (>=1)
     DualEnergy: bool = False        # Bryan+1995 dual-energy (track e_int, switch when KE>>e_int)
     cosmo_dual_eta: float = 1.0e-3  # dual-energy switch: use e_int when (E-KE)/E < eta
     cosmo_debug: bool = False       # per-step gas/DM extrema diagnostics (blow-up debugging)

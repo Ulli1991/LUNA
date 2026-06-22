@@ -35,6 +35,9 @@ def main():
         dm_capacity_factor=float(os.environ.get("LUNA_DM_CAP", "1.5")),
         cosmo_T_floor=float(os.environ.get("LUNA_TFLOOR", "10.0")),
         cosmo_rho_floor=float(os.environ.get("LUNA_RHOFLOOR", "1e-3")),
+        cosmo_vmax=float(os.environ.get("LUNA_VMAX", "0.0")),       # |v~| ceiling
+        cosmo_Tmax=float(os.environ.get("LUNA_TMAX", "0.0")),       # temperature ceiling [K]
+        cosmo_floor_buffer=float(os.environ.get("LUNA_FLOOR_BUF", "1.0")),
         DualEnergy=os.environ.get("LUNA_DUAL", "0") == "1",
         cosmo_debug=os.environ.get("LUNA_DEBUG", "0") == "1",
         cosmo_snap_every=int(os.environ.get("LUNA_SNAP_EVERY", "50")),

@@ -25,7 +25,7 @@ Primitives (each wraps its own shard_map; compose on globally-sharded arrays):
 All y/z indexing is periodic (modulo Ny/Nz); x periodicity is carried by the
 ppermute ring. dx is assumed cubic (dx=dy=dz), as in the rest of the PM code.
 """
-from functools import partial
+from functools import lru_cache, partial
 
 import jax
 import jax.numpy as jnp
@@ -249,19 +249,11 @@ def gather_accel_slab(g, pos, Nx, Ny, Nz, dx, mesh):
 # ---------------------------------------------------------------------------
 # Particle exchange on drift  (1-D ring redistribution, fixed shapes)
 # ---------------------------------------------------------------------------
-def exchange_particles_slab(pos, p, mass, active, Nx, dx, box, mesh):
-    """Redistribute particles to their owning x-slab after a drift.
-
-    Each device classifies its active particles as stay / go-left / go-right by
-    comparing wrapped x against its slab bounds, ships the leavers to the ring
-    neighbour via ppermute (fixed-capacity, masked), and compacts the merged set
-    (stay + arrivals) back into its capacity-C buffer. Returns the redistributed
-    (pos,p,mass,active) plus diagnostics (n_out_of_slab_after, max_occupancy).
-
-    Assumes a particle crosses at most one slab boundary per call (true for a
-    CFL/acceleration-limited step with slabs many cells wide). Residual
-    out-of-slab particles are reported so the caller can catch a violation.
-    """
+@lru_cache(maxsize=None)
+def _build_exchange_body(Nx, dx, box, mesh):
+    """Build and CACHE the jitted shard_map exchange kernel, keyed on the static
+    (Nx, dx, box, mesh). Without the cache a fresh jit closure is created on every
+    call, so XLA recompiles the kernel on every step."""
     ndev = int(mesh.shape["x"])
     nx_loc = Nx // ndev
     slab_w = nx_loc * dx                                  # slab width in length units
@@ -336,4 +328,20 @@ def exchange_particles_slab(pos, p, mass, active, Nx, dx, box, mesh):
         max_occ = jax.lax.pmax(occ, "x")
         return pos_n, p_n, mass_n, act_n, n_bad, max_occ
 
-    return _body(pos, p, mass, active)
+    return _body
+
+
+def exchange_particles_slab(pos, p, mass, active, Nx, dx, box, mesh):
+    """Redistribute particles to their owning x-slab after a drift.
+
+    Each device classifies its active particles as stay / go-left / go-right by
+    comparing wrapped x against its slab bounds, ships the leavers to the ring
+    neighbour via ppermute (fixed-capacity, masked), and compacts the merged set
+    (stay + arrivals) back into its capacity-C buffer. Returns the redistributed
+    (pos,p,mass,active) plus diagnostics (n_out_of_slab_after, max_occupancy).
+
+    Assumes a particle crosses at most one slab boundary per call (true for a
+    CFL/acceleration-limited step with slabs many cells wide). Residual
+    out-of-slab particles are reported so the caller can catch a violation. The
+    jitted kernel is built once and cached (see _build_exchange_body)."""
+    return _build_exchange_body(Nx, dx, box, mesh)(pos, p, mass, active)
