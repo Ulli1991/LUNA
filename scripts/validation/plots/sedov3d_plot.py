@@ -207,13 +207,16 @@ def main():
     for j, (ax, ylabel, yscale) in enumerate(panel_meta):
         ax.axvline(R_s_analytic_pc, color="0.5", linestyle="-", lw=1.0,
                    label=fr"$R_s$ analytic = {R_s_analytic_pc:.1f} pc")
-        ax.set_xlabel("r [pc]"); ax.set_ylabel(ylabel)
+        ax.set_xlabel("r [pc]", fontsize=9); ax.set_ylabel(ylabel, fontsize=9)
         ax.set_xlim(0, R_xlim)
         ax.set_yscale(yscale)
         if j == 0:                                           # one compact legend only
             ax.legend(fontsize=8, frameon=False, handlelength=1.4,
                       labelspacing=0.3, borderpad=0.2)
         decorate(ax)
+        # tick labels/numbers + tick marks sized to match the legend characters
+        ax.tick_params(which="major", labelsize=8, length=3.0)
+        ax.tick_params(which="minor", length=1.8)
     figR.tight_layout()
     Path("figures").mkdir(exist_ok=True)
     figR.savefig("figures/sedov3d_radial.pdf")

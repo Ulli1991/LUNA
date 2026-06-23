@@ -16,6 +16,9 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export JAX_PLATFORM_NAME=cuda
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+# async CUDA allocator: avoids the BFC-fragmentation OOM that failed the 5 GiB
+# autotune scratch alloc (512^3/GPU FP64 sits right at the 40 GB A100 edge).
+export TF_GPU_ALLOCATOR=cuda_malloc_async
 NL=($(scontrol show hostname $SLURM_JOB_NODELIST)); HN=${NL[0]}
 HNIP=$(srun --nodes=1 --ntasks=1 -w "$HN" hostname --ip-address)
 export JAX_COORDINATOR_ADDRESS="${HNIP}:12345"
