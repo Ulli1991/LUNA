@@ -43,6 +43,11 @@ def main():
         cosmo_snap_every=int(os.environ.get("LUNA_SNAP_EVERY", "50")),
         cosmo_p_floor=0.0,
         POISSON_FMG_EXTRA_VCYCLES=2,
+        # gas hydro halo: explicit per-shard ppermute shard_map (fast path),
+        # matching the DM/gravity shard_map primitives; periodic gas BC (a
+        # cosmological box IS periodic -- was defaulting to zero-grad BOUNDARY=1).
+        USE_SHARDMAP=os.environ.get("LUNA_SHARDMAP", "1") == "1",
+        BOUNDARY=0,
         ORDER=1, LIMITER=1, CFL=0.4, riemann_solver="hllc",
         output_dir=os.environ.get(
             "LUNA_DM_OUT", "/ptmp/uli/jax-hydro/snapshots/cosmo_hydro"),
