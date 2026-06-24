@@ -123,6 +123,7 @@ class Config:
     cosmo_T_init: float = 0.0       # initial gas temperature [K]; 0 -> CMB 2.725(1+z)
     cosmo_mu: float = 1.22          # mean molecular weight (neutral primordial H+He)
     cosmo_snap_every: int = 0       # periodic gas+DM density snapshot every N steps (0 = end only)
+    cosmo_profile: bool = False     # per-phase timestep breakdown -> <out_dir>/profile_steps.csv (every 10 steps)
     # Jeans-instability IC knobs (only used by test_problem='Jeans-Instability-3D')
     jeans_rho0: float = 1.0
     jeans_P0: float = 1.0
@@ -182,6 +183,7 @@ class Config:
     POISSON_N_LEVELS: int = None          # auto (until per-side < 4)
     POISSON_FMG_VCYCLES_PER_LEVEL: int = 1
     POISSON_FMG_EXTRA_VCYCLES: int = 0
+    POISSON_FMG_N_COARSEST: int = 50      # coarsest-grid smooths; 10 == 50 to rel-L2 1e-11, ~1.5x faster
     POISSON_BOUNDARY: int = None          # None → inherit from BOUNDARY; 0/1/2/3 to override
                                           # 3 = isolated (multipole-Dirichlet)
 

@@ -41,8 +41,11 @@ def main():
         DualEnergy=os.environ.get("LUNA_DUAL", "0") == "1",
         cosmo_debug=os.environ.get("LUNA_DEBUG", "0") == "1",
         cosmo_snap_every=int(os.environ.get("LUNA_SNAP_EVERY", "50")),
+        cosmo_profile=os.environ.get("LUNA_PROF", "0") == "1",   # per-phase csv breakdown
         cosmo_p_floor=0.0,
         POISSON_FMG_EXTRA_VCYCLES=2,
+        POISSON_FMG_N_COARSEST=int(os.environ.get("LUNA_FMG_NCOARSE", "10")),  # 50->10: ~1.5x FMG, identical accuracy
+
         # gas hydro halo: explicit per-shard ppermute shard_map (fast path),
         # matching the DM/gravity shard_map primitives; periodic gas BC (a
         # cosmological box IS periodic -- was defaulting to zero-grad BOUNDARY=1).

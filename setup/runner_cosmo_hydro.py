@@ -55,6 +55,7 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
     p_floor = float(getattr(cfg, "cosmo_p_floor", 0.0))
     eta = float(getattr(cfg, "dm_eta", 0.025))
     n_extra = int(getattr(cfg, "POISSON_FMG_EXTRA_VCYCLES", 2))
+    n_coarse = int(getattr(cfg, "POISSON_FMG_N_COARSEST", 50))
     n_levels = getattr(cfg, "POISSON_N_LEVELS", None)
     jeans_N = float(getattr(cfg, "cosmo_jeans_ncell", 0.0))   # Truelove cells (0 = off)
     T_floor = float(getattr(cfg, "cosmo_T_floor", 0.0))       # temperature floor [K] (0 = off)
@@ -96,7 +97,8 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
         rho_tot = U_arr[0] + rho_dm
         delta = rho_tot / jnp.mean(rho_tot) - 1.0
         phi = solve_poisson_fmg(delta, dx, coeff_val, boundary=0,
-                                n_levels=n_levels, n_extra_vcycles=n_extra)
+                                n_levels=n_levels, n_extra_vcycles=n_extra,
+                                n_coarsest=n_coarse)
         g_gas = pm.grad_phi(phi, order=2)                 # -grad(phi) on the grid
         g_dm = pm.accel_at_points(pm.grad_phi(phi, order=4), pos)
         return g_gas, g_dm, jnp.max(delta)
@@ -392,6 +394,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     p_floor = float(getattr(cfg, "cosmo_p_floor", 0.0))
     eta = float(getattr(cfg, "dm_eta", 0.025))
     n_extra = int(getattr(cfg, "POISSON_FMG_EXTRA_VCYCLES", 2))
+    n_coarse = int(getattr(cfg, "POISSON_FMG_N_COARSEST", 50))
     jeans_N = float(getattr(cfg, "cosmo_jeans_ncell", 0.0))
     T_floor = float(getattr(cfg, "cosmo_T_floor", 0.0))
     mu = float(getattr(cfg, "cosmo_mu", 1.22))
@@ -440,11 +443,36 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         delta = rho_tot / jnp.mean(rho_tot) - 1.0
         phi = solve_poisson_fmg_shardmap(
             delta, dx, coeff_fac * a_kick, boundary=0, mesh=mesh,
-            n_levels=n_levels, n_extra_vcycles=n_extra)
+            n_levels=n_levels, n_extra_vcycles=n_extra, n_coarsest=n_coarse)
         g_gas = grad_phi_slab(phi, dx, mesh, order=2)         # gas force grid
         g_dm = gather_accel_slab(grad_phi_slab(phi, dx, mesh, order=4),
                                  pos, Nx, Ny, Nz, dx, mesh)   # DM accel at particles
         return g_gas, g_dm, jnp.max(delta)
+
+    # --- profiling sub-kernels: mirror forces() piece-by-piece so the opaque
+    # gravity+PM phase can be split into deposit / FMG / grad / gather. Used only
+    # on profiled steps (lazy-jit: zero cost unless cosmo_profile is on). Timing
+    # the un-fused pieces over-counts slightly vs the fused forces(), so we report
+    # them as a relative sub-split, not absolute ms.
+    @jax.jit
+    def _prof_deposit(pos, mass, active):
+        return cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh)
+
+    @jax.jit
+    def _prof_fmg(rho_tot, a_kick):
+        delta = rho_tot / jnp.mean(rho_tot) - 1.0
+        return solve_poisson_fmg_shardmap(
+            delta, dx, coeff_fac * a_kick, boundary=0, mesh=mesh,
+            n_levels=n_levels, n_extra_vcycles=n_extra, n_coarsest=n_coarse)
+
+    @jax.jit
+    def _prof_ggas(phi):
+        return grad_phi_slab(phi, dx, mesh, order=2)
+
+    @jax.jit
+    def _prof_gdm(phi, pos):
+        return gather_accel_slab(grad_phi_slab(phi, dx, mesh, order=4),
+                                 pos, Nx, Ny, Nz, dx, mesh)
 
     @jax.jit
     def gas_kick(U_arr, g_gas, dt):
@@ -537,6 +565,21 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         print("[cosmo-hydro] compiling first joint force "
               "(deposit -> FMG -> grad -> gather) ...", flush=True)
 
+    # per-phase profiler: every 10 steps (same cadence as the step print) write a
+    # percentage breakdown to a SEPARATE csv. Opt-in; when on, the profiled steps
+    # carry block_until_ready barriers (the rest of the run stays fully async).
+    do_prof = bool(getattr(cfg, "cosmo_profile", False)) and is_main_process
+    prof_fh = None
+    if do_prof:
+        import os
+        os.makedirs(out_dir, exist_ok=True)
+        prof_fh = open(os.path.join(out_dir, "profile_steps.csv"), "w")
+        prof_fh.write("# 512^3-coupled per-phase wallclock breakdown, every 10 steps\n")
+        prof_fh.write("step,z,tot_ms,dm_drift_pct,dm_exchange_pct,gas_hydro_pct,"
+                      "gravity_pm_pct,gas_kick_floor_pct,dm_kick2_pct,"
+                      "pm_deposit_pct,pm_fmg_pct,pm_grad_pct,pm_gather_pct\n")
+        prof_fh.flush()
+
     tau, step, t0 = 0.0, 0, time.time()
     tc = time.time()
     g_gas, g_dm, dmax = forces(U, posS, massS, actS, a)
@@ -544,6 +587,16 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     if is_main_process:
         print(f"[cosmo-hydro] first force compiled+ran in {time.time()-tc:.1f}s",
               flush=True)
+    if do_prof:   # warm the standalone sub-kernels so the first [prof] line isn't compile-dominated
+        _w = _prof_deposit(posS, massS, actS); jax.block_until_ready(_w)
+        _wp = _prof_fmg(U[0] + _w, a); jax.block_until_ready(_wp)
+        jax.block_until_ready(_prof_ggas(_wp)); jax.block_until_ready(_prof_gdm(_wp, posS))
+        print("[cosmo-hydro] profiling sub-kernels compiled", flush=True)
+    prof_this = False
+    def _bar(x):
+        if prof_this:
+            jax.block_until_ready(x)
+        return x
     n_bad_tot = 0
     while a < a_end - 1e-9:
         gmag = jnp.sqrt(jnp.sum(g_dm ** 2, axis=1))
@@ -580,18 +633,43 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         dloga = np.log(a_next / a)
         # DM half-kick @a, drift + exchange to owning slab, gas hydro flux,
         # JOINT solve @a_next, gas kick + floors, DM closing half-kick.
+        prof_this = do_prof and (step % 10 == 0)
+        _pt = {}
+        _t = time.time()
         pS = pS + g_dm * (0.5 * dtau)
-        posS = jnp.mod(posS + pS * dtau, box)
+        posS = jnp.mod(posS + pS * dtau, box); _bar(posS)
+        if prof_this: _pt["dm_drift"] = time.time() - _t; _t = time.time()
         posS, pS, massS, actS, n_bad, max_occ = exchange_particles_slab(
-            posS, pS, massS, actS, Nx, dx, box, mesh)
-        U = step_fn(U, dtau)
-        g_gas, g_dm, dmax = forces(U, posS, massS, actS, a_next)
+            posS, pS, massS, actS, Nx, dx, box, mesh); _bar(posS)
+        if prof_this: _pt["dm_exchange"] = time.time() - _t; _t = time.time()
+        U = step_fn(U, dtau); _bar(U)
+        if prof_this: _pt["gas_hydro"] = time.time() - _t; _t = time.time()
+        g_gas, g_dm, dmax = forces(U, posS, massS, actS, a_next); _bar(g_dm)
+        if prof_this: _pt["gravity_pm"] = time.time() - _t; _t = time.time()
         U = gas_kick(U, g_gas, dtau)
         if rho_floor > 0.0:
             U = apply_rho_floor(U, temp_coeff(a_next), tempmax_coeff(a_next))
         if p_floor > 0.0 or jeans_N > 0.0 or T_floor > 0.0:
             U = apply_floor(U, jeans_coeff(a_next), temp_coeff(a_next))
-        pS = pS + g_dm * (0.5 * dtau)
+        _bar(U)
+        if prof_this: _pt["gas_kick_floor"] = time.time() - _t; _t = time.time()
+        pS = pS + g_dm * (0.5 * dtau); _bar(pS)
+        if prof_this:
+            _pt["dm_kick2"] = time.time() - _t
+            # split the fused gravity+PM phase via the standalone sub-kernels
+            # (relative only -- un-fused, so it over-counts vs the fused phase time)
+            _t = time.time(); _rdm = _prof_deposit(posS, massS, actS); jax.block_until_ready(_rdm); _dep = time.time() - _t
+            _t = time.time(); _phi = _prof_fmg(U[0] + _rdm, a_next); jax.block_until_ready(_phi); _fmg = time.time() - _t
+            _t = time.time(); _gg = _prof_ggas(_phi); jax.block_until_ready(_gg); _grd = time.time() - _t
+            _t = time.time(); _gd = _prof_gdm(_phi, posS); jax.block_until_ready(_gd); _gat = time.time() - _t
+            _tot = sum(_pt.values()) or 1e-30; _sub = (_dep + _fmg + _grd + _gat) or 1e-30
+            prof_fh.write(
+                f"{step},{1/a_next-1:.3f},{_tot*1e3:.1f},"
+                f"{_pt['dm_drift']/_tot*100:.1f},{_pt['dm_exchange']/_tot*100:.1f},"
+                f"{_pt['gas_hydro']/_tot*100:.1f},{_pt['gravity_pm']/_tot*100:.1f},"
+                f"{_pt['gas_kick_floor']/_tot*100:.1f},{_pt['dm_kick2']/_tot*100:.1f},"
+                f"{_dep/_sub*100:.1f},{_fmg/_sub*100:.1f},{_grd/_sub*100:.1f},{_gat/_sub*100:.1f}\n")
+            prof_fh.flush()
         tau += dtau
         a = a_next
         step += 1
@@ -613,6 +691,9 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
               f"{time.time()-t0:.1f}s  (gas mass={m_gas:.4e}, "
               f"cumulative out-of-slab: {n_bad_tot})")
         write_snap(a, U, posS, massS, actS)
+    if prof_fh is not None:
+        prof_fh.close()
+        print(f"[cosmo-hydro] per-phase profile -> {out_dir}/profile_steps.csv", flush=True)
     return U, posS, pS, a, step
 
 

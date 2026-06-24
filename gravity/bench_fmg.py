@@ -78,12 +78,17 @@ def resid(phi):
     return float(jnp.sqrt(nd[0] / nd[1]))
 
 def timed(**kw):
-    f = lambda: solve_poisson_fmg_shardmap(
-        delta, dx, fourpiG, boundary=0, mesh=mesh, n_levels=n_levels, **kw)
-    phi = f(); jax.block_until_ready(phi)        # compile
+    # jit-wrap the solve ONCE (mirrors the production forces()): otherwise
+    # solve_poisson_fmg_shardmap rebuilds a fresh jitted closure each call and
+    # we'd be timing recompiles, not the solve. g compiles on the warm-up call;
+    # the timed calls then hit the cache and measure true GPU runtime.
+    g = jax.jit(lambda d: solve_poisson_fmg_shardmap(
+        d, dx, fourpiG, boundary=0, mesh=mesh, n_levels=n_levels, **kw))
+    phi = g(delta); jax.block_until_ready(phi)   # compile once
     ts = []
-    for _ in range(5):
-        t0 = time.perf_counter(); jax.block_until_ready(f()); ts.append(time.perf_counter() - t0)
+    for _ in range(10):
+        t0 = time.perf_counter(); jax.block_until_ready(g(delta))
+        ts.append(time.perf_counter() - t0)
     return float(np.median(ts)), phi
 
 if is_main:
