@@ -110,6 +110,7 @@ class Config:
     dm_eta: float = 0.025           # acceleration-timestep accuracy parameter
     dm_domain_decomp: bool = False  # grid-sharded slab decomposition (>512^3, multi-GPU)
     dm_capacity_factor: float = 1.5  # per-slab particle buffer headroom for clustering
+    dm_fp32: bool = False            # store DM particle pos/mom/mass in fp32 (halves PM comm + deposit/exchange work; grid rho + Poisson stay fp64, stays differentiable)
     CosmoHydro: bool = False        # coupled gas+DM box (gas meshed from MUSIC baryon IC)
     cosmo_jeans_ncell: float = 0.0  # Truelove Jeans-floor cells (0 = off; ~4 for halos)
     cosmo_T_floor: float = 0.0      # temperature floor [K] (10 K is standard for cosmo runs)

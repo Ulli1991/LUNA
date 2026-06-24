@@ -278,46 +278,38 @@ def _build_exchange_body(Nx, dx, box, mesh):
         go_left = act & (diff == ndev - 1)
         stay = act & (~go_left) & (~go_right)
 
-        # pack a masked selection to the front of a capacity-C buffer
-        def pack(sel):
-            order = jnp.argsort(~sel)                     # True(=0) first, stable
-            keep = sel[order]
-            return order, keep
-
-        # build send-left / send-right / stay buffers (each capacity C)
-        oL, kL = pack(go_left)
-        oR, kR = pack(go_right)
-        oS, kS = pack(stay)
-        posL, pL, mL = pos_l[oL], p_l[oL], mass_l[oL]
-        posR, pR, mR = pos_l[oR], p_l[oR], mass_l[oR]
-        posS, pS, mS = pos_l[oS], p_l[oS], mass_l[oS]
-
-        # ship: my go-right buffer goes to d+1; I receive d-1's go-right as arrivals
-        posRr = jax.lax.ppermute(posR, "x", to_right)
-        pRr = jax.lax.ppermute(pR, "x", to_right)
-        mRr = jax.lax.ppermute(mR, "x", to_right)
-        kRr = jax.lax.ppermute(kR.astype(jnp.float32), "x", to_right) > 0
-        posLl = jax.lax.ppermute(posL, "x", to_left)
-        pLl = jax.lax.ppermute(pL, "x", to_left)
-        mLl = jax.lax.ppermute(mL, "x", to_left)
-        kLl = jax.lax.ppermute(kL.astype(jnp.float32), "x", to_left) > 0
+        # Ship the FULL local buffers (+ their boolean keep-masks) to each ring
+        # neighbour and let the RECEIVER mask -- this removes the 3 pre-pack
+        # argsorts entirely (the ppermute volume is identical: still C per buffer).
+        # A particle that stays is carried in its neighbour's arrival buffer too,
+        # but with keep=False there, so it is counted exactly once.
+        posRr = jax.lax.ppermute(pos_l, "x", to_right)
+        pRr = jax.lax.ppermute(p_l, "x", to_right)
+        mRr = jax.lax.ppermute(mass_l, "x", to_right)
+        kRr = jax.lax.ppermute(go_right.astype(jnp.float32), "x", to_right) > 0
+        posLl = jax.lax.ppermute(pos_l, "x", to_left)
+        pLl = jax.lax.ppermute(p_l, "x", to_left)
+        mLl = jax.lax.ppermute(mass_l, "x", to_left)
+        kLl = jax.lax.ppermute(go_left.astype(jnp.float32), "x", to_left) > 0
 
         # merge stay + arrivals-from-left(d-1 went right) + arrivals-from-right(d+1 went left)
-        pos_all = jnp.concatenate([posS, posRr, posLl], axis=0)
-        p_all = jnp.concatenate([pS, pRr, pLl], axis=0)
-        mass_all = jnp.concatenate([mS, mRr, mLl], axis=0)
-        act_all = jnp.concatenate([kS, kRr, kLl], axis=0)
-        # compact active to front, slice back to C
-        o = jnp.argsort(~act_all)
-        pos_n = pos_all[o][:C]
-        p_n = p_all[o][:C]
-        mass_n = mass_all[o][:C]
-        act_n = act_all[o][:C].astype(active_l.dtype)
-        # zero the inactive tail so stale coords can't pollute deposits
-        m = act_n > 0
-        pos_n = jnp.where(m[:, None], pos_n, 0.0)
-        p_n = jnp.where(m[:, None], p_n, 0.0)
-        mass_n = jnp.where(m, mass_n, 0.0)
+        pos_all = jnp.concatenate([pos_l, posRr, posLl], axis=0)
+        p_all = jnp.concatenate([p_l, pRr, pLl], axis=0)
+        mass_all = jnp.concatenate([mass_l, mRr, mLl], axis=0)
+        act_all = jnp.concatenate([stay, kRr, kLl], axis=0)
+        # O(C) stable compaction (replaces the O(3C log 3C) argsort): the running
+        # active-count is each active particle's destination slot; scatter into a
+        # zero buffer, dropping inactive (slot via False) and any >C overflow.
+        slot = jnp.cumsum(act_all.astype(jnp.int32)) - 1
+        dest = jnp.where(act_all, slot, C)                # inactive / overflow(>=C) -> dropped
+        def _take(a):
+            z = jnp.zeros((C,) + a.shape[1:], a.dtype)
+            return z.at[dest].set(a, mode="drop")
+        pos_n = _take(pos_all)
+        p_n = _take(p_all)
+        mass_n = _take(mass_all)
+        nact = jnp.maximum(slot[-1] + 1, 0)               # total active across the 3C
+        act_n = (jnp.arange(C) < nact).astype(active_l.dtype)  # filled slots are the front nact
 
         # diagnostics: anything still out of slab, and peak occupancy
         xw2 = jnp.mod(pos_n[:, 0], box)

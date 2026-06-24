@@ -42,6 +42,7 @@ def main():
         cosmo_debug=os.environ.get("LUNA_DEBUG", "0") == "1",
         cosmo_snap_every=int(os.environ.get("LUNA_SNAP_EVERY", "50")),
         cosmo_profile=os.environ.get("LUNA_PROF", "0") == "1",   # per-phase csv breakdown
+        dm_fp32=os.environ.get("LUNA_DM_FP32", "0") == "1",      # fp32 DM particle path
         cosmo_p_floor=0.0,
         POISSON_FMG_EXTRA_VCYCLES=2,
         POISSON_FMG_N_COARSEST=int(os.environ.get("LUNA_FMG_NCOARSE", "10")),  # 50->10: ~1.5x FMG, identical accuracy

@@ -425,6 +425,19 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     pS = jax.device_put(jnp.asarray(mom_g), NamedSharding(mesh, P("x", None)))
     massS = jax.device_put(jnp.asarray(mass_g), NamedSharding(mesh, P("x")))
     actS = jax.device_put(jnp.asarray(act_g), NamedSharding(mesh, P("x")))
+    # optional fp32 particle path: halves every ppermute comm volume and the
+    # deposit/exchange buffer-sweep work. Grid rho promotes back to fp64 at
+    # (gas + rho_dm) so the Poisson solve is bit-identical; dtau/dx/box are
+    # weak-typed python floats so the drift/CIC math stays fp32. Still
+    # differentiable (fp32, not integer). fp32 over a 25 Mpc box = ~2.5 pc edge
+    # resolution << the 49 kpc PM cell, so PM accuracy is unaffected.
+    if bool(getattr(cfg, "dm_fp32", False)):
+        posS = posS.astype(jnp.float32)
+        pS = pS.astype(jnp.float32)
+        massS = massS.astype(jnp.float32)
+        actS = actS.astype(jnp.float32)
+        if is_main_process:
+            print("[cosmo-hydro] DM particle path in fp32 (pos/mom/mass/active)", flush=True)
 
     a_tab, tau_tab = cosmo.build_a_of_tau(a, a_end + 0.05, H0)
 
@@ -447,7 +460,10 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         g_gas = grad_phi_slab(phi, dx, mesh, order=2)         # gas force grid
         g_dm = gather_accel_slab(grad_phi_slab(phi, dx, mesh, order=4),
                                  pos, Nx, Ny, Nz, dx, mesh)   # DM accel at particles
-        return g_gas, g_dm, jnp.max(delta)
+        # keep DM accel in the particle precision (the fp64 grid gradient would
+        # otherwise re-promote pS->posS to fp64 after the first kick, leaking the
+        # fp32 path back to fp64); no-op when particles are fp64.
+        return g_gas, g_dm.astype(pos.dtype), jnp.max(delta)
 
     # --- profiling sub-kernels: mirror forces() piece-by-piece so the opaque
     # gravity+PM phase can be split into deposit / FMG / grad / gather. Used only
@@ -472,7 +488,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     @jax.jit
     def _prof_gdm(phi, pos):
         return gather_accel_slab(grad_phi_slab(phi, dx, mesh, order=4),
-                                 pos, Nx, Ny, Nz, dx, mesh)
+                                 pos, Nx, Ny, Nz, dx, mesh).astype(pos.dtype)
 
     @jax.jit
     def gas_kick(U_arr, g_gas, dt):
