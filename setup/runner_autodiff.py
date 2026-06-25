@@ -170,6 +170,23 @@ def _render_text_target(Nx, text, lo, hi):
     return lo + (hi - lo) * r[::-1].T
 
 
+def _render_image_target(Nx, path, lo, hi):
+    """Load a custom [0,1] target field (bright = where the morphology should
+    pile up, plain background = 0), resize to Nx, and map to [lo, hi]. A .npy is
+    taken as already in the field convention (built to match _render_text_target);
+    an image file is read as grayscale. Used for the 'emerge from explosions'
+    demo with an arbitrary picture instead of a rendered word."""
+    from jax.image import resize as jresize
+    if str(path).endswith(".npy"):
+        img = np.load(path).astype(np.float64)
+    else:
+        from PIL import Image
+        img = np.asarray(Image.open(path).convert("L"), np.float64) / 255.0
+    img = np.asarray(jresize(jnp.asarray(img), (Nx, Nx), method="linear"))
+    img = np.clip(img, 0.0, 1.0)
+    return lo + (hi - lo) * img
+
+
 def _luna_emergence(step_fn, U0, cfg, is_main):
     """Reverse-mode IC optimization so the LATE-TIME field forms a target image
     (the word 'LUNA') purely from the dynamics -- diffhydro Fig. 12. The free
@@ -257,7 +274,13 @@ def _luna_emergence(step_fn, U0, cfg, is_main):
     else:
         raise NotImplementedError(f"luna_emergence driver '{driver}' unknown")
 
-    tgt_np = _render_text_target(Nx, text, lo, lo * contrast)
+    img_path = getattr(cfg, "autodiff_emergence_image", "")
+    if img_path:
+        tgt_np = _render_image_target(Nx, img_path, lo, lo * contrast)
+        if is_main:
+            print(f"  emergence target: image '{img_path}' (not text)", flush=True)
+    else:
+        tgt_np = _render_text_target(Nx, text, lo, lo * contrast)
     tgt = jnp.asarray(tgt_np)
     per = max(1, int(round(n_steps ** 0.5)))
     nchunk = (n_steps + per - 1) // per

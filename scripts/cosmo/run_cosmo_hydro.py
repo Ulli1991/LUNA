@@ -17,10 +17,15 @@ sys.path.insert(0, os.getcwd())
 from dataclasses import replace
 
 from main import run
+from setup.distributed_setup import initialize_jax_distributed
 from template_config import Config
 
 
 def main():
+    # multi-node coordination (>4 GPUs): reads JAX_COORDINATOR_ADDRESS +
+    # SLURM_NTASKS/PROCID. Single-process (1-node) runs fall back cleanly, so
+    # the existing 4-GPU submits are unaffected. Must precede any device use.
+    initialize_jax_distributed(enable_x64=True)
     cfg = replace(
         Config(),
         CosmoHydro=True, CosmologicalIntegration=True,

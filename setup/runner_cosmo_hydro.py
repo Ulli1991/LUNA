@@ -337,13 +337,21 @@ def mesh_gas_to_grid(gas, pm, a):
     return jnp.stack([rho, mx, my, mz, E])
 
 
-def mesh_gas_to_grid_slab(gas, mesh, Nx, Ny, Nz, dx, box, a):
+def mesh_gas_to_grid_slab(gas, mesh, Nx, Ny, Nz, dx, box, a, n_total_gas=None):
     """Sharded one-time CIC mesh of MUSIC gas particles -> super-comoving conserved
     grid (rho~, rho~v~, E~), each field a P('x',None,None) slab. The 5 conserved
-    fields are deposited as separate CIC-weighted scatters via cic_deposit_slab."""
+    fields are deposited as separate CIC-weighted scatters via cic_deposit_slab.
+
+    Single-process: host-side decompose_to_slabs + device_put (whole gas set).
+    Multi-process (n_total_gas given): this rank holds only its index-chunk; we
+    assemble the per-slab buffer from the local chunk, settle boundary crossers
+    with one drift exchange (the 5 weights ride along as the exchange payload),
+    then deposit -- never building the whole-N array on any rank."""
     import numpy as _np
 
-    from gravity.particle_mesh_shardmap import cic_deposit_slab, decompose_to_slabs
+    from gravity.particle_mesh_shardmap import (assemble_slab_from_chunk,
+                                                cic_deposit_slab, decompose_to_slabs,
+                                                exchange_particles_slab)
     from jax.sharding import NamedSharding
     from jax.sharding import PartitionSpec as P
 
@@ -353,7 +361,18 @@ def mesh_gas_to_grid_slab(gas, mesh, Nx, Ny, Nz, dx, box, a):
     m = _np.asarray(gas.mass)
     # five conserved weights deposited as "mass": rho~, mom_{x,y,z}, E~
     w = _np.stack([m, m * vtil[:, 0], m * vtil[:, 1], m * vtil[:, 2],
-                   m * (0.5 * _np.sum(vtil ** 2, axis=1) + etil)], axis=1)   # (N,5)
+                   m * (0.5 * _np.sum(vtil ** 2, axis=1) + etil)], axis=1)   # (n,5)
+
+    if n_total_gas is not None:                              # multi-process path
+        (posS, wS, massS), actS, _C = assemble_slab_from_chunk(
+            [_np.asarray(gas.pos), w, m], [P("x", None), P("x", None), P("x")],
+            n_total_gas, ndev, mesh, capacity_factor=1.3)
+        posS, wS, _massS, actS, _nb, _oc = exchange_particles_slab(
+            posS, wS, massS, actS, Nx, dx, box, mesh)        # settle to owning slab
+        fields = [cic_deposit_slab(posS, wS[:, k], actS, Nx, Ny, Nz, dx, mesh)
+                  for k in range(5)]
+        return jnp.stack(fields)
+
     pos_g, w_g, _, act_g, _C = decompose_to_slabs(_np.asarray(gas.pos), w, m, Nx, ndev, dx, box)
     posS = jax.device_put(jnp.asarray(pos_g), NamedSharding(mesh, P("x", None)))
     actS = jax.device_put(jnp.asarray(act_g), NamedSharding(mesh, P("x")))
@@ -365,7 +384,7 @@ def mesh_gas_to_grid_slab(gas, mesh, Nx, Ny, Nz, dx, box, a):
 
 
 def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
-                    dm_pos, dm_p, dm_mass, is_main_process=True):
+                    dm_pos, dm_p, dm_mass, n_total_dm=None, is_main_process=True):
     """Grid-sharded (1-D slab) coupled gas+DM. The gas grid + joint MG solve shard
     along x (the hydro step_fn already carries its own halo exchange); DM particles
     are spatially decomposed into per-slab fixed buffers and exchanged on drift.
@@ -418,13 +437,28 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     T_max = float(getattr(cfg, "cosmo_Tmax", 0.0))           # temperature ceiling [K] (0 = off)
     floor_buffer = float(getattr(cfg, "cosmo_floor_buffer", 1.0))
 
-    # host-side spatial decomposition of the DM into per-slab fixed buffers
-    pos_g, mom_g, mass_g, act_g, C = decompose_to_slabs(
-        np.asarray(dm_pos), np.asarray(dm_p), np.asarray(dm_mass), Nx, ndev, dx, box, cap)
-    posS = jax.device_put(jnp.asarray(pos_g), NamedSharding(mesh, P("x", None)))
-    pS = jax.device_put(jnp.asarray(mom_g), NamedSharding(mesh, P("x", None)))
-    massS = jax.device_put(jnp.asarray(mass_g), NamedSharding(mesh, P("x")))
-    actS = jax.device_put(jnp.asarray(act_g), NamedSharding(mesh, P("x")))
+    if n_total_dm is not None:
+        # multi-process: this rank holds only its index-chunk (~its slab). Assemble
+        # the per-slab buffer from the local chunk (no full-N host array, no
+        # deadlock-prone full device_put), then settle boundary crossers.
+        from gravity.particle_mesh_shardmap import assemble_slab_from_chunk
+        (posS, pS, massS), actS, C = assemble_slab_from_chunk(
+            [np.asarray(dm_pos), np.asarray(dm_p), np.asarray(dm_mass)],
+            [P("x", None), P("x", None), P("x")], n_total_dm, ndev, mesh,
+            capacity_factor=cap)
+        posS, pS, massS, actS, n_bad0, occ0 = exchange_particles_slab(
+            posS, pS, massS, actS, Nx, dx, box, mesh)
+        if is_main_process:
+            print(f"[cosmo-hydro] DM IC settle: out-of-slab={int(n_bad0)} "
+                  f"max_occ={int(occ0)} cap_C={C}", flush=True)
+    else:
+        # single-process: host-side spatial decomposition into per-slab buffers
+        pos_g, mom_g, mass_g, act_g, C = decompose_to_slabs(
+            np.asarray(dm_pos), np.asarray(dm_p), np.asarray(dm_mass), Nx, ndev, dx, box, cap)
+        posS = jax.device_put(jnp.asarray(pos_g), NamedSharding(mesh, P("x", None)))
+        pS = jax.device_put(jnp.asarray(mom_g), NamedSharding(mesh, P("x", None)))
+        massS = jax.device_put(jnp.asarray(mass_g), NamedSharding(mesh, P("x")))
+        actS = jax.device_put(jnp.asarray(act_g), NamedSharding(mesh, P("x")))
     # optional fp32 particle path: halves every ppermute comm volume and the
     # deposit/exchange buffer-sweep work. Grid rho promotes back to fp64 at
     # (gas + rho_dm) so the Poisson solve is bit-identical; dtau/dx/box are
@@ -559,14 +593,40 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
 
         import h5py
         os.makedirs(out_dir, exist_ok=True)
-        rho_dm = np.asarray(cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh))
+        # cic_deposit_slab is a shard_map collective -> MUST be entered by every
+        # rank together (the caller guarantees the same snapshot step on all ranks).
+        rho_dm = cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh)
+        if jax.process_count() > 1:
+            # multi-node: each rank dumps ONLY its local x-slab to its own file --
+            # no all-gather (which would deadlock from a single rank). Reassemble
+            # offline by stacking rank files along x via the x_lo/x_hi attrs.
+            pid = jax.process_index()
+            gas_loc = np.asarray(U_arr[0].addressable_shards[0].data, dtype=np.float32)
+            dm_loc = np.asarray(rho_dm.addressable_shards[0].data, dtype=np.float32)
+            fn = os.path.join(out_dir, f"coupled_a{a_now:.4f}_rank{pid:03d}.hdf5")
+            with h5py.File(fn, "w") as f:
+                f.attrs["a"] = a_now
+                f.attrs["z"] = 1.0 / a_now - 1.0
+                f.attrs["BoxSize"] = float(cfg.Lx)
+                f.attrs["rank"] = pid
+                f.attrs["nproc"] = jax.process_count()
+                f.attrs["Nx"] = Nx
+                f.attrs["x_lo"] = pid * nx_loc
+                f.attrs["x_hi"] = (pid + 1) * nx_loc
+                f.create_dataset("rho_gas", data=gas_loc)
+                f.create_dataset("rho_dm", data=dm_loc)
+            if pid == 0:
+                print(f"[cosmo-hydro] wrote per-rank slab snaps "
+                      f"coupled_a{a_now:.4f}_rank*.hdf5 ({jax.process_count()} files)",
+                      flush=True)
+            return
         fn = os.path.join(out_dir, f"coupled_a{a_now:.4f}.hdf5")
         with h5py.File(fn, "w") as f:
             f.attrs["a"] = a_now
             f.attrs["z"] = 1.0 / a_now - 1.0
             f.attrs["BoxSize"] = float(cfg.Lx)
             f.create_dataset("rho_gas", data=np.asarray(U_arr[0], dtype=np.float32))
-            f.create_dataset("rho_dm", data=rho_dm.astype(np.float32))
+            f.create_dataset("rho_dm", data=np.asarray(rho_dm, dtype=np.float32))
         print(f"[cosmo-hydro] wrote {fn}", flush=True)
 
     if is_main_process:
@@ -698,7 +758,11 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
             if not np.isfinite(float(jnp.max(U[0]))):
                 print("[cosmo-hydro] non-finite gas state -- stopping")
                 break
-        if is_main_process and snap_every > 0 and step % snap_every == 0:
+        # write_snap enters a shard_map collective (cic_deposit_slab) -> every
+        # rank must call it on the SAME step. step % snap_every is identical on all
+        # ranks, so gate only on that (not is_main_process) when multi-process.
+        if snap_every > 0 and step % snap_every == 0 and (
+                jax.process_count() > 1 or is_main_process):
             write_snap(a, U, posS, massS, actS)
 
     if is_main_process:
@@ -706,6 +770,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         print(f"[cosmo-hydro] done: {step} steps, a={a:.4f} (z={1/a-1:.4f}), "
               f"{time.time()-t0:.1f}s  (gas mass={m_gas:.4e}, "
               f"cumulative out-of-slab: {n_bad_tot})")
+    if jax.process_count() > 1 or is_main_process:    # final snap (collective: all ranks)
         write_snap(a, U, posS, massS, actS)
     if prof_fh is not None:
         prof_fh.close()
@@ -717,14 +782,31 @@ def run_simulation_cosmo_hydro_music(cfg, is_main_process=True):
     """Assemble a coupled gas+DM run from a MUSIC baryon IC and dispatch the
     coupled runner. Gas (PartType0) is meshed to the grid; DM (PartType1) stays
     as particles. Box + cosmology come from the IC header."""
-    from cosmology.music_ic import (music_run_config, read_music_dm_ic,
-                                     read_music_gas_ic)
+    from cosmology.music_ic import (music_part_count, music_run_config,
+                                     read_music_dm_ic, read_music_gas_ic)
     from setup import create_distributed_mesh, create_solver_distributed
     from utils.grid_params import GridParams
 
-    gas = read_music_gas_ic(cfg.music_ic_path)
-    dm = read_music_dm_ic(cfg.music_ic_path, part_type=1)
-    cfg = music_run_config(dm, cfg.Nx, base=cfg)             # box + cosmology
+    # multi-node: each process reads ONLY its contiguous index-chunk of particles
+    # (~its x-slab, by MUSIC x-major ordering) so we never hold the whole IC on
+    # any rank. Single-process (1-node) reads the whole file as before. The global
+    # counts Ng/Nd are kept so every rank computes an identical per-slab capacity.
+    multiproc = jax.process_count() > 1 and bool(getattr(cfg, "dm_domain_decomp", False))
+    Ng = Nd = None
+    if multiproc:
+        nproc, pid = jax.process_count(), jax.process_index()
+        Ng = music_part_count(cfg.music_ic_path, 0)
+        Nd = music_part_count(cfg.music_ic_path, 1)
+        glo, ghi = pid * Ng // nproc, (Ng if pid == nproc - 1 else (pid + 1) * Ng // nproc)
+        dlo, dhi = pid * Nd // nproc, (Nd if pid == nproc - 1 else (pid + 1) * Nd // nproc)
+        gas = read_music_gas_ic(cfg.music_ic_path, glo, ghi)
+        dm = read_music_dm_ic(cfg.music_ic_path, 1, dlo, dhi)
+        print(f"[cosmo-hydro] rank {pid}/{nproc}: gas[{glo}:{ghi}] dm[{dlo}:{dhi}] "
+              f"(chunked IC read)", flush=True)
+    else:
+        gas = read_music_gas_ic(cfg.music_ic_path)
+        dm = read_music_dm_ic(cfg.music_ic_path, part_type=1)
+    cfg = music_run_config(dm, cfg.Nx, base=cfg)             # box + cosmology (header)
     a = float(cfg.a_init)
     # MUSIC may not write InternalEnergy; seed a uniform IGM temperature so the
     # gas has pressure (P=0 gas has no sound speed). Default: CMB at z_init.
@@ -755,14 +837,18 @@ def run_simulation_cosmo_hydro_music(cfg, is_main_process=True):
         Nx = int(cfg.Nx)
         dx = float(cfg.Lx) / Nx
         U = mesh_gas_to_grid_slab(gas, mesh, Nx, int(getattr(cfg, "Ny", cfg.Nx)),
-                                  int(getattr(cfg, "Nz", cfg.Nx)), dx, float(cfg.Lx), a)
+                                  int(getattr(cfg, "Nz", cfg.Nx)), dx, float(cfg.Lx), a,
+                                  n_total_gas=Ng)
         if is_main_process:
-            print(f"[cosmo-hydro] MUSIC baryon IC: {gas.n_part} gas + {dm.n_part} DM, "
-                  f"box={cfg.Lx:.0f} kpc/h, z={1/a-1:.1f} (grid-sharded slab)")
+            tag = "chunked" if multiproc else "whole-file"
+            print(f"[cosmo-hydro] MUSIC baryon IC: "
+                  f"{Ng if multiproc else gas.n_part} gas + "
+                  f"{Nd if multiproc else dm.n_part} DM, "
+                  f"box={cfg.Lx:.0f} kpc/h, z={1/a-1:.1f} (grid-sharded slab, {tag} IC)")
         return _run_slab_hydro(
             U, cfg, step_fn, compute_dt_fn, mesh,
             np.asarray(dm.pos), np.asarray(dm.vel) * (a ** 1.5), np.asarray(dm.mass),
-            is_main_process=is_main_process)
+            n_total_dm=Nd, is_main_process=is_main_process)
 
     pm = ParticleMeshGravity(cfg)
     U = mesh_gas_to_grid(gas, pm, a)

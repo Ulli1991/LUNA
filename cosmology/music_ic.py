@@ -43,8 +43,25 @@ class DMICs:
         return self.pos.shape[0]
 
 
-def read_music_dm_ic(path: str, part_type: int = 1) -> DMICs:
-    """Read DM (``PartType{part_type}``) ICs from a MUSIC/Gadget Arepo-HDF5 file."""
+def music_part_count(path: str, part_type: int = 0) -> int:
+    """Number of ``PartType{part_type}`` particles, read from the dataset shape
+    only (no data loaded) -- used to compute per-rank index chunks for multi-node
+    IC ingestion without reading the whole file."""
+    import h5py
+    with h5py.File(path, "r") as f:
+        return int(f[f"PartType{part_type}"]["Coordinates"].shape[0])
+
+
+def read_music_dm_ic(path: str, part_type: int = 1,
+                     lo: int = None, hi: int = None) -> DMICs:
+    """Read DM (``PartType{part_type}``) ICs from a MUSIC/Gadget Arepo-HDF5 file.
+
+    If ``lo``/``hi`` are given, only the index slice ``[lo:hi]`` of each dataset
+    is read from disk (h5py hyperslab) -- so a multi-node run reads only this
+    rank's chunk (~N/nproc particles) instead of the whole file on every rank.
+    Because MUSIC writes particles in x-major Lagrangian order, a contiguous
+    index chunk is (at z_init, sub-cell displacements) almost exactly one x-slab;
+    a single drift-exchange settles the boundary crossers afterwards."""
     import h5py
 
     with h5py.File(path, "r") as f:
@@ -57,12 +74,13 @@ def read_music_dm_ic(path: str, part_type: int = 1) -> DMICs:
         hub = float(H.get("HubbleParam", 0.7))
 
         g = f[f"PartType{part_type}"]
-        pos = np.asarray(g["Coordinates"], dtype=np.float64)
-        vel = (np.asarray(g["Velocities"], dtype=np.float64)
+        sl = slice(lo, hi)                              # full read if lo/hi None
+        pos = np.asarray(g["Coordinates"][sl], dtype=np.float64)
+        vel = (np.asarray(g["Velocities"][sl], dtype=np.float64)
                if "Velocities" in g else np.zeros_like(pos))
         n = pos.shape[0]
         if "Masses" in g:
-            mass = np.asarray(g["Masses"], dtype=np.float64)
+            mass = np.asarray(g["Masses"][sl], dtype=np.float64)
         else:                                          # uniform mass from the table
             mtable = np.asarray(H["MassTable"], dtype=np.float64)
             mass = np.full(n, mtable[part_type], dtype=np.float64)
@@ -91,8 +109,11 @@ class GasICs:
         return self.pos.shape[0]
 
 
-def read_music_gas_ic(path: str) -> GasICs:
-    """Read baryon (PartType0) ICs, including InternalEnergy, from MUSIC HDF5."""
+def read_music_gas_ic(path: str, lo: int = None, hi: int = None) -> GasICs:
+    """Read baryon (PartType0) ICs, including InternalEnergy, from MUSIC HDF5.
+
+    ``lo``/``hi`` restrict the read to the index slice ``[lo:hi]`` (per-rank chunk
+    for multi-node ingestion); see ``read_music_dm_ic`` for the ordering rationale."""
     import h5py
 
     with h5py.File(path, "r") as f:
@@ -104,16 +125,17 @@ def read_music_gas_ic(path: str) -> GasICs:
         OL = float(H.get("OmegaLambda", 0.7))
         hub = float(H.get("HubbleParam", 0.7))
         g = f["PartType0"]
-        pos = np.asarray(g["Coordinates"], dtype=np.float64)
-        vel = (np.asarray(g["Velocities"], dtype=np.float64)
+        sl = slice(lo, hi)                              # full read if lo/hi None
+        pos = np.asarray(g["Coordinates"][sl], dtype=np.float64)
+        vel = (np.asarray(g["Velocities"][sl], dtype=np.float64)
                if "Velocities" in g else np.zeros_like(pos))
         n = pos.shape[0]
         if "Masses" in g:
-            mass = np.asarray(g["Masses"], dtype=np.float64)
+            mass = np.asarray(g["Masses"][sl], dtype=np.float64)
         else:
             mtable = np.asarray(H["MassTable"], dtype=np.float64)
             mass = np.full(n, mtable[0], dtype=np.float64)
-        u_int = (np.asarray(g["InternalEnergy"], dtype=np.float64)
+        u_int = (np.asarray(g["InternalEnergy"][sl], dtype=np.float64)
                  if "InternalEnergy" in g else np.zeros(n, dtype=np.float64))
     return GasICs(pos=pos, vel=vel, mass=mass, u_int=u_int, box_size=box, a=a,
                   redshift=z, Omega_m=Om, Omega_L=OL, h=hub)

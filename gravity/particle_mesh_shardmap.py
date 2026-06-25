@@ -75,6 +75,41 @@ def decompose_to_slabs(pos, vel, mass, Nx, ndev, dx, box, capacity_factor=1.5):
     return pos_g, vel_g, mass_g, active_g, C
 
 
+def assemble_slab_from_chunk(local_arrays, specs, N_total, ndev, mesh,
+                             capacity_factor=1.15):
+    """Multi-PROCESS IC assembly (one GPU per process). Each process passes only
+    its OWN index-chunk of particles -- which, by MUSIC's x-major Lagrangian
+    ordering, is already ~its x-slab at z_init -- as host arrays in `local_arrays`
+    (each (n_local, ...)), with matching `specs` (PartitionSpecs). Pads each to the
+    per-slab capacity C = ceil(capacity_factor * N_total / ndev), places it on this
+    process's single local device, and stitches the global (ndev*C, ...) sharded
+    jax arrays via make_array_from_single_device_arrays -- so NO full (ndev*C)
+    host array is ever built and NO full-array device_put is issued (that pattern
+    deadlocks multi-process). Returns (sharded_arrays, active_sharded, C). A
+    drift exchange_particles_slab afterwards settles the sub-cell boundary
+    crossers into their owning slab.
+    """
+    from jax.sharding import NamedSharding
+    C = int(np.ceil(capacity_factor * N_total / ndev))
+    n_local = int(local_arrays[0].shape[0])
+    m = min(n_local, C)
+    ldev = mesh.local_devices()[0]                        # 1 GPU / process
+    out = []
+    for a_host, spec in zip(local_arrays, specs):
+        buf = np.zeros((C,) + a_host.shape[1:], dtype=a_host.dtype)
+        buf[:m] = np.asarray(a_host)[:m]
+        shard = jax.device_put(jnp.asarray(buf), ldev)
+        gshape = (ndev * C,) + tuple(a_host.shape[1:])
+        out.append(jax.make_array_from_single_device_arrays(
+            gshape, NamedSharding(mesh, spec), [shard]))
+    act = np.zeros((C,), dtype=np.float64)
+    act[:m] = 1.0
+    act_shard = jax.device_put(jnp.asarray(act), ldev)
+    actS = jax.make_array_from_single_device_arrays(
+        (ndev * C,), NamedSharding(mesh, P("x")), [act_shard])
+    return out, actS, C
+
+
 def _ring_perms(ndev):
     """ppermute permutations for the 1-D ring along x."""
     to_right = [(i, (i + 1) % ndev) for i in range(ndev)]   # i sends to i+1
