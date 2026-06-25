@@ -17,7 +17,7 @@ cd /raven/u/uli/jax-hydro
 export LUNA_EMERG_NX=${LUNA_EMERG_NX:-256}
 export LUNA_EMERG_NSTEPS=${LUNA_EMERG_NSTEPS:-300}
 export LUNA_EMERG_NITER=${LUNA_EMERG_NITER:-200}
-export LUNA_EMERG_IMAGE=/ptmp/uli/jax-hydro/emergence/lu_target.npy
+export LUNA_EMERG_IMAGE=${LUNA_EMERG_IMAGE:-/ptmp/uli/jax-hydro/emergence/lu_target_edge.npy}
 echo "=== you+LUNA emerging from overlapping blast waves (2D, Nx=$LUNA_EMERG_NX) ==="
 python -u -m scripts.validation.runs.blast_emergence_run
 echo "=== done ==="

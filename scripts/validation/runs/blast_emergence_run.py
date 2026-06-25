@@ -43,6 +43,7 @@ def main():
         autodiff_emergence_target=(target if not image else
                                    os.path.splitext(os.path.basename(image))[0]),
         autodiff_emergence_image=image,
+        autodiff_emergence_init_seeds=int(os.environ.get("LUNA_EMERG_SEEDS", "0")),
         autodiff_n_steps=n_steps, autodiff_n_iter=n_iter,
         PLOT_AFTER_SIM=False, production_mode=True,
     )

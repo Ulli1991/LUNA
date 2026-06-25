@@ -293,6 +293,7 @@ class Config:
     autodiff_emergence_driver: str = "blast"   # "blast" | "turbulence"
     autodiff_emergence_target: str = "LUNA"
     autodiff_emergence_image: str = ""         # path to a [0,1] target field (.npy/png); overrides text target
+    autodiff_emergence_init_seeds: int = 0     # blast: seed N scattered hot Sedov sites in e(x,0) (blast-wave-noise start)
     autodiff_emergence_emax: float = 50.0      # blast: max internal energy (x floor)
     autodiff_emergence_contrast: float = 4.0   # target hi/lo ratio
     autodiff_emergence_match: str = "e"        # observe "e" (internal energy) | "rho"

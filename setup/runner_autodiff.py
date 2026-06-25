@@ -231,7 +231,17 @@ def _luna_emergence(step_fn, U0, cfg, is_main):
         observe = (lambda U: U[0]) if match == "rho" else internal_e
         lo = rho0 if match == "rho" else e_floor
         rng = np.random.RandomState(0)
-        theta0 = jnp.asarray(-3.0 + 0.3 * rng.standard_normal((Nx, Nx)))
+        theta0 = -3.0 + 0.3 * rng.standard_normal((Nx, Nx))
+        # optional blast-wave-noise start: seed scattered hot Sedov sites so the
+        # IC literally *is* explosions (frame 1 reads as blast noise, then the
+        # shells collide into the target). Honest: these random sites do not
+        # resemble the target -- only their collisions do.
+        n_seeds = int(getattr(cfg, "autodiff_emergence_init_seeds", 0))
+        if n_seeds > 0:
+            ys = rng.randint(0, Nx, n_seeds)
+            xs = rng.randint(0, Nx, n_seeds)
+            theta0[ys, xs] = 3.0                       # e_of(3) -> ~e_max hot site
+        theta0 = jnp.asarray(theta0)
         nparams = Nx * Nx
 
         def first_panel(theta):
