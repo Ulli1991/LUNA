@@ -29,7 +29,6 @@ from utils.distributed import (
     shard_array_to_devices,
 )
 from utils.grid_params import GridParams
-from utils.halo_exchange_auto import pad_with_halo_auto
 from utils.memory_utils import print_memory_usage
 
 
@@ -308,34 +307,18 @@ def create_solver_distributed(
     else:  # 3D
         sharding = NamedSharding(mesh, P(None, "x", "y", "z"))
 
-    # Pick the halo exchange path: shard_map (explicit ppermute, opt-in via
-    # cfg.USE_SHARDMAP) or the legacy auto-sharded jnp.pad. shard_map only
-    # supports periodic/zero-grad 3D at the moment (phase 1) and falls back
-    # to the auto path otherwise — so KH 2D, solar (reflective), etc. all
-    # keep working until phase 2/4 of the shard_map plan.
-    use_shardmap = bool(getattr(cfg, "USE_SHARDMAP", False))
-    if use_shardmap and cfg.SPATIAL_DIMENSION == 3 and cfg.BOUNDARY in (0, 1):
-        from utils.halo_exchange_shardmap import make_halo_3d_shardmap
+    # shard_map is LUNA's single multi-GPU path: explicit per-shard ppermute
+    # halos for every dimension (1D/2D/3D) and boundary condition (periodic,
+    # zero-gradient, reflective, diode-outflow). Each device runs the full
+    # per-shard step; only thin boundary slabs cross the wire, and reverse-mode
+    # autodiff flows straight through the ppermute collectives.
+    from utils.halo_exchange_shardmap import make_halo_shardmap
 
-        pad_halo_fn = make_halo_3d_shardmap(mesh)
-        if is_main_process:
-            print("Using shard_map with explicit per-shard ppermute halos")
-            print(f"Sharding spec: {sharding.spec}")
-    else:
-        if use_shardmap and is_main_process:
-            print(
-                "shard_map requested but not eligible "
-                f"(SPATIAL_DIMENSION={cfg.SPATIAL_DIMENSION}, BOUNDARY={cfg.BOUNDARY}) "
-                "— falling back to auto-sharded jnp.pad."
-            )
-        use_shardmap = False
-        if is_main_process:
-            print("Using automatic sharding with NamedSharding")
-            print(f"Sharding spec: {sharding.spec}")
-            print("Halo exchange: jnp.roll (standard JAX approach)")
-
-        def pad_halo_fn(U, boundary, spatial_dim):
-            return pad_with_halo_auto(U, boundary, spatial_dim)
+    pad_halo_fn = make_halo_shardmap(mesh, cfg.SPATIAL_DIMENSION)
+    use_shardmap = True
+    if is_main_process:
+        print("Using shard_map with explicit per-shard ppermute halos")
+        print(f"Sharding spec: {sharding.spec}")
 
     # Select time integrator. Each factory returns (compute_dt_fn, step_fn):
     #   compute_dt_fn(U) -> dt_cfl   (pure CFL, runner does the clamping)

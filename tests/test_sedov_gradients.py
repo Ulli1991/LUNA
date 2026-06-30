@@ -12,6 +12,10 @@ forward-mode AD log-derivatives match BOTH:
 This is the assertion form of paper fig18 (autodiff_sedov_validation); run this
 file directly to (re)generate that figure.
 """
+
+import pytest
+pytestmark = pytest.mark.slow
+
 import numpy as np
 
 

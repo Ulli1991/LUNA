@@ -55,7 +55,6 @@ def main():
         # gas hydro halo: explicit per-shard ppermute shard_map (fast path),
         # matching the DM/gravity shard_map primitives; periodic gas BC (a
         # cosmological box IS periodic -- was defaulting to zero-grad BOUNDARY=1).
-        USE_SHARDMAP=os.environ.get("LUNA_SHARDMAP", "1") == "1",
         BOUNDARY=0,
         ORDER=1, LIMITER=1, CFL=0.4, riemann_solver="hllc",
         output_dir=os.environ.get(

@@ -52,7 +52,11 @@ def setup_self_gravity(cfg, sharding, is_main_process: bool = True):
     n_post = getattr(cfg, "POISSON_N_POST", 2)
     n_coarsest = getattr(cfg, "POISSON_N_COARSEST", 50)
     boundary = poisson_boundary
-    use_shardmap = bool(getattr(cfg, "USE_SHARDMAP", False)) and sharding is not None
+    # Use the sharded (ppermute) Poisson path whenever gravity spans more than
+    # one device; a single device keeps the local halo path. Auto-detected from
+    # the mesh — no config flag needed.
+    _mesh = getattr(sharding, "mesh", None)
+    use_shardmap = _mesh is not None and _mesh.size > 1
 
     halo_fn_local = make_halo_3d(boundary)  # for single-process path
     inv_2dx = 0.5 / dx

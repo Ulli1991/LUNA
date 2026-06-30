@@ -74,14 +74,6 @@ class Config:
     # (2, 2, 2) at 8 GPUs to halve y/z halo cost for 1024^3 fp32 runs).
     MESH_SHAPE: tuple = None
 
-    # shard_map opt-in for the 3D MUSCL-Hancock step. When True the
-    # cons_to_prim + halo + flux + update pipeline runs inside a
-    # shard_map body — explicit per-shard ppermute for the halo,
-    # per-shard intermediates only, sidesteps XLA's auto-sharding
-    # working-set blowup at 1024^3 on small device counts. Default
-    # False keeps the auto-sharded path (KH 2D, solar, etc.).
-    USE_SHARDMAP: bool = False
-
     # Self-gravity (multigrid V-cycle Poisson solve each step, applied as
     # an operator-split source on momentum + energy). Phase 1: single-
     # process, periodic + Neumann BC only. See docs/multigrid_poisson_plan.md
@@ -170,14 +162,8 @@ class Config:
     bb_amp: float = 0.5                  # m-mode perturbation amplitude (paper: A=0.5)
     bb_m: int = 2                        # azimuthal mode number
     bb_rho_ambient_frac: float = 1.0e-3  # ambient density as a fraction of rho0
-    # legacy code-unit knobs (kept for back-compat; unused by the physical IC)
-    bb_M: float = 1.0
-    bb_R: float = 1.0
-    bb_cs2: float = 0.25
     bb_beta: float = 0.16
     bb_rho_ambient: float = 0.0
-    POISSON_TOL: float = None             # ∞-norm residual stop; None = run all cycles
-    POISSON_MAX_CYCLES: int = 10
     POISSON_N_PRE: int = 2                # smoother iters on descent
     POISSON_N_POST: int = 2                # smoother iters on ascent
     POISSON_N_COARSEST: int = 50          # smoother iters at the coarsest level
@@ -245,14 +231,13 @@ class Config:
     # Print memory usage during run
     check_memory: bool = True
 
-    # Periodic in-loop physics diagnostics + NaN abort guard. Both run as
-    # single GPU-side reductions every `diag_interval`/`nan_check_interval`
-    # steps, negligible cost compared to the step itself. On NaN detected
-    # the runner dumps a checkpoint and raises RuntimeError so SLURM exits
-    # non-zero — no more silent multi-hour NaN'd runs.
+    # Periodic in-loop physics diagnostics run as a single GPU-side reduction
+    # every `diag_interval` steps (negligible cost); the NaN abort guard checks
+    # every step, piggybacked on compute_dt. On NaN detected the runner dumps a
+    # checkpoint and raises RuntimeError so SLURM exits non-zero — no more silent
+    # multi-hour NaN'd runs.
     enable_diagnostics: bool = True
     diag_interval: int = 100
-    nan_check_interval: int = 100
 
     # Production mode: disables ALL performance-killing features
     # - Disables validation checks in time loop
@@ -383,8 +368,6 @@ class Config:
     # hydro step. Requires cfg.units enabled.
     cooling_enabled: bool = False
     cooling_table: str = "sd93_solar"      # "sd93_solar" (Sutherland-Dopita 93)
-    cooling_T_floor_K: float = 1.0e4
-    cooling_T_max_K:   float = 1.0e9
 
     # ---------------- Gravity + well-balanced ----------------
     # Constant gravity along z (negative = pointing down). When non-zero and

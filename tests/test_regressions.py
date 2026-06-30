@@ -11,6 +11,10 @@ shock-tube suites live in scripts/validation/plots/* and produce figures
 instead of asserting.
 """
 
+import pytest
+pytestmark = pytest.mark.slow
+
+
 import jax
 import numpy as np
 import pytest
@@ -35,13 +39,20 @@ def _run_short(cfg):
     tests run in seconds without SLURM / file I/O overhead.
     """
     from ic_generation.ic import initial_conditions
+    import jax
+    import numpy as np
+    from jax.sharding import Mesh
+
     from time_integration.integrators import create_muscl_hancock_modular_step
     from utils.grid_params import GridParams
-    from utils.halo_exchange_auto import pad_with_halo_auto
+    from utils.halo_exchange_shardmap import make_halo_shardmap
 
     grid = GridParams.from_config(cfg)
     U = initial_conditions(cfg)
-    pad_halo_fn = lambda U, b, d: pad_with_halo_auto(U, b, d)
+    sdim = cfg.SPATIAL_DIMENSION
+    names = ("x", "y", "z")[:sdim]
+    mesh = Mesh(np.asarray(jax.devices()[:1]).reshape((1,) * sdim), names)
+    pad_halo_fn = make_halo_shardmap(mesh, sdim)
 
     compute_dt_fn, step_fn = create_muscl_hancock_modular_step(
         pad_halo_fn,
@@ -59,6 +70,8 @@ def _run_short(cfg):
         cfg.CFL,
         sharding=None,
         riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
+        use_shardmap=True,
+        mesh=mesh,
     )
 
     t = 0.0

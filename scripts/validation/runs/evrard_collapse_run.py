@@ -45,7 +45,6 @@ def main():
         time_bet_snaps=t_end / 30,    # 30 snapshots
         SELF_GRAVITY=True,
         GRAVITATIONAL_G=G,
-        POISSON_MAX_CYCLES=15,
         POISSON_FMG_VCYCLES_PER_LEVEL=1,
         POISSON_FMG_EXTRA_VCYCLES=0,
         evrard_M=M,

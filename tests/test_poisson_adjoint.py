@@ -11,6 +11,10 @@ Pass criteria:
   custom-vjp vs unrolled : rel err < 1e-3 (they solve the same linear
                            system; difference is solver tolerance)
 """
+
+import pytest
+pytestmark = pytest.mark.slow
+
 import sys
 import numpy as np
 import jax
@@ -92,6 +96,10 @@ def main():
     _check(boundary=1, name="Neumann BC")
     _check(boundary=0, name="periodic BC")
     print("  all checks passed ✓")
+
+
+def test_poisson_adjoint_vjp():
+    main()
 
 
 if __name__ == "__main__":

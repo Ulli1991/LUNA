@@ -32,8 +32,6 @@ def main():
         ORDER=1, LIMITER=0, CFL=0.3,   # MinMod, same as iso run
         t_end=t_end, time_bet_snaps=t_end / 30,
         SELF_GRAVITY=True, GRAVITATIONAL_G=G,
-        POISSON_MAX_CYCLES=15,
-        bb_M=M, bb_R=R, bb_cs2=cs2,
         bb_beta=0.16, bb_amp=0.1,
         isothermal_cs2=cs2,
         PLOT_AFTER_SIM=False, production_mode=True,

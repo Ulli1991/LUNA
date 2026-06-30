@@ -8,6 +8,10 @@ on a uniform-sphere-style configuration, residual decreases ~10x per
 V-cycle for a few cycles. Multi-process shard_map regression in Phase 2.
 """
 
+import pytest
+pytestmark = pytest.mark.slow
+
+
 import jax
 import jax.numpy as jnp
 import numpy as np

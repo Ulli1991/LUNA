@@ -87,7 +87,7 @@ def main():
         autodiff_fixed_dt=dt,
         autodiff_n_iter=n_iter,
         autodiff_ic_field="density",
-        USE_SHARDMAP=use_shardmap, MESH_SHAPE=mesh_shape,
+        MESH_SHAPE=mesh_shape,
         PLOT_AFTER_SIM=False, production_mode=False,
         output_dir=f"snapshots/turb_autodiff_Nx{Nx}",
     )

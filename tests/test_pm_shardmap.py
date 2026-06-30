@@ -12,6 +12,10 @@ correct target) so the sharded math is pinned exactly, not just self-consistent:
   5. exchange_particles_slab invariant: after a random drift every active
      particle lands in its owning slab, mass + count are conserved.
 """
+
+import pytest
+pytestmark = pytest.mark.slow
+
 import os
 import sys
 
@@ -197,6 +201,10 @@ def main():
     assert abs(float(np.asarray(nact2).sum()) - tot_before) < 0.5, "lost particles"
 
     print("\nALL PM SHARDMAP PARITY/INVARIANT CHECKS PASSED")
+
+
+def test_pm_shardmap_parity():
+    main()
 
 
 if __name__ == "__main__":

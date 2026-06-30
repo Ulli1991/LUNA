@@ -12,6 +12,12 @@ and report:
 Pass: rel err < 1% (discretisation floor of 7-point stencil at N=64).
 """
 
+import pytest
+# Runs on 8 devices (conftest provides 8 virtual CPU devices) or 1; the
+# shard_map FMG Poisson is the same code path the multi-GPU runs use.
+pytestmark = pytest.mark.slow
+
+
 import os
 import jax
 import jax.numpy as jnp
@@ -52,7 +58,7 @@ def main():
     elif n_devices == 8:
         mesh_shape = (2, 2, 2)
     else:
-        raise SystemExit(f"This test wants 1 or 8 devices; got {n_devices}.")
+        pytest.skip(f"needs 1 or 8 devices; got {n_devices}")
     devices = mesh_utils.create_device_mesh(mesh_shape)
     mesh = Mesh(devices, ("x", "y", "z"))
     spec = P("x", "y", "z")
@@ -160,6 +166,14 @@ def main():
         print(f"corr(gx_num, gx_analytic)   = {float(gx_corr):.6f}")
         gx_passed = float(gx_rel) < 1e-2
         print(f"{'PASS' if gx_passed else 'FAIL'}: gradient rel err {'<' if gx_passed else '>'} 1e-2")
+
+    assert float(rel_err) < 1e-2, f"FMG-shardmap Poisson rel err = {float(rel_err):.3e}"
+    assert float(gx_rel) < 1e-2, f"shard_map gradient rel err = {float(gx_rel):.3e}"
+
+
+def test_poisson_multigrid_shardmap():
+    """FMG-shardmap Poisson + gradient vs analytic single-mode field."""
+    main()
 
 
 if __name__ == "__main__":

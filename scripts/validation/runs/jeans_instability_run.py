@@ -71,8 +71,6 @@ def main():
         # Self-gravity wiring
         SELF_GRAVITY=os.environ.get("LUNA_SELF_GRAVITY", "1") == "1",
         GRAVITATIONAL_G=G,
-        POISSON_TOL=1e-6,
-        POISSON_MAX_CYCLES=15,
         POISSON_FMG_VCYCLES_PER_LEVEL=2,
         POISSON_FMG_EXTRA_VCYCLES=5,
         # IC parameters — these go into the IC builder (must be added there).
@@ -86,7 +84,6 @@ def main():
         output_dir=f"snapshots/jeans_Nx{Nx}",
         enable_x64=True,            # tight test — fp64 for clean growth rate
         enable_checkpointing=False,
-        USE_SHARDMAP=os.environ.get("LUNA_USE_SHARDMAP", "0") == "1",
         MESH_SHAPE=(
             tuple(int(s) for s in os.environ["LUNA_MESH_SHAPE"].split(","))
             if os.environ.get("LUNA_MESH_SHAPE") else None

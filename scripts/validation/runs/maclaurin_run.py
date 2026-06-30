@@ -24,7 +24,6 @@ def main():
         ORDER=1, LIMITER=1, CFL=0.3,
         t_end=t_end, time_bet_snaps=t_end / 30,
         SELF_GRAVITY=True, GRAVITATIONAL_G=G,
-        POISSON_MAX_CYCLES=15,
         mac_e=e, mac_a=a, mac_rho=1.0,
         PLOT_AFTER_SIM=False, production_mode=True,
         output_dir=f"snapshots/maclaurin_e{e:.2f}_Nx{Nx}",

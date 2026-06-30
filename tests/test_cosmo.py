@@ -7,6 +7,10 @@ RAMSES 'friedman' a(tau) table) and the Poisson coefficient swap
 4 pi G -> (3/2) Omega_m a. Kept small (32^3 EdS, z=2.33 -> z~0.67) so it runs in
 a few seconds on a CPU.
 """
+
+import pytest
+pytestmark = pytest.mark.slow
+
 import numpy as np
 
 

@@ -71,7 +71,6 @@ def main():
         autodiff_dt_mode=dt_mode,
         autodiff_grad_mode=grad_mode,
         autodiff_n_iter=n_iter,
-        USE_SHARDMAP=use_shardmap,
         MESH_SHAPE=mesh_shape,
         PLOT_AFTER_SIM=False, production_mode=False,
         output_dir=f"snapshots/m82_autodiff_Nx{Nx}",

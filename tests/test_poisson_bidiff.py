@@ -1,6 +1,10 @@
 """Validate solve_poisson_fmg_bidiff: forward (jvp/jacfwd) AND reverse
 (vjp/grad) mode, vs central FD, and reverse-consistency with the validated
 custom_vjp solver (solve_poisson_fmg_diff)."""
+
+import pytest
+pytestmark = pytest.mark.slow
+
 import sys
 import numpy as np
 import jax
@@ -75,6 +79,10 @@ def main():
     assert rel_rev < 5e-3, "reverse-mode wrong"   # FMG residual-tolerance limited
     assert rel_cons < 1e-3, "reverse inconsistent with custom_vjp"
     print("\nALL POISSON BIDIFF CHECKS PASSED ✓")
+
+
+def test_poisson_bidiff_fwd_rev():
+    main()
 
 
 if __name__ == "__main__":

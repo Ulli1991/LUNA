@@ -24,7 +24,6 @@ def main():
         ORDER=1, LIMITER=1, CFL=0.3,
         t_end=t_end, time_bet_snaps=t_end / 40,
         SELF_GRAVITY=True, GRAVITATIONAL_G=G,
-        POISSON_MAX_CYCLES=15,
         lane_n=1.5, lane_R=R, lane_rho_c=1.0,
         pulse_amp=0.01,
         PLOT_AFTER_SIM=False, production_mode=True,

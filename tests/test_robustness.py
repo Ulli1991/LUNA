@@ -10,6 +10,10 @@ Covers the failure-mode plumbing that the main `test_regressions.py` doesn't:
 Run:    pytest tests/test_robustness.py -v
 """
 
+import pytest
+pytestmark = pytest.mark.slow
+
+
 import os
 import shutil
 import tempfile
@@ -31,15 +35,21 @@ def _build_cfg_for_test(**overrides):
 
 
 def _make_step_fns(cfg):
-    """Return (compute_dt_fn, step_fn) for a Config — same path as production."""
+    """Return (compute_dt_fn, step_fn) for a Config — same shard_map path as
+    production, on a single-device mesh."""
+    import jax
+    import numpy as np
+    from jax.sharding import Mesh
+
     from time_integration.integrators import create_muscl_hancock_modular_step
     from utils.grid_params import GridParams
-    from utils.halo_exchange_auto import pad_with_halo_auto
+    from utils.halo_exchange_shardmap import make_halo_shardmap
 
     grid = GridParams.from_config(cfg)
-
-    def pad(U, b, d):
-        return pad_with_halo_auto(U, b, d)
+    sdim = cfg.SPATIAL_DIMENSION
+    names = ("x", "y", "z")[:sdim]
+    mesh = Mesh(np.asarray(jax.devices()[:1]).reshape((1,) * sdim), names)
+    pad = make_halo_shardmap(mesh, sdim)
 
     return create_muscl_hancock_modular_step(
         pad,
@@ -57,6 +67,8 @@ def _make_step_fns(cfg):
         cfg.CFL,
         sharding=None,
         riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
+        use_shardmap=True,
+        mesh=mesh,
     )
 
 

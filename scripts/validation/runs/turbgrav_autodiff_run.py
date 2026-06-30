@@ -67,7 +67,7 @@ def main():
         autodiff_fixed_dt=0.3 * (LX / Nx) / 2.0,   # fixed dt (cs+v ~ <2): clean grads
         autodiff_n_iter=n_iter,
         autodiff_ic_field="density",
-        USE_SHARDMAP=use_shardmap, MESH_SHAPE=mesh_shape,
+        MESH_SHAPE=mesh_shape,
         PLOT_AFTER_SIM=False, production_mode=False,
         output_dir=f"snapshots/turbgrav_autodiff_Nx{Nx}",
     )

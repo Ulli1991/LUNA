@@ -70,7 +70,6 @@ def main():
             tuple(int(s) for s in os.environ["LUNA_MESH_SHAPE"].split(","))
             if os.environ.get("LUNA_MESH_SHAPE") else None
         ),
-        USE_SHARDMAP=os.environ.get("LUNA_USE_SHARDMAP", "0") == "1",
         # Precision via LUNA_X64 env (default float32). float64 doubles the
         # working set, so large grids per A100 (e.g. 1024^3 on few GPUs) can OOM
         # / trip the XLA collective-combiner bug — use more GPUs there. The

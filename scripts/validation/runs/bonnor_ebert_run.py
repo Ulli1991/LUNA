@@ -43,7 +43,6 @@ def main():
         time_bet_snaps=t_end / 30,
         SELF_GRAVITY=True,
         GRAVITATIONAL_G=G,
-        POISSON_MAX_CYCLES=15,
         be_xi_t=xi_t,
         be_cs2=cs2,
         be_R=R,

@@ -7,6 +7,7 @@ Checks, on a hot isochoric parcel with the n_e n_H normalization:
       apply_cooling) converges to a fine RK4 integration of
       dT/dt = -(gamma-1) n_e n_H Lambda(T) / (n_tot k_B) as n_sub grows.
 """
+
 import sys
 import numpy as np
 
@@ -72,6 +73,10 @@ def main():
     assert rel < 1e-3, "forward-Euler not converging to RK4"
 
     print("\nALL COOLING CHECKS PASSED ✓")
+
+
+def test_cooling_rate_and_integration():
+    main()
 
 
 if __name__ == "__main__":

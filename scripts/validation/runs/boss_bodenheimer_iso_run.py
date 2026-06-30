@@ -59,7 +59,6 @@ def main():
         units=units,
         t_end=t_end, time_bet_snaps=t_end / 60,   # ~1 kyr cadence -> land near 25/33/55 kyr
         SELF_GRAVITY=True, GRAVITATIONAL_G=units.GravityConstant,
-        POISSON_MAX_CYCLES=20,
         # ---- paper IC (physical cgs); SEREN Ω pinned directly ----
         bb_rho0_cgs=1.44e-17, bb_R_pc=R_pc, bb_omega_rad_s=1.6e-12,
         bb_amp=0.5, bb_m=2, bb_rho_ambient_frac=1.0e-3,

@@ -40,7 +40,7 @@ def main():
         ORDER=1, LIMITER=1, CFL=0.4,
         autodiff_mode=True, autodiff_task="ic_inversion",
         autodiff_n_steps=n_steps, autodiff_n_iter=n_iter,
-        USE_SHARDMAP=use_shardmap, MESH_SHAPE=mesh_shape,
+        MESH_SHAPE=mesh_shape,
         PLOT_AFTER_SIM=False, production_mode=False,
     )
 

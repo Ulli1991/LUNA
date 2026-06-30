@@ -42,6 +42,18 @@ where = ["."]
 include = ["hydro*", "ic_generation*", "setup*", "time_integration*",
            "file_io*", "utils*"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "slow: long-running test (full sim or shard_map JIT). Deselect with -m 'not slow'.",
+    "multigpu: needs a real multi-process / multi-GPU launch; auto-skipped unless LUNA_MULTIGPU_TEST=1.",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+
 [tool.black]
 line-length = 100
 target-version = ["py310", "py311", "py312", "py313"]
