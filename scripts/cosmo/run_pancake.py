@@ -101,26 +101,38 @@ def main_run():
             apply_style()
         except Exception:
             pass
+        from utils.figstyle import decorate
         x = fin["x"]
-        fig, ax = plt.subplots(3, 1, figsize=(6.0, 9.0))
-        # top: comoving density at z=0
-        ax[0].plot(x, fin["rho_ana"], "k-", lw=2, label="Zel'dovich (exact)")
-        ax[0].plot(x, fin["rho_num"], "r--", lw=1.6, label="LUNA (main + FMG)")
-        ax[0].set_yscale("log"); ax[0].set_ylabel(r"$\tilde\rho$  (density)")
-        ax[0].set_xlabel("x"); ax[0].legend(frameon=False)
-        # middle: peculiar velocity at z=0
-        ax[1].plot(x, fin["v_ana"], "k-", lw=2, label="Zel'dovich (exact)")
-        ax[1].plot(x, fin["v_num"], "r--", lw=1.6, label="LUNA (main + FMG)")
-        ax[1].set_ylabel(r"$\tilde v$  (peculiar velocity)"); ax[1].set_xlabel("x")
-        ax[1].legend(frameon=False)
-        # bottom: L1 error vs analytic, through the collapse (z high -> 0)
-        ax[2].plot(z_arr, l1r, "o-", color="#1f77b4", label=r"$L_1(\tilde\rho)$")
-        ax[2].plot(z_arr, l1v, "s--", color="#d62728", label=r"$L_1(\tilde v)$")
-        ax[2].set_yscale("log"); ax[2].invert_xaxis()
-        ax[2].set_xlabel("redshift $z$"); ax[2].set_ylabel(r"$L_1$ vs analytic")
-        ax[2].legend(frameon=False)
         os.makedirs("figures", exist_ok=True)
-        fig.tight_layout(); fig.savefig("figures/zeldovich_pancake_main.png", dpi=150)
+        # save the plot data so the figure can be restyled without re-running
+        np.savez("figures/zeldovich_pancake_data.npz",
+                 x=x, rho_ana=fin["rho_ana"], rho_num=fin["rho_num"],
+                 v_ana=fin["v_ana"], v_num=fin["v_num"],
+                 z=z_arr, l1r=l1r, l1v=l1v)
+        # compact layout: density | velocity on top, L1-vs-z spanning the bottom
+        fig = plt.figure(figsize=(10.0, 7.2))
+        gs = fig.add_gridspec(2, 2, height_ratios=[1.05, 1.0], hspace=0.30, wspace=0.24)
+        axd = fig.add_subplot(gs[0, 0])
+        axv = fig.add_subplot(gs[0, 1])
+        axl = fig.add_subplot(gs[1, :])
+        # density at z=0 (legend lives here only)
+        axd.plot(x, fin["rho_ana"], "k-", lw=2.4, label="Zel'dovich (exact)")
+        axd.plot(x, fin["rho_num"], "--", color="C3", lw=1.9, label="LUNA (main + FMG)")
+        axd.set_yscale("log"); axd.set_ylabel(r"$\tilde\rho$  (comoving density)")
+        axd.set_xlabel("$x$"); axd.legend(frameon=False, loc="upper center")
+        decorate(axd)
+        # peculiar velocity at z=0 (shares the density legend)
+        axv.plot(x, fin["v_ana"], "k-", lw=2.4)
+        axv.plot(x, fin["v_num"], "--", color="C3", lw=1.9)
+        axv.set_ylabel(r"$\tilde v$  (peculiar velocity)"); axv.set_xlabel("$x$")
+        decorate(axv)
+        # L1 error vs analytic through the collapse (z high -> 0), clean lines
+        axl.plot(z_arr, l1r, "-", color="C0", lw=2.4, label=r"$L_1(\tilde\rho)$")
+        axl.plot(z_arr, l1v, "--", color="C3", lw=2.4, label=r"$L_1(\tilde v)$")
+        axl.set_yscale("log"); axl.invert_xaxis()
+        axl.set_xlabel("redshift $z$"); axl.set_ylabel(r"$L_1$ vs analytic")
+        axl.legend(frameon=False, loc="upper left"); decorate(axl)
+        fig.savefig("figures/zeldovich_pancake_main.png", dpi=200, bbox_inches="tight")
         print("# wrote figures/zeldovich_pancake_main.png")
     except Exception as e:
         print(f"# plot skipped: {e}")
