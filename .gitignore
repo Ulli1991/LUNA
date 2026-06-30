@@ -54,3 +54,8 @@ paper.tex
 amr_integration_brief.md
 paper.tex.bak
 *.aux
+
+# Project-internal SLURM submit scripts are not shipped; only the templates
+# under submit/examples/ are tracked.
+submit/*
+!submit/examples/

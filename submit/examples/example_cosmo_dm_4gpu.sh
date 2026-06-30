@@ -3,9 +3,9 @@
 # --export: LUNA_DM_IC, LUNA_DM_MESH, LUNA_DM_OUT, LUNA_DM_AEND.
 #   256^3 validation: sbatch --export=ALL,LUNA_DM_IC=.../ics_arepo_l8.hdf5,LUNA_DM_MESH=256,LUNA_DM_OUT=.../cosmo_dm_slab256 ...
 #   512^3 headline   : sbatch --export=ALL,LUNA_DM_IC=.../ics_arepo_l9.hdf5,LUNA_DM_MESH=512,LUNA_DM_OUT=.../cosmo_dm_512 ...
-#SBATCH -o /ptmp/uli/jax-hydro/snapshots/cosmo_dm/slab4gpu.out.%j
-#SBATCH -e /ptmp/uli/jax-hydro/snapshots/cosmo_dm/slab4gpu.err.%j
-#SBATCH -D /raven/u/uli/jax-hydro
+#SBATCH -o ./snapshots/cosmo_dm/slab4gpu.out.%j
+#SBATCH -e ./snapshots/cosmo_dm/slab4gpu.err.%j
+#SBATCH -D ./
 #SBATCH -J cosmo_dm_slab
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
@@ -24,7 +24,7 @@ export PYTHONUNBUFFERED=1
 export LUNA_DM_SLAB=1
 export LUNA_DM_AEND=${LUNA_DM_AEND:-1.0}
 export LUNA_DM_VCYC=${LUNA_DM_VCYC:-1}
-cd /raven/u/uli/jax-hydro
+cd ./
 echo "=== grid-sharded DM N-body: mesh=${LUNA_DM_MESH}^3 IC=${LUNA_DM_IC} on 4x A100 ==="
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 python -u scripts/cosmo/run_cosmo_dm.py
