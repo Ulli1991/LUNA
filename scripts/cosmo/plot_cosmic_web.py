@@ -18,9 +18,16 @@ import numpy as np
 from matplotlib.colors import LogNorm
 
 
-def _proj(rho, axis=2):
-    """Column density: mean along the projection axis (robust to grid size)."""
-    return np.asarray(rho, dtype=np.float64).mean(axis=axis)
+def _proj(rho, axis=2, slab_frac=0.25):
+    """Column density over a slab of the box, matching the DM-only comparison
+    figures (which project the first `slab_frac` of the box along the same axis).
+    slab_frac=1.0 recovers the full-box projection."""
+    rho = np.asarray(rho, dtype=np.float64)
+    n = rho.shape[axis]
+    nslab = max(1, int(round(slab_frac * n)))
+    sl = [slice(None)] * rho.ndim
+    sl[axis] = slice(0, nslab)
+    return rho[tuple(sl)].mean(axis=axis)
 
 
 def main():
@@ -49,7 +56,7 @@ def main():
         hi = np.percentile(field, 99.95)
         return LogNorm(vmin=lo, vmax=hi)
 
-    cmap = sys.argv[3] if len(sys.argv) > 3 else "magma"   # shared colormap
+    cmap = sys.argv[3] if len(sys.argv) > 3 else "inferno"  # match DM-only figs
     fig, axes = plt.subplots(1, 2, figsize=(11.0, 5.6), constrained_layout=True)
     panels = [
         (axes[0], dm, cmap, "Dark matter"),
