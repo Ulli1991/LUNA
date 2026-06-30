@@ -52,6 +52,5 @@ checkpoints
 paper_figures/*.tex
 paper.tex
 amr_integration_brief.md
-flowchart_luna.tex
 paper.tex.bak
 *.aux
