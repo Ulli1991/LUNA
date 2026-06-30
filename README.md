@@ -359,7 +359,7 @@ If you use this code in your research, please cite:
 
 ## License
 
-[Add your license here]
+BSD 3-Clause License — see [LICENSE](LICENSE).
 
 ---
 
@@ -381,5 +381,4 @@ For questions or issues:
 
 ---
 
-**Last Updated:** 2025-12-02
-**Status:** Production-ready for single-GPU, multi-GPU (JAX sharding) works on NVIDIA, issues on AMD ROCm
+**Status:** Production-ready for single-GPU; multi-GPU via JAX `shard_map` on NVIDIA. AMD ROCm not yet supported.

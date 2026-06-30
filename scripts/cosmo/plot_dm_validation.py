@@ -22,7 +22,7 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 
 LUNA = "snapshots/cosmo_dm_l9_512/snap_a1.0001.hdf5"
 AREPO = os.environ.get("LUNA_AREPO_DM_SNAP", "arepo/cosmo_l9_dmo/snap_003.hdf5")
-OUT = "paper_figures"
+OUT = "code_paper_figs"
 
 
 def _load_pos(fn):

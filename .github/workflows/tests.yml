@@ -1,0 +1,41 @@
+name: tests
+
+# Fast unit/regression tier only (CPU, no GPU). The slow integration tests
+# (full sims, shard_map JIT, autodiff-through-FMG) and the multigpu tests are
+# deselected here — run them locally / on a GPU node with:
+#   pytest                       # everything
+#   LUNA_MULTIGPU_TEST=1 pytest  # also the multi-process tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel an in-progress run when new commits are pushed to the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install (CPU JAX + test deps)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - name: Fast tests (CPU, ~30s)
+        run: pytest -m "not slow" -q
