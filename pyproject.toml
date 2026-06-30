@@ -26,8 +26,8 @@ classifiers = [
 # all paper-figure runs were produced. GPU build comes from the CUDA wheel
 # index — see README.md.
 dependencies = [
-    "jax==0.8.1",
-    "jaxlib==0.8.1",
+    "jax==0.10.1",
+    "jaxlib==0.10.1",
     "h5py>=3.0",
     "numpy>=1.23",
 ]
