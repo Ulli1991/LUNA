@@ -21,6 +21,11 @@ job_*
 *.swo
 *out*
 *err*
+# Re-assert the figure whitelist LAST: the broad *out*/*err* log rules above
+# otherwise re-ignore PNGs whose names merely contain those substrings
+# (e.g. pm_force_1ov[err]2.png), silently dropping README/paper figures.
+!figures/*.png
+!paper_figures/*.png
 *.nsys-rep
 *.sqlite
 
