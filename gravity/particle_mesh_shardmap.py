@@ -344,13 +344,18 @@ def _build_exchange_body(Nx, dx, box, mesh):
         p_n = _take(p_all)
         mass_n = _take(mass_all)
         nact = jnp.maximum(slot[-1] + 1, 0)               # total active across the 3C
-        act_n = (jnp.arange(C) < nact).astype(active_l.dtype)  # filled slots are the front nact
+        # If a slab's active count exceeds capacity C, the slots with dest>=C were
+        # silently dropped by the scatter above. Count that overflow so a capacity
+        # violation can NEVER be silent: any nonzero n_bad now means particles were
+        # lost/misplaced and the caller must raise dm_capacity_factor (or shorten dt).
+        n_overflow = jnp.maximum(nact - C, 0).astype(jnp.int32)
+        act_n = (jnp.arange(C) < jnp.minimum(nact, C)).astype(active_l.dtype)  # front min(nact,C)
 
-        # diagnostics: anything still out of slab, and peak occupancy
+        # diagnostics: still-out-of-slab (multi-hop) + capacity overflow, and peak occupancy
         xw2 = jnp.mod(pos_n[:, 0], box)
         tgt2 = jnp.clip((xw2 / slab_w).astype(jnp.int32), 0, ndev - 1)
         bad = (act_n > 0) & (tgt2 != d)
-        n_bad = jax.lax.psum(jnp.sum(bad.astype(jnp.int32)), "x")
+        n_bad = jax.lax.psum(jnp.sum(bad.astype(jnp.int32)) + n_overflow, "x")
         occ = jnp.sum(act_n > 0).astype(jnp.int32)
         max_occ = jax.lax.pmax(occ, "x")
         return pos_n, p_n, mass_n, act_n, n_bad, max_occ

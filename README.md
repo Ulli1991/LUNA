@@ -64,6 +64,14 @@ LUNA evolves the Euler equations with an unsplit, second-order **MUSCL-Hancock**
 
 *Cosmological (super-comoving) integration — the **Zel'dovich pancake**, run end-to-end through `main` with the FMG multigrid self-gravity. A single sinusoidal mode collapses in an Einstein–de Sitter universe; LUNA integrates the **super-comoving** Euler equations (RAMSES / Martel–Shapiro variables ρ̃ = a³ρ, ṽ = a·v_pec, P̃ = a⁵P, super-comoving time dτ = dt/a²) with the gravity source coefficient **4πG → (3/2)Ωₘ a(τ)** and `dloga`-capped timesteps advanced through the cosmological a(τ) table. Evolved from z = 2.33 (a = 0.3) to **z = 0**, deep into the nonlinear regime (ρ̃_max grows 1 → 3, just shy of the caustic at z_c = −1/3): LUNA (red dashed) tracks the exact pre-caustic Zel'dovich solution (black) to **L1 = 2.3×10⁻³ (density), 3.9×10⁻³ (velocity)** in both the collapsing density pancake and the sawtooth peculiar velocity. This validates the comoving time integration and the multigrid Poisson coefficient swap — the gateway test toward cosmological-volume simulations.*
 
+![Particle-mesh force vs 1/r²: LUNA PM force and the PM/Newtonian ratio](figures/pm_force_1overr2.png)
+
+*Particle–mesh **force accuracy** vs the Newtonian 1/r². Two equal point masses are cloud-in-cell deposited onto the PM grid and the force on one is measured as a function of separation (in cells). **Left:** the LUNA PM force (blue) tracks the analytic Gm/r² (dashed) down to ~3–4 cells. **Right:** the PM/Newtonian ratio holds to ~1% for r ≳ 4 cells and rolls off below ~2 cells, where the cloud-in-cell assignment softens the force — the effective force softening is ~1.2 cells, exactly as expected for a CIC–PM scheme.*
+
+![CIC self-force cancellation: sub-cell scan and 64 random positions](figures/pm_self_force.png)
+
+*CIC **self-force cancellation** — a single particle must feel zero force from its own density deposit. Scanning one particle across a cell (blue) and at 64 random positions (orange), the residual self-force stays at ~10⁻⁷ of Gm/Δx² (and falls to machine zero when the particle sits exactly on a grid node), confirming the deposit → FMG-solve → anti-symmetric gradient → gather chain is self-force-free by construction. Together with the 1/r² test above this validates LUNA's gravity solver **end to end**, from the pairwise force law to self-consistency.*
+
 ## Parallel scaling
 
 ![How the shard_map halo exchange works](figures/halo_exchange_shardmap.png)
@@ -91,10 +99,6 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 ![LUNA out of the explosion set — blast-driven (top) and turbulence-driven (bottom)](figures/autodiff_LUNA_emergence_Nx256.png)
 
 *Two ways to make the word **LUNA** emerge from a physical simulation by optimizing only the initial conditions through a long, nonlinear evolution. **Top — blast-driven:** the free parameter is the **entire per-cell initial internal-energy field** e(𝐱,0) of a uniform medium at rest — no placed seeds — optimized by reverse-mode AD through the production 2D solver. Initialized **uniform** and matched to the target only after a **long evolution** (~0.4 domain sound-crossings): in a cold medium every energy peak launches an *outgoing* Sedov blast, so a target-shaped IC physically cannot survive — the only way to reach the late-time target is to seat scattered blast sites whose shells **collide and converge**. The left panel (the converged e(𝐱,0)) is a **disordered ensemble of Sedov sites that does not spell anything**; the snapshots (left → right) show those blasts expanding, colliding, and merging into a curved shock network whose late-time energy forms the word. The word is produced by the collision dynamics, not the initial layout — the IC could not have been assembled by hand. **Bottom — turbulence-driven:** the driver is instead a band-limited initial **velocity field** v(𝐱,0) of an isothermal, uniform-density gas, optimized so the gas it **stirs and compresses** has a late-time density matching the target. The left panel is the optimized velocity field — a multi-scale swirling pattern that **does not spell anything**; the snapshots show the uniform gas advected and compressed along the converging streamlines into a filamentary network whose late-time **density** forms the word. (Both 256²; blast on 4 GPUs, turbulence at Mach ≈ 3, isothermal. The same recipe applied to an arbitrary photograph — you + Luna — runs through the identical pipeline.)*
-
-![The author and LUNA emerging from overlapping blast waves](figures/autodiff_luna_emergence_blast_lu_target_edge_Nx256.png)
-
-*The same blast-driven recipe applied to a **photograph** instead of a word — the author and **LUNA**, the code's namesake. The subject is cropped from the original photo onto a plain constant-density background and reduced to its **contours**; that outline is the late-time target, and reverse-mode AD optimizes the **entire initial internal-energy field** e(𝐱,0) of a uniform medium at rest so the collisions of expanding Sedov shells trace it out. The initial condition is genuine blast-wave noise — a field of scattered hot sites, evolved for ~0.4 domain sound-crossings — so a target-shaped IC physically cannot survive: the optimized e(𝐱,0) at left is a **disordered ensemble of blast sites that does not resemble the target**, and the figure is assembled purely by the collision and merger of the overlapping shells into a shock-front network (left → right). 256², blast-driven, full per-cell IC field optimized through the production 2D solver.*
 
 ### 3 · Inverse modeling — IC recovery through cooling and self-gravity
 
@@ -135,6 +139,16 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 *Spherically-averaged radial profiles of n_H, v_rad, and T at t = 60 Myr for each resolution. Computed by 3D binning in radius from the box center. Useful for direct comparison against the analytic CC85 solution (n ∝ r⁻², roughly constant v ∝ v_∞ outside R_⋆, and adiabatic T ∝ r⁻⁴ᐟ³ in the steady wind) and Schneider+ 2018 CGOLS Figure 4.*
 
 ## Cosmological gas + dark matter
+
+Before the coupled run, the **DM-only** cosmological gravity is validated head-to-head against a production cosmology code on **matched initial conditions**.
+
+![DM-only cosmic web at z=0, identical IC — LUNA PM (left) vs Arepo TreePM (right)](figures/cosmic_web_arepo_vs_luna.png)
+
+*DM-only validation against **Arepo** — the **identical** 512³ MUSIC initial condition (25 Mpc/h box, CAMELS fiducial cosmology, 134M particles) evolved z = 50 → 0 by LUNA's multigrid Particle–Mesh (left) and the Arepo TreePM moving-mesh code (right). Projected dark-matter density: the cosmic web is reproduced **structure-for-structure** — the same clusters, filaments, and voids in the same places — with LUNA's pure-PM haloes marginally smoother than Arepo's TreePM cores, the expected consequence of the grid force resolution.*
+
+![DM power spectrum at z=0, LUNA PM vs Arepo TreePM, with ratio](figures/dm_powerspec_arepo_vs_luna.png)
+
+*Dark-matter **power spectrum** at z = 0 for the same run, measured with an **identical CIC estimator** for both codes. LUNA (PM) and Arepo (TreePM) track one another across the resolved range; the high-k deficit of the pure-PM scheme relative to TreePM (right panel) reflects the grid force softening below a few cells, while the large-scale modes agree. This validates LUNA's cosmological gravity and super-comoving integration against a mature production code on the same initial data.*
 
 ![LUNA coupled gas + dark-matter cosmic web at z=0 — dark matter (left), gas (right)](figures/cosmic_web_512_z0.png)
 

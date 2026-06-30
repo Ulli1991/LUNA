@@ -32,6 +32,7 @@ def main():
         Nx=int(os.environ.get("LUNA_DM_MESH", "64")),
         a_end=float(os.environ.get("LUNA_DM_AEND", "1.0")),
         dm_domain_decomp=os.environ.get("LUNA_DM_SLAB", "0") == "1",
+        dm_capacity_factor=float(os.environ.get("LUNA_DM_CAP", "1.5")),
         POISSON_FMG_EXTRA_VCYCLES=int(os.environ.get("LUNA_DM_VCYC", "4")),
         dloga_max=0.02,
         output_dir=os.environ.get(
