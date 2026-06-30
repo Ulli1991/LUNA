@@ -16,7 +16,7 @@ Env: LUNA_TURB_NX, LUNA_TURB_NSTEPS, LUNA_TURB_NITER, LUNA_TURB_MESH,
 import os
 import sys
 
-sys.path.insert(0, "/raven/u/uli/jax-hydro")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from dataclasses import replace
 

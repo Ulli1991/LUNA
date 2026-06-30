@@ -10,7 +10,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-sys.path.insert(0, "/raven/u/uli/jax-hydro")
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 jax.config.update("jax_enable_x64", True)
 
 from gravity.poisson_diff import solve_poisson_fmg_diff, solve_poisson_fmg_bidiff

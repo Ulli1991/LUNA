@@ -2,7 +2,7 @@
 super-comoving runner + multigrid FMG gravity) and compare to the exact
 Zel'dovich solution.
 
-  JAX_PLATFORM_NAME=cpu ~/jax-env/bin/python scripts/cosmo/run_pancake.py
+  JAX_PLATFORM_NAME=cpu python scripts/cosmo/run_pancake.py
 """
 import os
 import sys
@@ -43,7 +43,7 @@ def build_cfg():
         production_mode=True,
         PLOT_AFTER_SIM=False,
         clear_output_dir=True,
-        output_dir="/ptmp/uli/jax-hydro/snapshots/zeldovich_pancake",
+        output_dir="snapshots/zeldovich_pancake",
     )
 
 

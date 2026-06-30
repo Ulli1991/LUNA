@@ -1,61 +1,57 @@
-# Byte-compiled / optimized / DLL files
+# ───────────────────────────── Python / build ────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
+# local copy of template_config.py (per-run knobs)
 config.py
 
-# HDF5 output files
+# ──────────────────────── Simulation data & output ───────────────────────
 *.hdf5
-*.png
-# But keep validation figures embedded in the README and paper-staging copies
-!figures/*.png
-!paper_figures/*.png
+*.h5
+# snapshot files + the snapshots* output symlinks
+snap*
+# Output dirs are symlinks into scratch (/ptmp). A no-slash pattern matches a
+# symlink too (a "name/" pattern would not), so these stay untracked.
+reference
+checkpoints
 
-# Log files
+# ───────────────────────── Logs / job output / profiling ─────────────────
 *.log
 job.out*
 job.err*
-snap*
 job_*
-*.swp
-*.swo
 *out*
 *err*
-# Re-assert the figure whitelist LAST: the broad *out*/*err* log rules above
-# otherwise re-ignore PNGs whose names merely contain those substrings
-# (e.g. pm_force_1ov[err]2.png), silently dropping README/paper figures.
-!figures/*.png
-!paper_figures/*.png
 *.nsys-rep
 *.sqlite
 
-# Virtual environment
+# ────────────────────────────────── Figures ──────────────────────────────
+# Only the canonical paper/README figures are tracked; figures/ is scratch.
+# NOTE: this whitelist must stay AFTER the broad *out*/*err* rules above,
+# otherwise PNGs whose names merely contain those substrings get re-ignored
+# (e.g. pm_force_1ov[err]2.png).
+*.png
+!code_paper_figs/*.png
+
+# ───────────────────────────────── Editor / OS ───────────────────────────
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ──────────────────────────── Virtual environments ───────────────────────
 venv/
 env/
 *.venv/
 
-# OS-specific files
-.DS_Store
-Thumbs.db
-
-# bash scripts in main
-/*.sh
-
-# Simulation output dirs — now symlinks into /ptmp (move_all_to_ptmp.sh).
-# No trailing slash: a "name/" pattern matches only real directories, NOT a
-# symlink, so these would otherwise keep showing up as untracked.
-# (snapshots* are already covered by the snap* rule above.)
-reference
-checkpoints
-
-# Paper figure staging: ship the PNGs, not the tex source
-paper_figures/*.tex
+# ───────────────────────── Paper / LaTeX (ship the PDF) ───────────────────
 paper.tex
-amr_integration_brief.md
 paper.tex.bak
 *.aux
+amr_integration_brief.md
 
-# Project-internal SLURM submit scripts are not shipped; only the templates
-# under submit/examples/ are tracked.
+# ────────────────── SLURM submit scripts (only examples shipped) ──────────
+# stray top-level shell scripts
+/*.sh
 submit/*
 !submit/examples/

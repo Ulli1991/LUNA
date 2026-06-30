@@ -20,8 +20,8 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.getcwd())
 from utils.figstyle import apply_style, decorate, FIGSIZE
 
-LUNA = "/ptmp/uli/jax-hydro/snapshots/cosmo_dm_l9_512/snap_a1.0001.hdf5"
-AREPO = "/ptmp/uli/arepo/cosmo_l9_dmo/snap_003.hdf5"
+LUNA = "snapshots/cosmo_dm_l9_512/snap_a1.0001.hdf5"
+AREPO = os.environ.get("LUNA_AREPO_DM_SNAP", "arepo/cosmo_l9_dmo/snap_003.hdf5")
 OUT = "paper_figures"
 
 

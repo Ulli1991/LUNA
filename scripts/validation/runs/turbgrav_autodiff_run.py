@@ -17,7 +17,7 @@ Env: LUNA_TG_NX, LUNA_TG_NSTEPS, LUNA_TG_NITER, LUNA_TG_G (grav. strength),
 import os
 import sys
 
-sys.path.insert(0, "/raven/u/uli/jax-hydro")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from dataclasses import replace
 

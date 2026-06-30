@@ -10,7 +10,7 @@ Env: LUNA_M82_NX, LUNA_M82_TEND (Myr), LUNA_M82_SELFGRAV, LUNA_M82_FWDONLY.
 import os
 import sys
 
-sys.path.insert(0, "/raven/u/uli/jax-hydro")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from dataclasses import replace
 

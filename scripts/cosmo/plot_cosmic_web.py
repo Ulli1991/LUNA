@@ -32,9 +32,9 @@ def _proj(rho, axis=2, slab_frac=0.25):
 
 def main():
     fn = sys.argv[1] if len(sys.argv) > 1 else (
-        "/ptmp/uli/jax-hydro/snapshots/cosmo_hydro/coupled_a0.9708.hdf5")
+        "snapshots/cosmo_hydro/coupled_a0.9708.hdf5")
     out = sys.argv[2] if len(sys.argv) > 2 else (
-        "/raven/u/uli/jax-hydro/figures/cosmic_web_gas_dm.png")
+        "figures/cosmic_web_gas_dm.png")
 
     with h5py.File(fn, "r") as f:
         rho_dm = f["rho_dm"][:]

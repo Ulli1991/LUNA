@@ -19,7 +19,7 @@ from scripts.validation.metrics import radial_profile
 
 
 BASE_DIR = "snapshots/sedov3d_arepo_Nx1024"           # baseline (auto-sharded)
-SM_DIR = "/ptmp/uli/jax-hydro/snapshots/sedov_smoke_shardmap_Nx1024"  # shardmap
+SM_DIR = "snapshots/sedov_smoke_shardmap_Nx1024"  # shardmap
 
 
 def load_snap(snapdir):

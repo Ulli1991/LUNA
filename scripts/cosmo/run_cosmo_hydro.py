@@ -30,7 +30,7 @@ def main():
         Config(),
         CosmoHydro=True, CosmologicalIntegration=True,
         music_ic_path=os.environ.get(
-            "LUNA_BARY_IC", "/ptmp/uli/jax-hydro/music/ics_arepo_l8_bary.hdf5"),
+            "LUNA_BARY_IC", "music/ics_arepo_l8_bary.hdf5"),
         Nx=int(os.environ.get("LUNA_DM_MESH", "256")),
         a_end=float(os.environ.get("LUNA_DM_AEND", "1.0")),
         dloga_max=0.02,
@@ -58,7 +58,7 @@ def main():
         BOUNDARY=0,
         ORDER=1, LIMITER=1, CFL=0.4, riemann_solver="hllc",
         output_dir=os.environ.get(
-            "LUNA_DM_OUT", "/ptmp/uli/jax-hydro/snapshots/cosmo_hydro"),
+            "LUNA_DM_OUT", "snapshots/cosmo_hydro"),
         production_mode=True, PLOT_AFTER_SIM=False,
     )
     run(cfg)

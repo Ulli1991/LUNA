@@ -19,7 +19,7 @@ Env: LUNA_PA_NX (default 64), LUNA_PA_G (default 7.5, matches the Jeans test).
 import os
 import sys
 
-sys.path.insert(0, "/raven/u/uli/jax-hydro")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 import numpy as np
 

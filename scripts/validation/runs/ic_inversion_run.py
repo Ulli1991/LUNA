@@ -13,7 +13,7 @@ Env: LUNA_AD_PROBLEM (jeans|sedov), LUNA_AD_NX, LUNA_AD_NSTEPS, LUNA_AD_NITER.
 import os
 import sys
 
-sys.path.insert(0, "/raven/u/uli/jax-hydro")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from dataclasses import replace
 

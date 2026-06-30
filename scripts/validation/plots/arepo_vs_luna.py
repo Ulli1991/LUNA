@@ -1,9 +1,9 @@
 """AREPO vs LUNA radial profile comparison at the end of each gravity test.
 
 Loads matched final snapshots from
-  /raven/u/uli/arepo/run/examples/<test>/output/snap_XXX.hdf5
+  $AREPO_RUN/<test>/output/snap_XXX.hdf5
 and the LUNA equivalent under
-  /raven/u/uli/jax-hydro/snapshots/<test>_Nx64/snapdir_NNN/*.hdf5
+  snapshots/<test>_Nx64/snapdir_NNN/*.hdf5
 bins by radius from the cloud centre, and overlays ρ(r), |v_r|(r), P(r).
 
 For Evrard we plot at t=0.8 (Springel 2010 Fig 41 reference time).
@@ -24,8 +24,8 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 apply_style()
 
 
-AREPO_RUN = "/raven/u/uli/arepo/run/examples"
-LUNA_SNAP = "/raven/u/uli/jax-hydro/snapshots"
+AREPO_RUN = os.environ.get("AREPO_RUN", "arepo/run/examples")
+LUNA_SNAP = "snapshots"
 
 
 # ---------------------------------------------------------------------------

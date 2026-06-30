@@ -9,7 +9,7 @@ re-shapes the per-meshblock data into flat 1D numpy arrays in the same
 format LUNA's plot scripts expect: {t, gamma, x, rho, vx, P, e_int}.
 
 Set ATHENAK_VIS_PATH if your AthenaK install is somewhere other than
-/raven/u/uli/athenak/vis/python.
+$ATHENAK_VIS (default: athenak/vis/python).
 """
 import os
 import sys
@@ -18,7 +18,7 @@ import numpy as np
 
 ATHENAK_VIS_PATH = os.environ.get(
     "ATHENAK_VIS_PATH",
-    "/raven/u/uli/athenak/vis/python",
+    os.environ.get("ATHENAK_VIS", "athenak/vis/python"),
 )
 
 

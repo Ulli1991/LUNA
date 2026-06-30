@@ -17,7 +17,7 @@ sys.path.insert(0, os.getcwd())
 
 def main():
     snap = os.environ.get(
-        "LUNA_DM_SNAP", "/ptmp/uli/jax-hydro/snapshots/cosmo_dm/snap_a1.0004.hdf5")
+        "LUNA_DM_SNAP", "snapshots/cosmo_dm/snap_a1.0004.hdf5")
     nbin = int(os.environ.get("LUNA_DM_NBIN", "1600"))
     with h5py.File(snap, "r") as f:
         box = float(f["Header"].attrs["BoxSize"])

@@ -230,7 +230,7 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
               f"{'delta_max':>10} {'rho~gas_max':>11}")
 
     snap_every = int(getattr(cfg, "cosmo_snap_every", 0))
-    out_dir = getattr(cfg, "output_dir", "/ptmp/uli/jax-hydro/snapshots/cosmo_hydro")
+    out_dir = getattr(cfg, "output_dir", "snapshots/cosmo_hydro")
 
     def write_snap(a_now, U_arr, pos):
         """Periodic checkpoint: gas + DM (CIC) density grids, so a run that is
@@ -586,7 +586,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         return aa * aa * 8.2543e-3 * T_max / mu
 
     snap_every = int(getattr(cfg, "cosmo_snap_every", 0))
-    out_dir = getattr(cfg, "output_dir", "/ptmp/uli/jax-hydro/snapshots/cosmo_hydro")
+    out_dir = getattr(cfg, "output_dir", "snapshots/cosmo_hydro")
 
     def write_snap(a_now, U_arr, pos, mass, active):
         import os

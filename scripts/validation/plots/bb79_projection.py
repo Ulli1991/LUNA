@@ -20,8 +20,8 @@ apply_style()
 LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
 
 
-AREPO_SNAP = "/raven/u/uli/arepo/run/examples/bb79_3d/output"
-LUNA_SNAP  = "/raven/u/uli/jax-hydro/snapshots/bb_Nx64"
+AREPO_SNAP = os.environ.get("AREPO_SNAP", "arepo/run/examples/bb79_3d/output")
+LUNA_SNAP  = "snapshots/bb_Nx64"
 
 
 def pick_snap_closest(pattern, target_t):

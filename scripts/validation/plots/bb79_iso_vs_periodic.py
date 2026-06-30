@@ -18,8 +18,8 @@ apply_style()
 
 LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
 
-ISO_DIR  = "/raven/u/uli/jax-hydro/snapshots/bb_iso_minmod_Nx256"
-PER_DIR  = "/raven/u/uli/jax-hydro/snapshots/bb_periodic_minmod_Nx256"
+ISO_DIR  = "snapshots/bb_iso_minmod_Nx256"
+PER_DIR  = "snapshots/bb_periodic_minmod_Nx256"
 
 
 def col_density(snapdir):

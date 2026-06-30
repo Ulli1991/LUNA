@@ -262,7 +262,7 @@ def _write_snapshot(cfg, pos, vel_gadget, a, ic):
     import os
 
     import h5py
-    out_dir = getattr(cfg, "output_dir", "/ptmp/uli/jax-hydro/snapshots/cosmo_dm")
+    out_dir = getattr(cfg, "output_dir", "snapshots/cosmo_dm")
     os.makedirs(out_dir, exist_ok=True)
     fn = os.path.join(out_dir, f"snap_a{a:.4f}.hdf5")
     n = pos.shape[0]

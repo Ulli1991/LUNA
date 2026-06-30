@@ -28,7 +28,7 @@ def main():
         Config(),
         CosmoDM=True, CosmologicalIntegration=True,
         music_ic_path=os.environ.get(
-            "LUNA_DM_IC", "/ptmp/uli/jax-hydro/music/ics_arepo.hdf5"),
+            "LUNA_DM_IC", "music/ics_arepo.hdf5"),
         Nx=int(os.environ.get("LUNA_DM_MESH", "64")),
         a_end=float(os.environ.get("LUNA_DM_AEND", "1.0")),
         dm_domain_decomp=os.environ.get("LUNA_DM_SLAB", "0") == "1",
@@ -36,7 +36,7 @@ def main():
         POISSON_FMG_EXTRA_VCYCLES=int(os.environ.get("LUNA_DM_VCYC", "4")),
         dloga_max=0.02,
         output_dir=os.environ.get(
-            "LUNA_DM_OUT", "/ptmp/uli/jax-hydro/snapshots/cosmo_dm"),
+            "LUNA_DM_OUT", "snapshots/cosmo_dm"),
         production_mode=True, PLOT_AFTER_SIM=False,
     )
     run(cfg)
