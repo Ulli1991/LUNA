@@ -15,427 +15,108 @@ import jax
 import jax.numpy as jnp
 
 
-def hllc_flux_primitive_2d(W_L, W_R, axis, gamma):
+def _hllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R,
+               vt1_L, vt1_R, vt2_L, vt2_R, gamma):
+    """Core HLLC flux in (normal, transverse) coordinates.
+
+    Returns the five conservative flux components
+    ``(F_rho, F_mn, F_mt1, F_mt2, F_E)`` where ``F_mn`` is the NORMAL-momentum
+    flux and ``F_mt1/F_mt2`` the transverse ones. The 1D/2D/3D wrappers below
+    map array axes onto (normal, transverse) and pad the unused transverse
+    velocities with zeros, exactly as the L-HLLC solver does.
+
+    Memory-friendly (per-component ``jnp.where``, no stacked intermediates) and
+    autodiff-safe (every division is guarded away from exact zero, so the VJP
+    of the unselected branch cannot pull out a NaN; guarded faces are never
+    selected, so forward results are unchanged).
     """
-    HLLC Riemann solver for 2D Euler equations using PRIMITIVE variables.
-
-    Parameters
-    ----------
-    W_L, W_R : array, shape (4, Nx, Ny)
-        Left and right PRIMITIVE states: [rho, vx, vy, P]
-    axis : int (static)
-        0 → x-direction flux
-        1 → y-direction flux
-    gamma : float
-        Ratio of specific heats
-
-    Returns
-    -------
-    flux : array, shape (4, Nx, Ny)
-        HLLC flux in CONSERVATIVE form [rho*v, rho*v*v+P, rho*v*v, (E+P)*v]
-    """
-    # Extract primitives (already have them!)
-    rho_L, vx_L, vy_L, P_L = W_L
-    rho_R, vx_R, vy_R, P_R = W_R
-
-    # Precompute gamma - 1
     gm1 = gamma - 1.0
-
-    if axis == 0:  # x-direction flux
-        # Normal and tangential velocities
-        vn_L, vt_L = vx_L, vy_L
-        vn_R, vt_R = vx_R, vy_R
-
-        # Sound speed (primitives already available!)
-        c_L = jnp.sqrt(gamma * P_L / rho_L)
-        c_R = jnp.sqrt(gamma * P_R / rho_R)
-
-        # Wave speeds
-        S_L = jnp.minimum(vn_L - c_L, vn_R - c_R)
-        S_R = jnp.maximum(vn_L + c_L, vn_R + c_R)
-
-        # Cached denominators
-        denom_L = rho_L * (S_L - vn_L)
-        denom_R = rho_R * (S_R - vn_R)
-
-        # Middle speed
-        S_M = (P_R - P_L + denom_L * vn_L - denom_R * vn_R) / (denom_L - denom_R)
-
-        # Star states (densities)
-        rho_star_L = denom_L / (S_L - S_M)
-        rho_star_R = denom_R / (S_R - S_M)
-
-        # Energy (need to compute from primitives)
-        ke_L = 0.5 * (vn_L * vn_L + vt_L * vt_L)
-        ke_R = 0.5 * (vn_R * vn_R + vt_R * vt_R)
-        E_L = P_L / gm1 + rho_L * ke_L
-        E_R = P_R / gm1 + rho_R * ke_R
-
-        # Star energies
-        E_star_L = E_L / rho_L + (S_M - vn_L) * (S_M + P_L / denom_L)
-        E_star_R = E_R / rho_R + (S_M - vn_R) * (S_M + P_R / denom_R)
-
-        # Momentum (from primitives)
-        rho_vn_L = rho_L * vn_L
-        rho_vn_R = rho_R * vn_R
-        rho_vt_L = rho_L * vt_L
-        rho_vt_R = rho_R * vt_R
-
-        # Conservative states (for star regions)
-        U_L = jnp.stack([rho_L, rho_vn_L, rho_vt_L, E_L])
-        U_R = jnp.stack([rho_R, rho_vn_R, rho_vt_R, E_R])
-
-        U_star_L = jnp.stack(
-            [rho_star_L, rho_star_L * S_M, rho_star_L * vt_L, rho_star_L * E_star_L]
-        )
-        U_star_R = jnp.stack(
-            [rho_star_R, rho_star_R * S_M, rho_star_R * vt_R, rho_star_R * E_star_R]
-        )
-
-        # Fluxes (in conservative form)
-        F_L = jnp.stack([rho_vn_L, rho_vn_L * vn_L + P_L, rho_vn_L * vt_L, (E_L + P_L) * vn_L])
-        F_R = jnp.stack([rho_vn_R, rho_vn_R * vn_R + P_R, rho_vn_R * vt_R, (E_R + P_R) * vn_R])
-
-    else:  # y-direction flux
-        # Normal and tangential velocities
-        vn_L, vt_L = vy_L, vx_L
-        vn_R, vt_R = vy_R, vx_R
-
-        # Sound speed
-        c_L = jnp.sqrt(gamma * P_L / rho_L)
-        c_R = jnp.sqrt(gamma * P_R / rho_R)
-
-        # Wave speeds
-        S_L = jnp.minimum(vn_L - c_L, vn_R - c_R)
-        S_R = jnp.maximum(vn_L + c_L, vn_R + c_R)
-
-        # Cached denominators
-        denom_L = rho_L * (S_L - vn_L)
-        denom_R = rho_R * (S_R - vn_R)
-
-        # Middle speed
-        S_M = (P_R - P_L + denom_L * vn_L - denom_R * vn_R) / (denom_L - denom_R)
-
-        # Star states
-        rho_star_L = denom_L / (S_L - S_M)
-        rho_star_R = denom_R / (S_R - S_M)
-
-        # Energy
-        ke_L = 0.5 * (vn_L * vn_L + vt_L * vt_L)
-        ke_R = 0.5 * (vn_R * vn_R + vt_R * vt_R)
-        E_L = P_L / gm1 + rho_L * ke_L
-        E_R = P_R / gm1 + rho_R * ke_R
-
-        E_star_L = E_L / rho_L + (S_M - vn_L) * (S_M + P_L / denom_L)
-        E_star_R = E_R / rho_R + (S_M - vn_R) * (S_M + P_R / denom_R)
-
-        # Momentum
-        rho_vn_L = rho_L * vn_L
-        rho_vn_R = rho_R * vn_R
-        rho_vt_L = rho_L * vt_L
-        rho_vt_R = rho_R * vt_R
-
-        # Conservative states (note order: [rho, rho*vx, rho*vy, E])
-        U_L = jnp.stack([rho_L, rho_vt_L, rho_vn_L, E_L])
-        U_R = jnp.stack([rho_R, rho_vt_R, rho_vn_R, E_R])
-
-        U_star_L = jnp.stack(
-            [rho_star_L, rho_star_L * vt_L, rho_star_L * S_M, rho_star_L * E_star_L]
-        )
-        U_star_R = jnp.stack(
-            [rho_star_R, rho_star_R * vt_R, rho_star_R * S_M, rho_star_R * E_star_R]
-        )
-
-        # Fluxes (in conservative form, order: [rho*vy, rho*vy*vx, rho*vy*vy+P, (E+P)*vy])
-        F_L = jnp.stack([rho_vn_L, rho_vn_L * vt_L, rho_vn_L * vn_L + P_L, (E_L + P_L) * vn_L])
-        F_R = jnp.stack([rho_vn_R, rho_vn_R * vt_R, rho_vn_R * vn_R + P_R, (E_R + P_R) * vn_R])
-
-    # HLLC flux selection
-    conditions = [
-        S_L >= 0,
-        (S_L < 0) & (S_M >= 0),
-        (S_M < 0) & (S_R > 0),
-    ]
-
-    choices = [
-        F_L,
-        F_L + S_L * (U_star_L - U_L),
-        F_R + S_R * (U_star_R - U_R),
-    ]
-
-    flux = jnp.select(conditions, choices, default=F_R)
-
-    return flux
-
-
-def hllc_flux_primitive_3d(W_L, W_R, axis, gamma):
-    """
-    HLLC Riemann solver for 3D Euler equations using PRIMITIVE variables.
-
-    Parameters
-    ----------
-    W_L, W_R : array, shape (5, Nx, Ny, Nz)
-        Left and right PRIMITIVE states: [rho, vx, vy, vz, P]
-    axis : int (static)
-        0 → x-direction flux
-        1 → y-direction flux
-        2 → z-direction flux
-    gamma : float
-        Ratio of specific heats
-
-    Returns
-    -------
-    flux : array, shape (5, Nx, Ny, Nz)
-        HLLC flux in CONSERVATIVE form [rho*vn, rho*vn*vx, rho*vn*vy, rho*vn*vz, (E+P)*vn]
-    """
-    rho_L, vx_L, vy_L, vz_L, P_L = W_L
-    rho_R, vx_R, vy_R, vz_R, P_R = W_R
-
-    gm1 = gamma - 1.0
-
-    # Select normal and tangential velocities based on axis
-    if axis == 0:  # x-direction
-        vn_L, vt1_L, vt2_L = vx_L, vy_L, vz_L
-        vn_R, vt1_R, vt2_R = vx_R, vy_R, vz_R
-    elif axis == 1:  # y-direction
-        vn_L, vt1_L, vt2_L = vy_L, vx_L, vz_L
-        vn_R, vt1_R, vt2_R = vy_R, vx_R, vz_R
-    else:  # z-direction
-        vn_L, vt1_L, vt2_L = vz_L, vx_L, vy_L
-        vn_R, vt1_R, vt2_R = vz_R, vx_R, vy_R
-
-    # Sound speeds
     c_L = jnp.sqrt(gamma * P_L / rho_L)
     c_R = jnp.sqrt(gamma * P_R / rho_R)
-
-    # Wave speeds
     S_L = jnp.minimum(vn_L - c_L, vn_R - c_R)
     S_R = jnp.maximum(vn_L + c_L, vn_R + c_R)
-
-    # Cached denominators
     denom_L = rho_L * (S_L - vn_L)
     denom_R = rho_R * (S_R - vn_R)
 
-    # Degenerate faces (near-vacuum / symmetric expansion) can drive these
-    # denominators to exactly zero. The jnp.where flux selection masks the
-    # resulting inf/NaN in the forward pass, but the VJP of jnp.where still
-    # pulls NaN out of the unselected branch (inf * 0 cotangent). Guard every
-    # division site away from exact zero; guarded faces are never selected,
-    # so forward results are bit-identical.
     def _nz(d, eps=1e-20):
         return jnp.where(jnp.abs(d) < eps, jnp.where(d < 0, -eps, eps), d)
 
-    # Middle speed
     S_M = (P_R - P_L + denom_L * vn_L - denom_R * vn_R) / _nz(denom_L - denom_R)
-
-    # Star densities
     rho_star_L = denom_L / _nz(S_L - S_M)
     rho_star_R = denom_R / _nz(S_R - S_M)
 
-    # Total kinetic energy and total energy
     ke_L = 0.5 * (vn_L * vn_L + vt1_L * vt1_L + vt2_L * vt2_L)
     ke_R = 0.5 * (vn_R * vn_R + vt1_R * vt1_R + vt2_R * vt2_R)
     E_L = P_L / gm1 + rho_L * ke_L
     E_R = P_R / gm1 + rho_R * ke_R
-
-    # Star energies
     E_star_L = E_L / rho_L + (S_M - vn_L) * (S_M + P_L / _nz(denom_L))
     E_star_R = E_R / rho_R + (S_M - vn_R) * (S_M + P_R / _nz(denom_R))
 
-    # Normal momentum
     rho_vn_L = rho_L * vn_L
     rho_vn_R = rho_R * vn_R
 
-    # Memory-friendly HLLC: compute each of the 5 flux components separately
-    # via jnp.where chains, then stack ONLY the final scalar fields. The old
-    # code built 8 stacked (5, *shard) intermediates (U_L, U_R, U_star_L/R,
-    # F_L, F_R + 3 choices for jnp.select) — that allocation was ~9 GB per
-    # direction at 1024^3 fp32 / 32 GPUs and dominated the OOM budget.
-
-    def hllc_component(F_L_i, F_R_i, U_L_i, U_R_i, U_star_L_i, U_star_R_i):
-        """Compute one component of the HLLC flux using nested jnp.where."""
+    def comp(F_L_i, F_R_i, U_L_i, U_R_i, U_star_L_i, U_star_R_i):
         f_starL = F_L_i + S_L * (U_star_L_i - U_L_i)
         f_starR = F_R_i + S_R * (U_star_R_i - U_R_i)
         return jnp.where(
-            S_L >= 0, F_L_i, jnp.where(S_M >= 0, f_starL, jnp.where(S_R > 0, f_starR, F_R_i))
-        )
+            S_L >= 0, F_L_i,
+            jnp.where(S_M >= 0, f_starL, jnp.where(S_R > 0, f_starR, F_R_i)))
 
-    # Component 0: rho
-    flux_0 = hllc_component(
-        F_L_i=rho_vn_L,
-        F_R_i=rho_vn_R,
-        U_L_i=rho_L,
-        U_R_i=rho_R,
-        U_star_L_i=rho_star_L,
-        U_star_R_i=rho_star_R,
-    )
-    # Energy (same for all axes)
-    F_L_E = (E_L + P_L) * vn_L
-    F_R_E = (E_R + P_R) * vn_R
-    U_star_L_E = rho_star_L * E_star_L
-    U_star_R_E = rho_star_R * E_star_R
-    flux_E = hllc_component(F_L_E, F_R_E, E_L, E_R, U_star_L_E, U_star_R_E)
-
-    # Momentum components depend on which is normal vs tangential.
-    if axis == 0:  # normal = x, tangential = y, z
-        flux_mx = hllc_component(
-            rho_vn_L * vx_L + P_L,
-            rho_vn_R * vx_R + P_R,
-            rho_L * vx_L,
-            rho_R * vx_R,
-            rho_star_L * S_M,
-            rho_star_R * S_M,
-        )
-        flux_my = hllc_component(
-            rho_vn_L * vy_L,
-            rho_vn_R * vy_R,
-            rho_L * vy_L,
-            rho_R * vy_R,
-            rho_star_L * vt1_L,
-            rho_star_R * vt1_R,
-        )
-        flux_mz = hllc_component(
-            rho_vn_L * vz_L,
-            rho_vn_R * vz_R,
-            rho_L * vz_L,
-            rho_R * vz_R,
-            rho_star_L * vt2_L,
-            rho_star_R * vt2_R,
-        )
-    elif axis == 1:  # normal = y, tangential = x, z
-        flux_mx = hllc_component(
-            rho_vn_L * vx_L,
-            rho_vn_R * vx_R,
-            rho_L * vx_L,
-            rho_R * vx_R,
-            rho_star_L * vt1_L,
-            rho_star_R * vt1_R,
-        )
-        flux_my = hllc_component(
-            rho_vn_L * vy_L + P_L,
-            rho_vn_R * vy_R + P_R,
-            rho_L * vy_L,
-            rho_R * vy_R,
-            rho_star_L * S_M,
-            rho_star_R * S_M,
-        )
-        flux_mz = hllc_component(
-            rho_vn_L * vz_L,
-            rho_vn_R * vz_R,
-            rho_L * vz_L,
-            rho_R * vz_R,
-            rho_star_L * vt2_L,
-            rho_star_R * vt2_R,
-        )
-    else:  # axis == 2: normal = z, tangential = x, y
-        flux_mx = hllc_component(
-            rho_vn_L * vx_L,
-            rho_vn_R * vx_R,
-            rho_L * vx_L,
-            rho_R * vx_R,
-            rho_star_L * vt1_L,
-            rho_star_R * vt1_R,
-        )
-        flux_my = hllc_component(
-            rho_vn_L * vy_L,
-            rho_vn_R * vy_R,
-            rho_L * vy_L,
-            rho_R * vy_R,
-            rho_star_L * vt2_L,
-            rho_star_R * vt2_R,
-        )
-        flux_mz = hllc_component(
-            rho_vn_L * vz_L + P_L,
-            rho_vn_R * vz_R + P_R,
-            rho_L * vz_L,
-            rho_R * vz_R,
-            rho_star_L * S_M,
-            rho_star_R * S_M,
-        )
-
-    return jnp.stack([flux_0, flux_mx, flux_my, flux_mz, flux_E])
+    F_rho = comp(rho_vn_L, rho_vn_R, rho_L, rho_R, rho_star_L, rho_star_R)
+    F_mn = comp(rho_vn_L * vn_L + P_L, rho_vn_R * vn_R + P_R,
+                rho_L * vn_L, rho_R * vn_R, rho_star_L * S_M, rho_star_R * S_M)
+    F_mt1 = comp(rho_vn_L * vt1_L, rho_vn_R * vt1_R,
+                 rho_L * vt1_L, rho_R * vt1_R,
+                 rho_star_L * vt1_L, rho_star_R * vt1_R)
+    F_mt2 = comp(rho_vn_L * vt2_L, rho_vn_R * vt2_R,
+                 rho_L * vt2_L, rho_R * vt2_R,
+                 rho_star_L * vt2_L, rho_star_R * vt2_R)
+    F_E = comp((E_L + P_L) * vn_L, (E_R + P_R) * vn_R, E_L, E_R,
+               rho_star_L * E_star_L, rho_star_R * E_star_R)
+    return F_rho, F_mn, F_mt1, F_mt2, F_E
 
 
 def hllc_flux_primitive_1d(W_L, W_R, axis, gamma):
-    """
-    HLLC Riemann solver for 1D Euler using PRIMITIVE variables.
-
-    Parameters
-    ----------
-    W_L, W_R : array, shape (3, Nx)
-        Left and right PRIMITIVE states: [rho, vx, P]
-    axis : int (static, ignored for 1D)
-        Direction (ignored for 1D)
-    gamma : float
-        Ratio of specific heats
-
-    Returns
-    -------
-    flux : array, shape (3, Nx)
-        HLLC flux in CONSERVATIVE form
-    """
+    """HLLC flux, 1D Euler. W = [rho, vx, P]; returns conservative flux."""
     rho_L, vx_L, P_L = W_L
     rho_R, vx_R, P_R = W_R
+    z = jnp.zeros_like(rho_L)
+    F_rho, F_mn, _, _, F_E = _hllc_core(
+        rho_L, rho_R, vx_L, vx_R, P_L, P_R, z, z, z, z, gamma)
+    return jnp.stack([F_rho, F_mn, F_E])
 
-    gm1 = gamma - 1.0
 
-    # Sound speed
-    c_L = jnp.sqrt(gamma * P_L / rho_L)
-    c_R = jnp.sqrt(gamma * P_R / rho_R)
+def hllc_flux_primitive_2d(W_L, W_R, axis, gamma):
+    """HLLC flux, 2D Euler. W = [rho, vx, vy, P]; axis 0->x, 1->y."""
+    rho_L, vx_L, vy_L, P_L = W_L
+    rho_R, vx_R, vy_R, P_R = W_R
+    z = jnp.zeros_like(rho_L)
+    if axis == 0:                       # normal = x, transverse = y
+        F_rho, F_mn, F_mt, _, F_E = _hllc_core(
+            rho_L, rho_R, vx_L, vx_R, P_L, P_R, vy_L, vy_R, z, z, gamma)
+        return jnp.stack([F_rho, F_mn, F_mt, F_E])
+    else:                               # normal = y, transverse = x
+        F_rho, F_mn, F_mt, _, F_E = _hllc_core(
+            rho_L, rho_R, vy_L, vy_R, P_L, P_R, vx_L, vx_R, z, z, gamma)
+        return jnp.stack([F_rho, F_mt, F_mn, F_E])
 
-    # Wave speeds
-    S_L = jnp.minimum(vx_L - c_L, vx_R - c_R)
-    S_R = jnp.maximum(vx_L + c_L, vx_R + c_R)
 
-    # Denominators
-    denom_L = rho_L * (S_L - vx_L)
-    denom_R = rho_R * (S_R - vx_R)
-
-    # Middle speed
-    S_M = (P_R - P_L + denom_L * vx_L - denom_R * vx_R) / (denom_L - denom_R)
-
-    # Star densities
-    rho_star_L = denom_L / (S_L - S_M)
-    rho_star_R = denom_R / (S_R - S_M)
-
-    # Energy
-    E_L = P_L / gm1 + 0.5 * rho_L * vx_L * vx_L
-    E_R = P_R / gm1 + 0.5 * rho_R * vx_R * vx_R
-
-    E_star_L = E_L / rho_L + (S_M - vx_L) * (S_M + P_L / denom_L)
-    E_star_R = E_R / rho_R + (S_M - vx_R) * (S_M + P_R / denom_R)
-
-    # Momentum
-    rho_vx_L = rho_L * vx_L
-    rho_vx_R = rho_R * vx_R
-
-    # Conservative states
-    U_L = jnp.stack([rho_L, rho_vx_L, E_L])
-    U_R = jnp.stack([rho_R, rho_vx_R, E_R])
-
-    U_star_L = jnp.stack([rho_star_L, rho_star_L * S_M, rho_star_L * E_star_L])
-    U_star_R = jnp.stack([rho_star_R, rho_star_R * S_M, rho_star_R * E_star_R])
-
-    # Fluxes
-    F_L = jnp.stack([rho_vx_L, rho_vx_L * vx_L + P_L, (E_L + P_L) * vx_L])
-    F_R = jnp.stack([rho_vx_R, rho_vx_R * vx_R + P_R, (E_R + P_R) * vx_R])
-
-    # HLLC selection
-    conditions = [
-        S_L >= 0,
-        (S_L < 0) & (S_M >= 0),
-        (S_M < 0) & (S_R > 0),
-    ]
-
-    choices = [
-        F_L,
-        F_L + S_L * (U_star_L - U_L),
-        F_R + S_R * (U_star_R - U_R),
-    ]
-
-    flux = jnp.select(conditions, choices, default=F_R)
-
-    return flux
+def hllc_flux_primitive_3d(W_L, W_R, axis, gamma):
+    """HLLC flux, 3D Euler. W = [rho, vx, vy, vz, P]; axis 0->x, 1->y, 2->z."""
+    rho_L, vx_L, vy_L, vz_L, P_L = W_L
+    rho_R, vx_R, vy_R, vz_R, P_R = W_R
+    if axis == 0:                       # normal = x, transverse = y, z
+        F_rho, F_mn, F_t1, F_t2, F_E = _hllc_core(
+            rho_L, rho_R, vx_L, vx_R, P_L, P_R, vy_L, vy_R, vz_L, vz_R, gamma)
+        return jnp.stack([F_rho, F_mn, F_t1, F_t2, F_E])
+    elif axis == 1:                     # normal = y, transverse = x, z
+        F_rho, F_mn, F_t1, F_t2, F_E = _hllc_core(
+            rho_L, rho_R, vy_L, vy_R, P_L, P_R, vx_L, vx_R, vz_L, vz_R, gamma)
+        return jnp.stack([F_rho, F_t1, F_mn, F_t2, F_E])
+    else:                               # normal = z, transverse = x, y
+        F_rho, F_mn, F_t1, F_t2, F_E = _hllc_core(
+            rho_L, rho_R, vz_L, vz_R, P_L, P_R, vx_L, vx_R, vy_L, vy_R, gamma)
+        return jnp.stack([F_rho, F_t1, F_t2, F_mn, F_E])
 
 
 # Dispatcher
