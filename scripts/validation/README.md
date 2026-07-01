@@ -24,7 +24,7 @@ scripts/validation/
 ## Usage
 
 Each plot script is a `python -m` entry point that:
-1. Runs the required LUNA simulations via `runner.sweep` / `runner.run_one`.
+1. Runs the required LUNA simulations via `runner.sweep`.
 2. Loads the AthenaK reference (where applicable) via `athenak_io.load_1d`.
 3. Computes metrics or extracts profiles via `metrics.*`.
 4. Writes a PDF to `figures/`.

@@ -368,7 +368,7 @@ If you use this code in your research, please cite:
   author = {Steinwandel, Ulrich Philipp},
   title  = {LUNA: A Differentiable Astrophysical Hydrodynamics Code},
   year   = {2026},
-  url    = {https://github.com/usteinwandel/luna}
+  url    = {https://github.com/Ulli1991/LUNA}
 }
 ```
 

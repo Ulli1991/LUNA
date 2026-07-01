@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+title: "LUNA: A Differentiable Astrophysical Hydrodynamics Code"
+abstract: >-
+  A differentiable JAX-based hydrodynamics code for stratified flows,
+  ISM physics, and galactic winds, with multi-GPU shard_map parallelism,
+  FMG-Poisson self-gravity, a sharded particle-mesh, and reverse-mode
+  autodiff through the full solver.
+type: software
+authors:
+  - family-names: Steinwandel
+    given-names: Ulrich Philipp
+version: 0.1.0
+license: BSD-3-Clause
+repository-code: "https://github.com/Ulli1991/LUNA"
+url: "https://github.com/Ulli1991/LUNA"
+keywords:
+  - hydrodynamics
+  - JAX
+  - GPU
+  - astrophysics
+  - ISM
+  - differentiable programming

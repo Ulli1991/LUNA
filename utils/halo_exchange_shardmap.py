@@ -59,7 +59,7 @@ def make_halo_shardmap(mesh, spatial_dim):
             U = _pad_axis(U, axis=axis, axis_name=name, n_proc=n_proc[name],
                           periodic=periodic)
         # Reflective / diode: fix the OUTER ghost on the boundary shards after
-        # all axes are padded (matches pad_with_halo_auto's edge-then-correct).
+        # all axes are padded (edge-fill first, then correct the outer ghost).
         if boundary == 2:
             for axis, name in zip(array_axes, axis_names):
                 U = _fix_face(U, axis=axis, axis_name=name, n_proc=n_proc[name],
