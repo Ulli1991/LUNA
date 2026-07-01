@@ -18,8 +18,19 @@ os.environ.setdefault("XLA_FLAGS", "--xla_force_host_platform_device_count=8")
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-skip `@pytest.mark.multigpu` tests unless explicitly enabled."""
+    """Auto-mark the heavy block-AMR tests `slow`, and auto-skip
+    `@pytest.mark.multigpu` tests unless explicitly enabled.
+
+    The `test_amr_*` suite runs real multi-level block sims / shard_map and is
+    minutes-long — it belongs in the full suite, not the fast CI smoke tier
+    (`pytest -m "not slow"`). Marking here keeps the marker in one place.
+    """
     import pytest
+
+    slow = pytest.mark.slow
+    for item in items:
+        if "test_amr_" in item.nodeid:
+            item.add_marker(slow)
 
     if os.environ.get("LUNA_MULTIGPU_TEST"):
         return
