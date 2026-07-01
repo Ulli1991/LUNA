@@ -50,7 +50,7 @@ class Config:
     #     inward pull — for self-gravitating isolated problems prefer 4)
     # 2 = Reflective
     # 4 = Diode outflow (zero-gradient, ghost normal velocity clamped against
-    #     inflow; gas can leave, nothing enters). 3D auto-sharding path only.
+    #     inflow; gas can leave, nothing enters).
     BOUNDARY: int = 1
 
     # Domain decomposition strategy (for multi-GPU parallelization)

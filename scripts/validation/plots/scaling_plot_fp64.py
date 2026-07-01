@@ -19,11 +19,13 @@ import re
 
 import numpy as np
 
-# weak ladder: grid grows with GPU count (per-GPU work grows up the ladder)
-WEAK = [(32, 1), (64, 2), (128, 4), (256, 8), (512, 16),
-        (1024, 32), (2048, 64), (4096, 128)]
-# strong ladder: fixed 1024^3, more GPUs
-STRONG = [(1024, 32), (1024, 64), (1024, 128), (1024, 256)]
+# Weak ladder: grid grows with the GPU count. 2048^3 does NOT fit on 64 GPUs in
+# FP64 (134M cells/GPU OOMs), so its rung is at 128 GPUs (67M cells/GPU, ~10 GB).
+# The 2048^3/128 FP64 run (submit/scaling/luna_fp64_2048_128.sh) is picked up
+# automatically once its log lands; until then it is skipped as a missing point.
+WEAK = [(32, 1), (64, 2), (128, 4), (256, 8), (512, 16), (1024, 32), (2048, 128)]
+# Strong ladder: fixed 1024^3, increasing GPU count.
+STRONG = [(1024, 32), (1024, 64), (1024, 128)]
 
 
 def _newest(pattern):
@@ -74,16 +76,22 @@ def main():
     from utils.figstyle import apply_style, FIGSIZE
     apply_style()
 
-    weak = _collect(WEAK)
-    strong = _collect(STRONG)
+    weak_all = _collect(WEAK)
+    strong_all = _collect(STRONG)
 
     os.makedirs("figures", exist_ok=True)
+    os.makedirs("code_paper_figs", exist_ok=True)
     with open("figures/scaling_fp64_data.csv", "w") as fh:
         fh.write("test,Nx,GPUs,LUNA_Gcells_s,AthenaK_Gcells_s\n")
-        for tag, rows in (("weak", weak), ("strong", strong)):
+        for tag, rows in (("weak", weak_all), ("strong", strong_all)):
             for nx, gpu, l, a in rows:
                 fh.write(f"{tag},{nx},{gpu},{'' if l is None else f'{l:.3f}'},"
                          f"{'' if a is None else f'{a:.3f}'}\n")
+
+    # Plot only configs with a measured LUNA point (skip crashed / not-yet-run),
+    # so the paper figure shows no dangling empty ticks or broken lines.
+    weak = [r for r in weak_all if r[2] is not None]
+    strong = [r for r in strong_all if r[2] is not None]
 
     def _panel(rows, xs, xlabels, xlabel, out):
         """One standalone scaling plot (LUNA vs AthenaK + ideal-linear guide)."""
@@ -113,12 +121,12 @@ def main():
 
     gw = [r[1] for r in weak]
     _panel(weak, gw, [f"{nx}$^3$\n{gpu}" for nx, gpu, *_ in weak],
-           "resolution / GPUs (A100)", "figures/scaling_weak_fp64.png")
+           "resolution / GPUs (A100)", "code_paper_figs/scaling_weak_fp64.png")
     gs = [r[1] for r in strong]
     _panel(strong, gs, [str(x) for x in gs],
-           "GPUs (A100)", "figures/scaling_strong_fp64.png")
+           "GPUs (A100)", "code_paper_figs/scaling_strong_fp64.png")
 
-    for tag, rows in (("weak", weak), ("strong", strong)):
+    for tag, rows in (("weak", weak_all), ("strong", strong_all)):
         for nx, gpu, l, a in rows:
             print(f"  {tag:6s} {nx}^3/{gpu}gpu  LUNA={l}  AthenaK={a}")
 

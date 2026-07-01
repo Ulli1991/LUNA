@@ -36,10 +36,20 @@ plot = ["matplotlib>=3.5"]
 test = ["pytest>=7.0"]
 dev = ["black>=24.0", "ruff>=0.5"]
 
+# LUNA is a research application run from the repo root (`python main.py`,
+# `python -m scripts.validation.runs.*`). The packaging below makes an editable
+# install (`pip install -e .`) expose the full solver library so `import hydro`,
+# `import gravity`, `import main`, etc. resolve from anywhere — not just from the
+# repo root. The one-off validation/figure scripts under `scripts/` are meant to
+# be run in place from the repo root and are intentionally not packaged.
+[tool.setuptools]
+py-modules = ["main", "units", "template_config"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["hydro*", "ic_generation*", "setup*", "time_integration*",
-           "file_io*", "utils*"]
+           "file_io*", "utils*", "gravity*", "sources*", "cosmology*"]
+exclude = ["tests*", "scripts*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

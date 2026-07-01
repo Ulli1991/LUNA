@@ -2,6 +2,11 @@
 __pycache__/
 *.py[cod]
 *$py.class
+# packaging / build artifacts (from `pip install -e .`, `python -m build`)
+*.egg-info/
+build/
+dist/
+.eggs/
 # local copy of template_config.py (per-run knobs)
 config.py
 

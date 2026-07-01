@@ -183,10 +183,15 @@ Before the coupled run, the **DM-only** cosmological gravity is validated head-t
    ```
    Edit `config.py` to set your simulation parameters (grid size, test problem, etc.)
 
-2. **Dependencies**:
+2. **Dependencies**: install the package (pulls the pinned runtime deps from
+   `pyproject.toml`; Python ≥ 3.11):
    ```bash
-   pip install jax jaxlib numpy h5py matplotlib
+   pip install -e .            # runtime (CPU JAX)
+   pip install -e ".[plot]"    # + matplotlib, for the figure scripts
    ```
+   For GPU runs, install the matching CUDA build of JAX instead of the CPU
+   wheel, e.g. `pip install -U "jax[cuda12]==0.10.1"` (see the
+   [JAX install guide](https://docs.jax.dev/en/latest/installation.html)).
 
 ### Run Simulation
 
@@ -250,12 +255,23 @@ python main.py
 ```
 
 For parameter sweeps and validation problems, skip `config.py` and use the
-programmatic runner, which applies overrides on top of the template:
+programmatic runner, which applies overrides on top of the template and goes
+through the same `main.run` entry path as `python main.py`:
 
 ```python
-from scripts.validation.runner import run_one
-run_one(dict(test_problem="Sedov-Blast-3D", Nx=256, Ny=256, Nz=256, ...))
+from scripts.validation.runner import sweep
+
+# Vary a single field; output_dir_template gets the scan value.
+sweep(
+    base_overrides=dict(test_problem="Sedov-Blast-3D", SPATIAL_DIMENSION=3),
+    scan_field="Nx",                       # Ny, Nz default to the same value
+    scan_values=[128, 256, 512],
+    output_dir_template="snapshots/sedov_{}",
+)
 ```
+
+The per-problem run scripts under `scripts/validation/runs/` (invoked as
+`python -m scripts.validation.runs.sedov3d_run`) wrap this for each test.
 
 ---
 
@@ -263,17 +279,18 @@ run_one(dict(test_problem="Sedov-Blast-3D", Nx=256, Ny=256, Nz=256, ...))
 
 ###  Overview
 
-LUNA has two multi-GPU execution paths:
-
-1. **Auto-sharding (default)** — arrays carry a `NamedSharding`; XLA inserts
-   the halo communication automatically. Fine for 2D and small 3D runs.
-2. **shard_map (production 3D)** — set `USE_SHARDMAP=True`. The whole
-   MUSCL-Hancock step runs per-shard with explicit `ppermute` halo
-   exchanges. This sidesteps XLA's auto-sharding working-set blowup and is
-   what the 1024³ production runs use.
+Multi-GPU runs use a single execution path: **shard_map** with explicit
+`ppermute` halo exchanges. Whenever the device mesh spans more than one GPU,
+the whole MUSCL-Hancock step (and the FMG-Poisson solve) runs per-shard, with
+each shard trading one-cell boundary slabs with its face-neighbors via ring
+shifts. This sidesteps the working-set blowup of compiler-inferred sharding
+and is what the 1024³ production runs use. No flag is needed — it is selected
+automatically from the mesh size.
 
 Mesh decomposition is controlled by `DECOMPOSITION` ("auto"/"slab"/"block")
-or pinned exactly with `MESH_SHAPE` (e.g. `(2, 2, 4)` for 16 GPUs on 1024³).
+or pinned exactly with `MESH_SHAPE` (e.g. `(2, 2, 4)` for 16 GPUs on 1024³);
+the run scripts also honour a `LUNA_MESH_SHAPE` env var (comma-separated,
+e.g. `LUNA_MESH_SHAPE=2,2,4`).
 
 ### Quick Start
 
@@ -328,16 +345,16 @@ per flux call on a 4096² grid, A100).
 
 ### Multi-GPU Scaling
 
-Early 2D auto-sharding measurements (2048² strong scaling on one A100 node)
-showed ~95% efficiency at 2–8 GPUs. For production 3D the relevant numbers
-are from the shard_map path:
+Early 2D strong-scaling measurements (2048² on one A100 node) showed ~95%
+efficiency at 2–8 GPUs. For production 3D the relevant numbers are from the
+shard_map path:
 
 - **Sedov 1024³ float32**: runs on 16 A100-40GB (4 nodes × 4),
-  `MESH_SHAPE=(2, 2, 4)`, `USE_SHARDMAP=True`. 8 GPUs OOMs — the unsplit
-  MUSCL working set needs the 16-GPU shard size.
-- shard_map vs auto-sharding at the same node count gave a major step-time
-  improvement at 1024³ (XLA's auto-sharded 3D step materializes large
-  scratch buffers that the explicit per-shard pipeline avoids).
+  `MESH_SHAPE=(2, 2, 4)`. 8 GPUs OOMs — the unsplit MUSCL working set needs
+  the 16-GPU shard size.
+- The explicit per-shard `ppermute` pipeline avoids the large scratch buffers
+  that compiler-inferred 3D sharding materializes, giving a major step-time
+  improvement at 1024³.
 - Keep ≥256³ cells per GPU for good compute/halo ratio.
 
 ---

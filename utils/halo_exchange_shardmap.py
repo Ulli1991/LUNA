@@ -1,18 +1,18 @@
 """Shard_map halo exchange — explicit per-shard halo via jax.lax.ppermute.
 
-For the auto-sharded `pad_with_halo_auto` path, XLA's lowering of
-`jnp.pad(mode='wrap')` over a NamedSharding mesh materialises ~4 extra
-full-shard scratch arrays per halo call and refuses to drop below
-~71 GB working set at 1024^3 fp32 / 8 GPUs (rematerialization warnings
-confirm). The shard_map path exchanges only thin slabs (~5 MB each at
-2x2x2 mesh) and gives us explicit per-shard footprint control.
+Why explicit halos: letting the compiler infer the communication from a
+NamedSharding (via `jnp.pad(mode='wrap')`) materialises ~4 extra full-shard
+scratch arrays per halo call and refuses to drop below ~71 GB working set at
+1024^3 fp32 / 8 GPUs (rematerialization warnings confirm). The shard_map path
+exchanges only thin slabs (~5 MB each at 2x2x2 mesh) and gives us explicit
+per-shard footprint control.
 
 For each spatial axis we ppermute the +/-1 boundary slab to/from the
 neighbour and concatenate into the local body. Axis-by-axis chaining
 populates corner ghost cells correctly via the standard pad order. This
 is the single multi-GPU halo path for LUNA (1D/2D/3D, every boundary).
 
-Boundary types (matching `pad_with_halo_auto`, the variable layout being
+Boundary types (variable layout being
 [density, mom/vel_x, mom/vel_y, mom/vel_z, energy] so component `axis` is
 the normal momentum/velocity along array axis `axis`):
   0 = periodic    — ppermute wrap on all neighbours.
@@ -36,8 +36,7 @@ def make_halo_shardmap(mesh, spatial_dim):
     for use *inside* a shard_map body.
 
     The returned function has signature `halo(U_local, boundary, spatial_dim)`
-    matching the auto-sharded `pad_with_halo_auto` so the integrator factory
-    can swap one for the other transparently.
+    and is called from inside the integrator's shard_map body.
     """
     if spatial_dim not in _AXIS_NAMES:
         raise ValueError(f"spatial_dim must be 1, 2 or 3; got {spatial_dim}")
