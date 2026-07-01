@@ -7,8 +7,9 @@ __pycache__/
 build/
 dist/
 .eggs/
-# local copy of template_config.py (per-run knobs)
-config.py
+# local copy of template_config.py (per-run knobs) — root only, so it does NOT
+# swallow module configs like amr/config.py
+/config.py
 
 # ──────────────────────── Simulation data & output ───────────────────────
 *.hdf5
