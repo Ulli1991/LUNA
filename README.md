@@ -425,10 +425,12 @@ large-scale structures consistent.
 
 Central z=Lz/2 density slice (log scale) at 2500 / 5000 / 7500 / 10000 yr. The uniform
 64³ shock is a blocky Cartesian diamond; the AMR — identical base resolution and physics
-— resolves a crisp spherical shell, with the refinement mesh (block edges colored by
-level) tracking the expanding remnant into the hot interior. Shell density jump ≈4× (the
-γ=5/3 Sedov strong-shock limit), NaN-free, reflection-symmetric to <0.1%, and fits on a
-single A100.
+— resolves a crisp spherical shell. The refinement mesh (block edges colored by level)
+**hugs the shell**: the combined criterion (relative ∇P, OR relative ∇ρ gated by
+overdensity) refines the shock and compressed shell while the smooth hot interior
+de-refines back to the coarse levels as the remnant expands. Shell density jump ≈4× (the
+γ=5/3 Sedov strong-shock limit), NaN-free, reflection-symmetric to <0.02%, and the full
+64³→512³ run takes ~400 s on a single A100.
 
 **What works (2D + 3D, end-to-end through `main`):**
 - Block layer: x64 Morton ids, conservative prolong/restrict, O(N log N) neighbour

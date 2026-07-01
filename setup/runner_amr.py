@@ -124,8 +124,10 @@ def run_simulation_amr(cfg, is_main_process=True):
     else:
         step = jax.jit(lambda lv, dt: driver.advance(
             lv, dt, acfg, gamma=gamma, limiter=limiter, riemann_solver=riemann))
-    dt_fn = ((lambda lv: driver.compute_dt_subcycle(lv, acfg, gamma=gamma, CFL=CFL)) if subcycle
-             else (lambda lv: driver.compute_dt(lv, acfg, gamma=gamma, CFL=CFL)))
+    # jitted: the eager version dispatched ~10 tiny ops per level on the host
+    # every single step (a real per-step tax at thousands of blocks).
+    dt_fn = jax.jit((lambda lv: driver.compute_dt_subcycle(lv, acfg, gamma=gamma, CFL=CFL)) if subcycle
+                    else (lambda lv: driver.compute_dt(lv, acfg, gamma=gamma, CFL=CFL)))
     if is_main_process:
         ti = "subcycled (Berger-Oliger)" if subcycle else "synchronized same-dt"
         print(f"  time integration: {ti}  |  {'shard_map over %d devices' % n_dev if shard_amr else 'single device'}")
@@ -178,21 +180,51 @@ def run_simulation_amr(cfg, is_main_process=True):
     cu_total = 0
     cu_last, perf_t = 0, t0                             # for per-interval Mcells/s
     cadence = max(1, int(getattr(cfg, "output_cadence", 10)))
+    # ----------------------------------------------------------------------
+    # Chunked time loop (single-device AND shard_map): ONE jitted dispatch per
+    # regrid interval. A lax.scan advances `chunk_len` steps with dt computed
+    # ON DEVICE each step (the old loop's per-step `float(dt_fn(...))` forced a
+    # device->host sync + fresh dispatch every step, pinning the GPU at a few %
+    # utilization). dt is clamped to the chunk's target time (snapshot / t_end);
+    # once the target is reached the remaining scan steps run with dt=0 -- an
+    # exact no-op (U + 0*dU) -- so snapshot landings stay exact. The hierarchy
+    # buffers are donated, so XLA updates them in place. The sharded `step`
+    # (shard_map) traces through the scan like any jittable fn; GSPMD carries
+    # the shardings across iterations.
+    # ----------------------------------------------------------------------
+    chunk_len = regrid_interval if regrid_interval > 0 else 16
+
+    def _chunk(hier, tt, target):
+        def body(carry, _):
+            h, tc, taken = carry
+            dt = dt_fn(h)
+            dt = jnp.minimum(dt, jnp.maximum(target - tc, 0.0))
+            h = step(h, dt)
+            return (h, tc + dt, taken + (dt > 0).astype(jnp.int32)), None
+        (h, tf, taken), _ = jax.lax.scan(
+            body, (hier, tt, jnp.zeros((), jnp.int32)), None, length=chunk_len)
+        return h, tf, taken
+
+    chunk_step = jax.jit(_chunk, donate_argnums=0)
+
+    last_print, t_prev = 0, t
     while t < cfg.t_end - 1e-12:
-        target = min(cfg.t_end, snapshot_times[si] if si < num else float("inf"))
-        dt = float(dt_fn(hierarchy))                    # base dt (covers r**L fine substeps)
-        dt = min(dt, target - t)
-        hierarchy = step(hierarchy, dt)
-        t += dt
-        nstep += 1
-        cu_total += cu_step
+        target = min(cfg.t_end, snapshot_times[si] if si < num else cfg.t_end)
+        hierarchy, t_dev, taken_dev = chunk_step(
+            hierarchy, jnp.asarray(t, jnp.float64), jnp.asarray(target, jnp.float64))
+        taken = int(taken_dev)                           # one host sync per chunk
+        t_prev, t = t, float(t_dev)
+        if taken == 0:
+            break                                        # dt collapsed -- don't spin
+        nstep += taken
+        cu_total += cu_step * taken
         if si < num and t >= snapshot_times[si] - 1e-12:
             write(si, t)
             si += 1
-        # Adaptive re-check: re-run the refinement criterion on the live solution
-        # and rebuild the grid (block counts change -> `step` recompiles for the
-        # new shapes; amortized over the interval). regrid_interval<=0 -> static.
-        if regrid_interval and nstep % regrid_interval == 0:
+        # Adaptive re-check on the live solution. Capacities grow on a geometric
+        # ladder and never shrink (_sized_parents), so `chunk_step` recompiles
+        # only ~log2(peak/bucket) times across the whole run.
+        if regrid_interval:
             hierarchy = driver.regrid(hierarchy, acfg, thresholds=thresholds,
                                       periodic=periodic, bucket=bucket, pad_to=pad_to,
                                       criterion=criterion)
@@ -202,13 +234,15 @@ def run_simulation_amr(cfg, is_main_process=True):
             if is_main_process:
                 counts = " ".join(f"L{L}={int(l.n_active)}" for L, l in enumerate(hierarchy))
                 print(f"  regrid @ step {nstep} (t={t:.4f}): {counts}")
-        if is_main_process and nstep % cadence == 0:
+        if is_main_process and nstep - last_print >= cadence:
+            last_print = nstep
             now = time.time()
             # same definition as the dense path (runner_distributed): active
             # cell-updates over the interval / interval wall-time.
             perf = (cu_total - cu_last) / max(now - perf_t, 1e-9) / 1e6
-            print(f"Step {nstep:5d}, t = {t:.5f}, dt = {dt:.5e}, perf = {perf:.2f} Mcells/s "
-                  f"(AMR active), {nstep / (now - t0):.1f} steps/s")
+            dt_avg = (t - t_prev) / max(taken, 1)
+            print(f"Step {nstep:5d}, t = {t:.5f}, dt = {dt_avg:.5e}, perf = {perf:.2f} Mcells/s "
+                  f"(AMR active), {nstep / (now - t0):.1f} steps/s", flush=True)
             cu_last, perf_t = cu_total, now
 
     # flush any remaining snapshot slots at t_end

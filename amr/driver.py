@@ -33,6 +33,20 @@ from amr.blocks import (
     refinement_block_mask,
 )
 from amr.geometry import prolong, restrict
+
+# ---------------------------------------------------------------------------
+# Jitted topology kernels for build/regrid. These are pure-jnp argsort /
+# searchsorted / gather pipelines whose EAGER per-op dispatch (~3 s per regrid;
+# find_face_neighbors alone ~1.7 s, roughly independent of block count)
+# dominated the whole AMR run wall-time. Their shapes live on the geometric
+# capacity ladder (_sized_parents), so each (shape, static-arg) combination
+# compiles once and replays in milliseconds thereafter.
+# ---------------------------------------------------------------------------
+_neighbors_j = jax.jit(find_face_neighbors, static_argnames=("level", "cfg", "periodic"))
+_parent_slots_j = jax.jit(find_parent_slots, static_argnames=("cfg",))
+_match_blocks_j = jax.jit(match_blocks, static_argnames=("ndim",))
+_children_j = jax.jit(build_children, static_argnames=("level", "cfg", "max_parents"))
+_preserve_j = jax.jit(preserve_unaltered)
 from amr.halo import fill_ghost_from_coarse_sparse, fill_ghost_physical, fill_ghost_same_level
 from amr.hydro import conservative_block_divergence, cons_to_prim_blocks
 from amr.state import build_base_level
@@ -129,12 +143,17 @@ def flag_vorticity(data, neighbors, n_active, cfg, threshold, level, buffer=None
 
 
 def flag_pressure_gradient(data, neighbors, n_active, cfg, threshold, buffer=None):
-    """Flag on |grad P| — computed as the gradient of the internal-energy density
-    e_int = E - 0.5*|mom|^2/rho (i.e. P / (gamma-1); the constant (gamma-1) folds
-    into ``threshold``, so no gamma is needed here). Unlike the density criterion,
-    this catches the Sedov energy-injection spike at t=0 (uniform rho, peaked
-    pressure) *and* the shock front. Ghost-filled so edge cells see across the
-    block boundary; cross-block dilation adds a margin. Returns (n_slots,) bool.
+    """Flag on the RELATIVE pressure jump |dP|/P (per cell, summed over axes).
+
+    Uses the internal-energy density e_int = E - 0.5*|mom|^2/rho (= P/(gamma-1));
+    the (gamma-1) cancels in the ratio, so this is exactly |dP|/P -- dimensionless
+    and scale-invariant. A smooth but high-pressure interior (e.g. a Sedov hot
+    bubble) has a small fractional gradient and de-refines; sharp fronts -- the
+    shock, and the t=0 injection spike (uniform rho, peaked pressure) -- have an
+    O(1) fractional jump and flag. (The earlier absolute |dP| flagged the whole
+    bubble because e_int is large there.) ``threshold`` is now a dimensionless
+    fraction (~0.2-0.5). Ghost-filled so edge cells see across the block boundary;
+    cross-block dilation adds a margin. Returns (n_slots,) bool.
     """
     ndim = cfg.ndim
     g = cfg.n_ghost
@@ -151,8 +170,16 @@ def flag_pressure_gradient(data, neighbors, n_active, cfg, threshold, buffer=Non
         sl_lo = list(sl_hi)
         sl_hi[2 + d] = slice(g + 1, g + 1 + bs[d])
         sl_lo[2 + d] = slice(g - 1, g - 1 + bs[d])
-        diff = gh[tuple(sl_hi)] - gh[tuple(sl_lo)]
-        grad = grad + jnp.where(jnp.isnan(diff), 0.0, jnp.abs(diff))
+        hi = gh[tuple(sl_hi)]
+        lo = gh[tuple(sl_lo)]
+        diff = hi - lo
+        # RELATIVE jump |dP|/P (dimensionless, scale-invariant): a smooth but
+        # high-pressure interior (e.g. a Sedov hot bubble) has a small fractional
+        # gradient and de-refines, while sharp fronts -- the shock and the t=0
+        # injection spike -- have an O(1) fractional jump and flag. The absolute
+        # |dP| used before flagged the whole bubble because eint is large there.
+        rel = jnp.abs(diff) / (jnp.abs(hi) + jnp.abs(lo) + 1e-30)
+        grad = grad + jnp.where(jnp.isnan(diff), 0.0, rel)
 
     cell_flag = (grad[:, 0] > threshold).astype(jnp.float32)
     from amr.blocks import cross_block_dilate
@@ -162,13 +189,74 @@ def flag_pressure_gradient(data, neighbors, n_active, cfg, threshold, buffer=Non
     return flagged & active
 
 
-def _flag_blocks(parent, cfg, threshold, level, criterion):
-    """Dispatch to the chosen refinement criterion (used by build_hierarchy/regrid)."""
+def flag_pressure_density(data, neighbors, n_active, cfg, threshold, buffer=None,
+                          rho_ref=None, overdensity=1.2):
+    """Combined flag: refine where the relative pressure jump |dP|/P exceeds
+    ``threshold``, OR the relative density jump |drho|/rho does AND the gas is
+    overdense (rho > overdensity * rho_ref).
+
+    The pressure term locks onto the shock (and the t=0 injection spike, where
+    density is still uniform). The density term adds the compressed shell body --
+    but gated by overdensity, because relative gradients are evaluated at each
+    level's OWN dx: a blast interior spanning decades of density gives O(0.3)
+    per-cell jumps on coarse levels even where the profile is smooth, which
+    un-gated would cascade refinement across the whole bubble. The low-density
+    interior (rho << rho_ref) drops out of the gate at every level, so the
+    refinement hugs the shell. ``rho_ref`` defaults to the mean of this level's
+    own active cells; pass the level-0 domain mean for a stable reference.
+    """
+    ndim = cfg.ndim
+    g = cfg.n_ghost
+    bs = cfg.block_shape
+    rho = data[:, 0:1]
+    mom = data[:, 1:1 + ndim]
+    E = data[:, -1:]
+    eint = E - 0.5 * jnp.sum(mom * mom, axis=1, keepdims=True) / rho    # = P/(gamma-1)
+    if rho_ref is None:
+        rho_ref = jnp.nanmean(rho)                       # sentinel slots are NaN
+
+    def relgrad_flag(field):
+        gh = fill_ghost_same_level(field, neighbors, cfg)
+        grad = jnp.zeros((data.shape[0], 1) + tuple(bs))
+        for d in range(ndim):
+            sl_hi = [slice(None), slice(None)] + [slice(g, g + bs[k]) for k in range(ndim)]
+            sl_lo = list(sl_hi)
+            sl_hi[2 + d] = slice(g + 1, g + 1 + bs[d])
+            sl_lo[2 + d] = slice(g - 1, g - 1 + bs[d])
+            hi = gh[tuple(sl_hi)]
+            lo = gh[tuple(sl_lo)]
+            diff = hi - lo
+            rel = jnp.abs(diff) / (jnp.abs(hi) + jnp.abs(lo) + 1e-30)
+            grad = grad + jnp.where(jnp.isnan(diff), 0.0, rel)
+        return grad[:, 0] > threshold
+
+    # density term gated by overdensity (NaN sentinel cells compare False)
+    dense = rho[:, 0] > overdensity * rho_ref
+    cell_flag = (relgrad_flag(eint) | (relgrad_flag(rho) & dense)).astype(jnp.float32)
+    from amr.blocks import cross_block_dilate
+    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
+    flagged = refinement_block_mask(cell_flag, ndim)
+    active = jnp.arange(data.shape[0]) < n_active
+    return flagged & active
+
+
+def _flag_blocks(parent, cfg, threshold, level, criterion, rho_ref=None):
+    """Dispatch to the chosen refinement criterion (used by build_hierarchy/regrid).
+    ``rho_ref`` (level-0 domain mean density) feeds the overdensity gate of the
+    combined pressure+density criterion."""
     if criterion == "vorticity":
         return flag_vorticity(parent.data, parent.neighbors, parent.n_active, cfg, threshold, level)
     if criterion == "pressure":
         return flag_pressure_gradient(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
+    if criterion in ("pressure_density", "prho"):
+        return flag_pressure_density(parent.data, parent.neighbors, parent.n_active, cfg, threshold,
+                                     rho_ref=rho_ref)
     return flag_density_gradient(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
+
+
+# jitted flag dispatch (eager: ~250 ms/regrid of tiny-op dispatch); threshold and
+# rho_ref stay traced so tuning them never retriggers compilation.
+_flag_blocks = jax.jit(_flag_blocks, static_argnames=("cfg", "level", "criterion"))
 
 
 # ---------------------------------------------------------------------------
@@ -189,16 +277,23 @@ def _pad_blocks(data, coords, pad_to):
     return data, coords
 
 
-def _sized_parents(flags, cpb, bucket):
+def _sized_parents(flags, cpb, bucket, floor=0):
     """Number of parent slots to allocate for a refined level: the exact flagged
-    count (+1 for sentinel headroom), optionally rounded UP to a ``bucket``
-    multiple so the array shape only changes in steps -> jitted ``advance``
-    recompiles a handful of times across a dynamic run instead of on every
-    regrid. ``bucket`` in (None, 0, 1) means exact (no rounding)."""
+    count (+1 for sentinel headroom). With ``bucket`` set, rounded UP onto the
+    geometric ladder ``bucket * 2**k`` and clamped to at least ``floor`` (the
+    level's current allocation, in parent units). Geometric growth + never-shrink
+    means the jitted ``advance`` recompiles at most ~log2(peak/bucket) times over
+    a dynamic run (a linear bucket recompiled on every ``bucket``-crossing --
+    dozens of multi-second XLA compiles for a growing Sedov shell) and never
+    recompiles on shrink. Padding waste is bounded at 2x the active count.
+    ``bucket`` in (None, 0, 1) means exact (no rounding)."""
     n = int(jnp.sum(flags)) + 1
     if bucket and bucket > 1:
-        n = ((n + bucket - 1) // bucket) * bucket
-    return n
+        cap = int(bucket)
+        while cap < max(n, floor):
+            cap *= 2
+        return cap
+    return max(n, int(floor))
 
 
 def build_hierarchy(U0, cfg, *, thresholds, capacities=None, periodic=True, bucket=None,
@@ -215,27 +310,28 @@ def build_hierarchy(U0, cfg, *, thresholds, capacities=None, periodic=True, buck
     # pad coords+data BEFORE topology so the NaN sentinel lands at the padded
     # last slot and find_* resolve every 'missing' to it consistently.
     bdata, bcoords = _pad_blocks(base.data, base.coords, pad_to)
-    base_nbrs = find_face_neighbors(bcoords, base.n_active, 0, cfg, periodic=periodic)
+    base_nbrs = _neighbors_j(bcoords, base.n_active, 0, cfg, periodic=periodic)
     levels = [Level(
         data=bdata, coords=bcoords, neighbors=base_nbrs,
         parent_slots=-jnp.ones(bdata.shape[0], jnp.int32), n_active=base.n_active,
     )]
 
     cpb = cfg.children_per_block
+    rho0 = jnp.nanmean(bdata[:, 0])                     # level-0 domain mean density
     for L in range(cfg.max_levels):
         parent = levels[L]
-        flags = _flag_blocks(parent, cfg, thresholds[L], L, criterion)
+        flags = _flag_blocks(parent, cfg, thresholds[L], L, criterion, rho_ref=rho0)
         if capacities is not None:
             max_parents = capacities[L] // cpb
         else:
             # build runs eagerly (not under jit) -> size to the flagged count
             # (exact, or bucketed for shape stability under dynamic regridding).
             max_parents = _sized_parents(flags, cpb, bucket)
-        cc, cd, na = build_children(parent.coords, parent.data, flags, level=L, cfg=cfg,
-                                    max_parents=max_parents)
+        cc, cd, na = _children_j(parent.coords, parent.data, flags, level=L, cfg=cfg,
+                                 max_parents=max_parents)
         cd, cc = _pad_blocks(cd, cc, pad_to)
-        nbrs = find_face_neighbors(cc, na, L + 1, cfg, periodic=False)
-        pslots = find_parent_slots(cc, parent.coords, parent.n_active, cfg)
+        nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=False)
+        pslots = _parent_slots_j(cc, parent.coords, parent.n_active, cfg)
         levels.append(Level(data=cd, coords=cc, neighbors=nbrs, parent_slots=pslots, n_active=na))
 
     return tuple(levels)
@@ -257,18 +353,24 @@ def regrid(levels, cfg, *, thresholds, periodic=True, bucket=None, pad_to=1, cri
     new shapes — amortized over the regrid interval). Returns a new hierarchy.
     """
     new = [levels[0]]                                  # level 0 always fully tiles
+    rho0 = jnp.nanmean(levels[0].data[:, 0])           # level-0 domain mean density
     for L in range(cfg.max_levels):
         parent = new[L]
         old_child = levels[L + 1]
-        flags = _flag_blocks(parent, cfg, thresholds[L], L, criterion)
-        max_parents = _sized_parents(flags, cfg.children_per_block, bucket)
-        cc, cd, na = build_children(parent.coords, parent.data, flags, level=L, cfg=cfg,
-                                    max_parents=max_parents)
-        old_slot = match_blocks(cc, na, old_child.coords, old_child.n_active, cfg.ndim)
-        cd = preserve_unaltered(cd, old_slot, old_child.data)
+        flags = _flag_blocks(parent, cfg, thresholds[L], L, criterion, rho_ref=rho0)
+        # never-shrink floor: the level's current allocation in parent units
+        # (build_children allocates max_parents * children_per_block slots), so
+        # regrids only ever grow capacities -> no recompile thrash on shrink.
+        prev_parents = old_child.data.shape[0] // cfg.children_per_block
+        max_parents = _sized_parents(flags, cfg.children_per_block, bucket,
+                                     floor=prev_parents)
+        cc, cd, na = _children_j(parent.coords, parent.data, flags, level=L, cfg=cfg,
+                                 max_parents=max_parents)
+        old_slot = _match_blocks_j(cc, na, old_child.coords, old_child.n_active, cfg.ndim)
+        cd = _preserve_j(cd, old_slot, old_child.data)
         cd, cc = _pad_blocks(cd, cc, pad_to)
-        nbrs = find_face_neighbors(cc, na, L + 1, cfg, periodic=False)
-        pslots = find_parent_slots(cc, parent.coords, parent.n_active, cfg)
+        nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=False)
+        pslots = _parent_slots_j(cc, parent.coords, parent.n_active, cfg)
         new.append(Level(data=cd, coords=cc, neighbors=nbrs, parent_slots=pslots, n_active=na))
     return tuple(new)
 
