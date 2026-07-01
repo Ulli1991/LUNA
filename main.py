@@ -61,6 +61,14 @@ def run(cfg):
         import shutil
         shutil.rmtree(cfg.output_dir, ignore_errors=True)
     Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Block-AMR multi-level hydro: builds its own (refined) state and runs its
+    # own multi-level time loop, writing composited snapshots through the same
+    # HDF5 writer. Dispatch before the dense gas setup (mesh/U/step_fn unused).
+    if getattr(cfg, "AMR", False):
+        from setup.runner_amr import run_simulation_amr
+        return run_simulation_amr(cfg, is_main_process=(jax.process_index() == 0))
+
     mesh, grid_shape = create_distributed_mesh(cfg)
     U_sharded, t_start, step_start = initialize_simulation_distributed(cfg, mesh)
     grid = GridParams.from_config(cfg)

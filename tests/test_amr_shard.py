@@ -1,0 +1,71 @@
+"""shard_map distribution of the AMR block step.
+
+Runs on whatever devices are present (1 in plain CI). For a real multi-device
+check run with simulated devices:
+    XLA_FLAGS="--xla_force_host_platform_device_count=4" \
+    JAX_PLATFORMS=cpu ~/jax-env/bin/python -m pytest tests/test_amr_shard.py
+"""
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+jax.config.update("jax_enable_x64", True)
+
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+
+from amr.config import AMRConfig
+from amr import driver, shard
+from amr.halo import fill_ghost_same_level
+from amr.hydro import cons_to_prim_blocks, conservative_block_divergence
+from tests.test_amr_multilevel import _kh_ic
+
+GAMMA = 5.0 / 3.0
+
+
+def test_shard_map_level_matches_single_device():
+    """The shard_map step (all_gather seam exchange across the block axis) bit-
+    matches the single-device conservative step on the active blocks, for however
+    many devices are present."""
+    devs = jax.devices()
+    D = len(devs)
+    cfg = AMRConfig(ndim=2, box=(1.0, 1.0), base_grid=(32, 32), block_shape=(8, 8), max_levels=0)
+    U = _kh_ic(cfg, GAMMA)
+    h = driver.build_hierarchy(U, cfg, thresholds=[], pad_to=D)   # block axis divisible by D
+    L0 = h[0]
+    dt = float(driver.compute_dt(h, cfg, gamma=GAMMA, CFL=0.4))
+
+    # single-device reference
+    gw = fill_ghost_same_level(cons_to_prim_blocks(L0.data, GAMMA), L0.neighbors, cfg)
+    ref = L0.data + dt * conservative_block_divergence(gw, dt, 0, cfg, L0.neighbors, gamma=GAMMA)
+
+    mesh = Mesh(np.asarray(devs), ("blocks",))
+    out = jax.jit(lambda d, n: shard.advance_level_shmap(d, n, mesh, dt, 0, cfg, gamma=GAMMA))(
+        jax.device_put(L0.data, NamedSharding(mesh, P("blocks", None, None, None))),
+        jax.device_put(L0.neighbors, NamedSharding(mesh, P("blocks", None))),
+    )
+    na = int(L0.n_active)
+    assert jnp.allclose(out[:na], ref[:na], atol=1e-12)
+
+
+def test_shard_map_multilevel_subcycle_matches_single_device():
+    """The full sharded paths (synchronized + subcycled, with coarse-fine) match
+    the single-device driver on the active blocks, for however many devices."""
+    devs = jax.devices()
+    D = len(devs)
+    cfg = AMRConfig(ndim=2, box=(1.0, 1.0), base_grid=(32, 32), block_shape=(8, 8), max_levels=2)
+    U = _kh_ic(cfg, GAMMA)
+    h = driver.build_hierarchy(U, cfg, thresholds=[0.05, 0.05], pad_to=D)
+    mesh = Mesh(np.asarray(devs), ("blocks",))
+
+    dt = float(driver.compute_dt(h, cfg, gamma=GAMMA, CFL=0.4))
+    ref = driver.advance(h, dt, cfg, gamma=GAMMA)
+    out = jax.jit(lambda hh: shard.advance_shmap(hh, dt, cfg, mesh, gamma=GAMMA))(h)
+    assert all(jnp.allclose(o.data[: int(o.n_active)], r.data[: int(r.n_active)], atol=1e-10)
+               for o, r in zip(out, ref))
+
+    dtb = float(driver.compute_dt_subcycle(h, cfg, gamma=GAMMA, CFL=0.4))
+    ref_s = driver.advance_subcycle(h, dtb, cfg, gamma=GAMMA)
+    out_s = jax.jit(lambda hh: shard.advance_subcycle_shmap(hh, dtb, cfg, mesh, gamma=GAMMA))(h)
+    assert all(jnp.allclose(o.data[: int(o.n_active)], r.data[: int(r.n_active)], atol=1e-10)
+               for o, r in zip(out_s, ref_s))

@@ -456,6 +456,42 @@ class Config:
     sink_softening: float = 0.0           # ε for sink→gas / sink→sink (0 → 2·dx)
     sink_creation_separation: float = 0.0  # min distance to an existing sink (0 → 4·dx)
 
+    # ---------------- Block-AMR (multi-level hydro) ----------------
+    # Opt-in. When True, main.run dispatches to setup.runner_amr instead of the
+    # dense gas path: the base grid (Nx,Ny) is refined by `amr_levels` factor-2
+    # levels around steep density gradients, evolved with a synchronized same-dt
+    # multi-level step, and snapshots are written as the composited finest-
+    # resolution field through the standard HDF5 writer. 2D only for now.
+    AMR: bool = False
+    amr_levels: int = 2                  # refinement levels above the base grid
+    amr_block_shape: int = 16            # cells per block per dim (must divide Nx,Ny)
+    amr_thresholds: list = None          # per-level flag threshold; None -> [0.05]*levels
+    # Refinement criterion: "density" (|grad rho|, resolution-dependent) or
+    # "vorticity" (physical |curl v|, resolution-INDEPENDENT — refines vortex
+    # cores even from a well-resolved base; the right trigger for KH). 2D only.
+    amr_criterion: str = "density"
+    amr_capacities: list = None          # per-level max child blocks; None -> exact (no padding)
+    # Adaptive re-check cadence: re-run the refinement criterion on the live
+    # solution and rebuild the grid every N steps (0 -> static, flag once at t=0).
+    # The flagging dilation margin (n_ghost cells) must cover how far a feature
+    # moves in N steps, so keep N small (a few) unless you widen the margin.
+    amr_regrid_interval: int = 4
+    # Round each level's block capacity up to this many parents so array shapes
+    # stay stable across regrids (the jitted step recompiles only when a bucket
+    # boundary is crossed, not on every regrid). 0/1 -> exact (no padding) but
+    # recompiles whenever the block count changes. Bounded padding, big speedup.
+    amr_block_bucket: int = 256
+    # Subcycle in time (Berger-Oliger): each refinement level steps with its own
+    # dt = dt_base / 2**level, so coarse cells don't pay the finest timestep. This
+    # is what makes AMR a *time* win, not just a memory win. False -> synchronized
+    # same-dt (every level on the finest dt).
+    amr_subcycle: bool = True
+    # Distribute blocks across devices with jax.shard_map (multi-GPU). Each device
+    # owns a shard of the block axis; the per-block flux/divergence is sharded and
+    # the irregular block-neighbour seam coupling is an all_gather. Auto no-op on a
+    # single device. The block axis is padded to a multiple of the device count.
+    amr_shard: bool = False
+
     # -------------------------------------------------------------------------
     # Computed properties (lightweight, timing-related)
     # -------------------------------------------------------------------------

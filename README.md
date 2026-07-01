@@ -399,3 +399,44 @@ For questions or issues:
 ---
 
 **Status:** Production-ready for single-GPU; multi-GPU via JAX `shard_map` on NVIDIA. AMD ROCm not yet supported.
+
+---
+
+## Block-AMR (experimental)
+
+A LUNA-native, dimension-generic block-structured AMR layer (`amr/`), wired
+through `main.run` via `cfg.AMR=True` → `setup/runner_amr.py`. Everything is pure
+JAX (jit/vmap/scan/shard_map).
+
+**Validation — Kelvin-Helmholtz to t=5, AMR (128² base → 1024² effective) vs uniform 1024²:**
+
+![KH: fixed grid vs block-AMR with refinement mesh overlaid](code_paper_figs/amr_vs_uniform_kh.png)
+
+Refinement mesh overlaid on the AMR panels (block edges colored by level). The AMR
+refines the shear sheets while the flow is laminar (t=1), then **dynamically tracks
+the vortices** as they roll up (t=2–3) and the mixing layer as it goes turbulent
+(t=4–5). Fields match the uniform run through the linear/early-nonlinear phase;
+late-time pointwise divergence is expected (KH turbulence is chaotic), with the
+large-scale structures consistent.
+
+**What works (2D, end-to-end through `main`):**
+- Block layer: x64 Morton ids, conservative prolong/restrict, O(N log N) neighbour
+  finding, NaN-sentinel padding.
+- Hydro on blocks: per-block MUSCL-Hancock; same-level seam fluxes (mass & energy
+  conserved to machine precision); coarse-fine reflux.
+- Dynamic regridding on the live solution (criterion pluggable: `amr_criterion =
+  "density"` |grad ρ| or **`"vorticity"`** |curl v|, resolution-independent — the
+  right trigger for KH).
+- Subcycling (Berger-Oliger): level L advances at `dt_base / 2**L`.
+- Multi-GPU via `jax.shard_map` (1-GPU-per-process): blocks sharded across devices.
+
+**Config knobs** (`template_config.py`): `AMR`, `amr_levels`, `amr_block_shape`,
+`amr_criterion`, `amr_thresholds`, `amr_subcycle`, `amr_shard`,
+`amr_regrid_interval`, `amr_block_bucket`.
+
+**Benchmark — KH to t=5 on 4×A100 (measured Mcells/s):** at a saturating base
+(1024²) the AMR compute runs at ~90% of the dense path (~750 vs ~830 Mcells/s);
+the remaining overhead is the full-hierarchy regrid on the base-step cadence.
+
+**Open / next:** per-level regrid tied to the subcycle; structural sharding polish;
+3D. Reflux is built/tested standalone but not yet in the subcycled driver loop.
