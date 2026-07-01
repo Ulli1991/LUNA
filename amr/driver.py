@@ -33,7 +33,7 @@ from amr.blocks import (
     refinement_block_mask,
 )
 from amr.geometry import prolong, restrict
-from amr.halo import fill_ghost_from_coarse_sparse, fill_ghost_same_level
+from amr.halo import fill_ghost_from_coarse_sparse, fill_ghost_physical, fill_ghost_same_level
 from amr.hydro import conservative_block_divergence, cons_to_prim_blocks
 from amr.state import build_base_level
 from hydro.conversions import cons_to_prim
@@ -89,16 +89,19 @@ def flag_vorticity(data, neighbors, n_active, cfg, threshold, level, buffer=None
     **resolution-independent**: a vortex core has the same |omega| at any base
     resolution, so KH refines even from a well-resolved (GPU-saturating) base and
     keeps refining deeper levels instead of de-refining. Computed on ghost-filled
-    velocity; cross-block dilation adds a margin. 2D only. Returns (n_slots,) bool.
+    velocity; cross-block dilation adds a margin. Dimension-generic: 2D uses the
+    scalar out-of-plane curl |dvy/dx - dvx/dy|; 3D uses the full vorticity-vector
+    magnitude |curl v| = sqrt(wx^2 + wy^2 + wz^2). Returns (n_slots,) bool.
     """
     ndim = cfg.ndim
-    if ndim != 2:
-        raise NotImplementedError("vorticity criterion is 2D only (curl is a scalar)")
+    if ndim not in (2, 3):
+        raise NotImplementedError("vorticity criterion needs ndim in {2, 3}")
     g = cfg.n_ghost
     bs = cfg.block_shape
     rho = data[:, 0:1]
-    vx = fill_ghost_same_level(data[:, 1:2] / rho, neighbors, cfg)   # (n_slots,1,*(bs+2g))
-    vy = fill_ghost_same_level(data[:, 2:3] / rho, neighbors, cfg)
+    # ghost-filled velocity components v[d], each (n_slots, 1, *(bs+2g))
+    v = [fill_ghost_same_level(data[:, 1 + d:2 + d] / rho, neighbors, cfg)
+         for d in range(ndim)]
     dx = cfg.level_dx(level)
 
     def cdiff(arr, d):
@@ -108,9 +111,50 @@ def flag_vorticity(data, neighbors, n_active, cfg, threshold, level, buffer=None
         lo[2 + d] = slice(g - 1, g - 1 + bs[d])
         return (arr[tuple(hi)] - arr[tuple(lo)]) / (2.0 * dx[d])
 
-    omega = jnp.abs(cdiff(vy, 0) - cdiff(vx, 1))               # (n_slots,1,*bs)
-    omega = jnp.where(jnp.isnan(omega), 0.0, omega)
+    if ndim == 2:
+        omega_sq = (cdiff(v[1], 0) - cdiff(v[0], 1)) ** 2         # (n_slots,1,*bs)
+    else:
+        # 3D curl: (dvz/dy - dvy/dz, dvx/dz - dvz/dx, dvy/dx - dvx/dy)
+        wx = cdiff(v[2], 1) - cdiff(v[1], 2)
+        wy = cdiff(v[0], 2) - cdiff(v[2], 0)
+        wz = cdiff(v[1], 0) - cdiff(v[0], 1)
+        omega_sq = wx ** 2 + wy ** 2 + wz ** 2
+    omega = jnp.sqrt(jnp.where(jnp.isnan(omega_sq), 0.0, omega_sq))
     cell_flag = (omega[:, 0] > threshold).astype(jnp.float32)
+    from amr.blocks import cross_block_dilate
+    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
+    flagged = refinement_block_mask(cell_flag, ndim)
+    active = jnp.arange(data.shape[0]) < n_active
+    return flagged & active
+
+
+def flag_pressure_gradient(data, neighbors, n_active, cfg, threshold, buffer=None):
+    """Flag on |grad P| — computed as the gradient of the internal-energy density
+    e_int = E - 0.5*|mom|^2/rho (i.e. P / (gamma-1); the constant (gamma-1) folds
+    into ``threshold``, so no gamma is needed here). Unlike the density criterion,
+    this catches the Sedov energy-injection spike at t=0 (uniform rho, peaked
+    pressure) *and* the shock front. Ghost-filled so edge cells see across the
+    block boundary; cross-block dilation adds a margin. Returns (n_slots,) bool.
+    """
+    ndim = cfg.ndim
+    g = cfg.n_ghost
+    bs = cfg.block_shape
+    rho = data[:, 0:1]                                  # (n_slots, 1, *bs)
+    mom = data[:, 1:1 + ndim]                           # (n_slots, ndim, *bs)
+    E = data[:, -1:]                                    # total energy (last var)
+    eint = E - 0.5 * jnp.sum(mom * mom, axis=1, keepdims=True) / rho   # ~ P/(gamma-1)
+    gh = fill_ghost_same_level(eint, neighbors, cfg)    # (n_slots, 1, *(bs+2g))
+
+    grad = jnp.zeros((data.shape[0], 1) + tuple(bs))
+    for d in range(ndim):
+        sl_hi = [slice(None), slice(None)] + [slice(g, g + bs[k]) for k in range(ndim)]
+        sl_lo = list(sl_hi)
+        sl_hi[2 + d] = slice(g + 1, g + 1 + bs[d])
+        sl_lo[2 + d] = slice(g - 1, g - 1 + bs[d])
+        diff = gh[tuple(sl_hi)] - gh[tuple(sl_lo)]
+        grad = grad + jnp.where(jnp.isnan(diff), 0.0, jnp.abs(diff))
+
+    cell_flag = (grad[:, 0] > threshold).astype(jnp.float32)
     from amr.blocks import cross_block_dilate
     cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
     flagged = refinement_block_mask(cell_flag, ndim)
@@ -122,6 +166,8 @@ def _flag_blocks(parent, cfg, threshold, level, criterion):
     """Dispatch to the chosen refinement criterion (used by build_hierarchy/regrid)."""
     if criterion == "vorticity":
         return flag_vorticity(parent.data, parent.neighbors, parent.n_active, cfg, threshold, level)
+    if criterion == "pressure":
+        return flag_pressure_gradient(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
     return flag_density_gradient(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
 
 
@@ -231,15 +277,17 @@ def regrid(levels, cfg, *, thresholds, periodic=True, bucket=None, pad_to=1, cri
 # Ghost fill + advance (jittable: topology static)
 # ---------------------------------------------------------------------------
 def _fill_ghosts(levels, cfg, gamma):
-    """Per-level ghost-filled PRIMITIVE blocks, coarse->fine. Level 0 uses only
-    its same-level (periodic) halo; finer levels add the sparse coarse-parent
-    underlay from the already-ghosted coarser level."""
+    """Per-level ghost-filled PRIMITIVE blocks, coarse->fine. Each level fills its
+    same-level face+corner halo, finer levels add the sparse coarse-parent
+    underlay, and a physical BC fills any remaining domain-edge NaN ghosts (a
+    no-op for periodic runs, whose same-level halo wraps)."""
     ghosted = []
     for L, lvl in enumerate(levels):
         W = cons_to_prim_blocks(lvl.data, gamma)
         gw = fill_ghost_same_level(W, lvl.neighbors, cfg)
         if L > 0:
             gw = fill_ghost_from_coarse_sparse(gw, lvl.coords, lvl.parent_slots, ghosted[L - 1], cfg)
+        gw = fill_ghost_physical(gw, W, cfg)
         ghosted.append(gw)
     return ghosted
 
@@ -415,6 +463,12 @@ def composite_to_dense(levels, cfg):
             start = [jnp.asarray(0, jnp.int32)] + [
                 jnp.asarray(jnp.maximum(c[d], 0) * bs[d] * f, jnp.int32) for d in range(ndim)
             ]
+            # Keep the already-composited (coarser) underlay wherever this finer
+            # block is NaN: a de-refined block's sentinel / invalid cells must not
+            # clobber good coarse data (L0 always tiles the whole domain, so the
+            # composite should never have gaps).
+            cur = jax.lax.dynamic_slice(im, start, up.shape)
+            up = jnp.where(jnp.isnan(up), cur, up)
             placed = jax.lax.dynamic_update_slice(im, up, start)
             return jnp.where(valid, placed, im), None
 

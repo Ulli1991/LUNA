@@ -466,9 +466,12 @@ class Config:
     amr_levels: int = 2                  # refinement levels above the base grid
     amr_block_shape: int = 16            # cells per block per dim (must divide Nx,Ny)
     amr_thresholds: list = None          # per-level flag threshold; None -> [0.05]*levels
-    # Refinement criterion: "density" (|grad rho|, resolution-dependent) or
-    # "vorticity" (physical |curl v|, resolution-INDEPENDENT — refines vortex
-    # cores even from a well-resolved base; the right trigger for KH). 2D only.
+    # Refinement criterion (all dimension-generic, 2D & 3D):
+    #   "density"   |grad rho|  — resolution-dependent shock/contact tracker
+    #   "pressure"  |grad P|    — catches the Sedov energy spike at t=0 AND the
+    #                             shock front; the right trigger for blasts
+    #   "vorticity" |curl v|    — resolution-INDEPENDENT; refines vortex cores even
+    #                             from a well-resolved base; the right trigger for KH
     amr_criterion: str = "density"
     amr_capacities: list = None          # per-level max child blocks; None -> exact (no padding)
     # Adaptive re-check cadence: re-run the refinement criterion on the live

@@ -45,6 +45,11 @@ class AMRConfig:
     block_shape: tuple[int, ...]
     max_levels: int = 2
     n_ghost: int = 2
+    # Physical boundary condition (LUNA code: 0 periodic, 1 outflow/Neumann,
+    # 2 reflective). Non-periodic domains need an explicit BC fill of the
+    # domain-edge ghosts (no same-level neighbour, no coarse parent) — otherwise
+    # they stay NaN and the unsplit MUSCL-Hancock predictor reads them.
+    boundary: int = 0
 
     def __post_init__(self):
         nd = self.ndim

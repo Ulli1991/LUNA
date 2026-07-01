@@ -410,7 +410,7 @@ JAX (jit/vmap/scan/shard_map).
 
 **Validation — Kelvin-Helmholtz to t=5, AMR (128² base → 1024² effective) vs uniform 1024²:**
 
-![KH: fixed grid vs block-AMR with refinement mesh overlaid](code_paper_figs/amr_vs_uniform_kh.png)
+![KH: fixed grid vs block-AMR with refinement mesh overlaid](code_paper_figs/amr_kh_prototype.png)
 
 Refinement mesh overlaid on the AMR panels (block edges colored by level). The AMR
 refines the shear sheets while the flow is laminar (t=1), then **dynamically tracks
@@ -419,7 +419,18 @@ the vortices** as they roll up (t=2–3) and the mixing layer as it goes turbule
 late-time pointwise divergence is expected (KH turbulence is chaotic), with the
 large-scale structures consistent.
 
-**What works (2D, end-to-end through `main`):**
+**Validation — 3D Sedov-Taylor SN blast in physical units (AREPO: pc, km s⁻¹, M⊙; 10⁵¹ erg into an n=1 cm⁻³, 10⁴ K ISM), AMR (64³ base → 512³ effective) vs uniform 64³:**
+
+![3D Sedov: fixed 64³ vs block-AMR with refinement mesh overlaid](code_paper_figs/amr_sedov3d_evolution.png)
+
+Central z=Lz/2 density slice (log scale) at 2500 / 5000 / 7500 / 10000 yr. The uniform
+64³ shock is a blocky Cartesian diamond; the AMR — identical base resolution and physics
+— resolves a crisp spherical shell, with the refinement mesh (block edges colored by
+level) tracking the expanding remnant into the hot interior. Shell density jump ≈4× (the
+γ=5/3 Sedov strong-shock limit), NaN-free, reflection-symmetric to <0.1%, and fits on a
+single A100.
+
+**What works (2D + 3D, end-to-end through `main`):**
 - Block layer: x64 Morton ids, conservative prolong/restrict, O(N log N) neighbour
   finding, NaN-sentinel padding.
 - Hydro on blocks: per-block MUSCL-Hancock; same-level seam fluxes (mass & energy

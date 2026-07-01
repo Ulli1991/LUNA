@@ -52,29 +52,34 @@ def fill_ghost_same_level(blk_data, neighbors, cfg):
     interior = _spatial_slices(ndim, lambda d: slice(g, g + bs[d]))
     out = out.at[interior].set(blk_data)
 
+    # Sequential axis sweep. Each pass copies a face band from the neighbour, but
+    # gathers the neighbour's *full* current ghosted extent along the transverse
+    # axes -- so a neighbour's already-filled ghost bands (from earlier passes)
+    # propagate into this block's edge and corner ghosts. This matters because
+    # LUNA's UNSPLIT MUSCL-Hancock predictor reads edge/corner ghosts (its
+    # transverse terms), unlike the axis-split upstream JAX-AMR. A corner touched
+    # by every axis resolves to the diagonal block's cell regardless of sweep
+    # order, so the fill is reflection-symmetric. Ghosts with no same-level
+    # neighbour stay NaN (gathered from the sentinel), for the coarse-parent /
+    # physical-BC fill layered on top.
     for d in range(ndim):
         sax = 2 + d  # array axis for spatial dim d
-        plus_nb = blk_data[neighbors[:, 2 * d]]      # neighbour in +d
-        minus_nb = blk_data[neighbors[:, 2 * d + 1]]  # neighbour in -d
+        plus_nb = out[neighbors[:, 2 * d]]       # running array: axes < d filled
+        minus_nb = out[neighbors[:, 2 * d + 1]]
 
-        # +d ghost band <- neighbour's first g cells along d
-        nb_first = [slice(None), slice(None)] + [slice(None)] * ndim
-        nb_first[sax] = slice(0, g)
-        plus_face = plus_nb[tuple(nb_first)]
+        # +d ghost band <- +d neighbour's first g interior cells along d
+        src_plus = [slice(None)] * (2 + ndim)
+        src_plus[sax] = slice(g, 2 * g)
+        dst_plus = [slice(None)] * (2 + ndim)
+        dst_plus[sax] = slice(g + bs[d], g + bs[d] + g)
+        out = out.at[tuple(dst_plus)].set(plus_nb[tuple(src_plus)])
 
-        # -d ghost band <- neighbour's last g cells along d
-        nb_last = [slice(None), slice(None)] + [slice(None)] * ndim
-        nb_last[sax] = slice(bs[d] - g, bs[d])
-        minus_face = minus_nb[tuple(nb_last)]
-
-        # placement bands: interior along other spatial axes, ghost band along sax
-        out_plus = list(_spatial_slices(ndim, lambda dd: slice(g, g + bs[dd])))
-        out_plus[sax] = slice(g + bs[d], g + bs[d] + g)
-        out = out.at[tuple(out_plus)].set(plus_face)
-
-        out_minus = list(_spatial_slices(ndim, lambda dd: slice(g, g + bs[dd])))
-        out_minus[sax] = slice(0, g)
-        out = out.at[tuple(out_minus)].set(minus_face)
+        # -d ghost band <- -d neighbour's last g interior cells along d
+        src_minus = [slice(None)] * (2 + ndim)
+        src_minus[sax] = slice(bs[d], bs[d] + g)
+        dst_minus = [slice(None)] * (2 + ndim)
+        dst_minus[sax] = slice(0, g)
+        out = out.at[tuple(dst_minus)].set(minus_nb[tuple(src_minus)])
 
     return out
 
@@ -84,6 +89,28 @@ def fill_ghost_same_level(blk_data, neighbors, cfg):
 # treats reflective as Neumann for the scalar potential; hydro reflective gets
 # proper sign flips in the dedicated hydro halo, layered later).
 _PAD_MODE = {0: "wrap", 1: "edge", 2: "edge"}
+
+
+def fill_ghost_physical(ghosted, blk_data, cfg):
+    """Fill remaining NaN ghosts at the domain edge with a physical BC.
+
+    After the same-level and coarse-parent fills, the only ghosts still NaN are
+    domain-boundary faces/edges/corners of non-periodic runs (no same-level
+    neighbour, no coarse parent). LUNA's UNSPLIT MUSCL-Hancock reads these, so
+    leaving them NaN corrupts the boundary blocks (and, via NaN-through-limiter,
+    the interior). We fill them by extending each block's own interior
+    (zero-gradient / outflow / Neumann) — exact for ``boundary==1`` and used as a
+    Neumann approximation for reflective (``boundary==2``; proper velocity sign
+    flips are layered later). Periodic runs (``boundary==0``) never reach a NaN
+    domain ghost — their same-level halo wraps — so this is a no-op there.
+    """
+    if cfg.boundary == 0:
+        return ghosted
+    g = cfg.n_ghost
+    ndim = cfg.ndim
+    pad = [(0, 0), (0, 0)] + [(g, g)] * ndim
+    edge = jnp.pad(blk_data, pad, mode=_PAD_MODE.get(cfg.boundary, "edge"))
+    return jnp.where(jnp.isnan(ghosted), edge, ghosted)
 
 
 def fill_ghost_from_coarse(fine_ghosted, fine_coords, parent_field, level, cfg,

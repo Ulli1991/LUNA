@@ -30,6 +30,7 @@ job_*
 *err*
 *.nsys-rep
 *.sqlite
+core.*
 
 # ────────────────────────────────── Figures ──────────────────────────────
 # Only the canonical paper/README figures are tracked; figures/ is scratch.

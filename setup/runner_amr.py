@@ -34,8 +34,8 @@ def run_simulation_amr(cfg, is_main_process=True):
     from file_io.write_snapshot_distributed import write_snapshot_distributed
 
     ndim = cfg.SPATIAL_DIMENSION
-    if ndim != 2:
-        raise NotImplementedError("AMR runner currently supports SPATIAL_DIMENSION=2")
+    if ndim not in (2, 3):
+        raise NotImplementedError("AMR runner supports SPATIAL_DIMENSION in {2, 3}")
 
     block = int(getattr(cfg, "amr_block_shape", 16))
     levels = int(getattr(cfg, "amr_levels", 2))
@@ -44,12 +44,16 @@ def run_simulation_amr(cfg, is_main_process=True):
     riemann = getattr(cfg, "riemann_solver", "hllc")
     limiter = int(getattr(cfg, "LIMITER", 1))
 
+    # ndim-generic domain / grid tuples (Lz/Nz default to the y-values in 2D)
+    box_full = (float(cfg.Lx), float(cfg.Ly), float(getattr(cfg, "Lz", cfg.Ly)))
+    grid_full = (int(cfg.Nx), int(cfg.Ny), int(getattr(cfg, "Nz", cfg.Ny)))
     acfg = AMRConfig(
         ndim=ndim,
-        box=(float(cfg.Lx), float(cfg.Ly)),
-        base_grid=(int(cfg.Nx), int(cfg.Ny)),
-        block_shape=(block, block),
+        box=box_full[:ndim],
+        base_grid=grid_full[:ndim],
+        block_shape=(block,) * ndim,
         max_levels=levels,
+        boundary=int(cfg.BOUNDARY),
     )
 
     # capacities: None -> build_hierarchy sizes each level to the EXACT flagged
@@ -99,7 +103,8 @@ def run_simulation_amr(cfg, is_main_process=True):
     if shard_amr:
         hierarchy = _global_hierarchy(hierarchy)
     if is_main_process:
-        print(f"AMR: base {cfg.Nx}x{cfg.Ny}, block {block}, {levels} levels "
+        base_str = "x".join(str(g) for g in grid_full[:ndim])
+        print(f"AMR: base {base_str}, block {block}, {levels} levels "
               f"(finest {cfg.Nx * acfg.refinement_ratio**levels}), riemann={riemann}")
         for L, lvl in enumerate(hierarchy):
             print(f"  L{L}: {int(lvl.n_active):6d} active blocks  dx={acfg.level_dx(L)[0]:.3e}")
@@ -131,6 +136,8 @@ def run_simulation_amr(cfg, is_main_process=True):
     scfg = copy.copy(cfg)
     scfg.Nx = finest
     scfg.Ny = finest
+    if ndim == 3:
+        scfg.Nz = finest
 
     def write(idx, t):
         img = driver.composite_to_dense(hierarchy, acfg)        # (n_vars, finest, finest)
