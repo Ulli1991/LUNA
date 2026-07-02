@@ -62,7 +62,8 @@ def _fill_same_level_2src(local_data, global_data, neighbors, cfg):
 
 
 def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
-                     gamma, limiter=1, riemann_solver="hllc"):
+                     gamma, limiter=1, riemann_solver="hllc",
+                     return_face_fluxes=False):
     """Conservative seam-flux divergence for one level, with the per-block flux
     compute (the bottleneck) **sharded over devices** and the same-level seam
     coupling done by an ``all_gather`` of the boundary states. ``W_ghosted`` /
@@ -98,16 +99,23 @@ def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
             fluxes[d] = F
 
         dU = jax.vmap(lambda *fs: divergence_from_face_fluxes(fs, spatial_dim=ndim, **inv))(*fluxes)
-        return jax.lax.all_gather(dU, "blocks", axis=0, tiled=True)       # -> full, replicated
+        dU_g = jax.lax.all_gather(dU, "blocks", axis=0, tiled=True)       # -> full, replicated
+        if return_face_fluxes:
+            # replicated seam-corrected fluxes for the (replicated) reflux pass
+            fl_g = tuple(jax.lax.all_gather(F, "blocks", axis=0, tiled=True)
+                         for F in fluxes)
+            return dU_g, fl_g
+        return dU_g
 
+    out_specs = (P(), tuple(P() for _ in range(ndim))) if return_face_fluxes else P()
     # all_gather makes the result replicated, but shard_map can't infer that
     # statically (check_vma) -> disable the check for this gathered output.
     try:
         return _shard_map(local, mesh=mesh, in_specs=(W_spec, nbr_spec),
-                          out_specs=P(), check_vma=False)(W_ghosted, neighbors)
+                          out_specs=out_specs, check_vma=False)(W_ghosted, neighbors)
     except TypeError:                                    # older jax: check_rep
         return _shard_map(local, mesh=mesh, in_specs=(W_spec, nbr_spec),
-                          out_specs=P(), check_rep=False)(W_ghosted, neighbors)
+                          out_specs=out_specs, check_rep=False)(W_ghosted, neighbors)
 
 
 def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1, riemann_solver="hllc"):
@@ -117,13 +125,52 @@ def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1, riemann_solver=
     helpers; only the hot flux/divergence kernel is distributed. Matches
     :func:`amr.driver.advance`."""
     from amr.driver import _fill_ghosts, _restrict_into_parent
+    from amr.reflux import apply_reflux_blocks
+
+    from jax.sharding import NamedSharding
+
+    repl = NamedSharding(mesh, P())
 
     ghosted = _fill_ghosts(hierarchy, cfg, gamma)
     new_data = []
+    fluxes = []
     for L, lvl in enumerate(hierarchy):
-        dU = divergence_shmap(ghosted[L], lvl.neighbors, mesh, dt, L, cfg,
-                              gamma=gamma, limiter=limiter, riemann_solver=riemann_solver)
+        dU, fl = divergence_shmap(ghosted[L], lvl.neighbors, mesh, dt, L, cfg,
+                                  gamma=gamma, limiter=limiter,
+                                  riemann_solver=riemann_solver,
+                                  return_face_fluxes=True)
+        # Pin the (all-gathered) outputs EXPLICITLY replicated. shard_map with
+        # check_vma=False only ASSERTS replication; under an outer jit the SPMD
+        # partitioner is then free to re-partition the downstream reflux's
+        # segment-sums/gathers over the block axis, silently summing only
+        # shard-local contributions (measured: reflux corrections vanished
+        # under jit while every component was jit-clean in isolation).
+        dU = jax.lax.with_sharding_constraint(dU, repl)
+        fl = tuple(jax.lax.with_sharding_constraint(f, repl) for f in fl)
         new_data.append(lvl.data + dt * dU)
+        fluxes.append(fl)
+    # Berger-Colella reflux on the replicated fluxes (cheap, O(face area)),
+    # executed INSIDE a shard_map with fully-replicated specs: every device
+    # redundantly computes the identical correction, so the SPMD partitioner
+    # has zero freedom to shard the segment-sums/gathers over the block axis
+    # (which it silently did under an outer jit, dropping shard-remote
+    # contributions -- even with an explicit sharding constraint upstream).
+    for L in range(len(hierarchy) - 1, 0, -1):
+        args = (new_data[L - 1], fluxes[L - 1], fluxes[L],
+                hierarchy[L].coords, hierarchy[L].parent_slots,
+                hierarchy[L].neighbors, hierarchy[L].n_active,
+                hierarchy[L - 1].neighbors)
+
+        def _rf(cd, fc, ff, cc, ps, nb, na, cnb, _L=L):
+            return apply_reflux_blocks(cd, fc, ff, cc, ps, nb, na, cnb,
+                                       dt, _L - 1, cfg)
+
+        try:
+            new_data[L - 1] = _shard_map(_rf, mesh=mesh, in_specs=P(),
+                                         out_specs=P(), check_vma=False)(*args)
+        except TypeError:                                # older jax: check_rep
+            new_data[L - 1] = _shard_map(_rf, mesh=mesh, in_specs=P(),
+                                         out_specs=P(), check_rep=False)(*args)
     for L in range(len(hierarchy) - 1, 0, -1):
         fine = hierarchy[L]._replace(data=new_data[L])
         new_data[L - 1] = _restrict_into_parent(new_data[L - 1], fine, cfg)

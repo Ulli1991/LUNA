@@ -450,18 +450,35 @@ def _restrict_into_parent(coarse_data, fine, cfg):
     return coarse_data.at[tuple(idx)].set(restricted)
 
 
-def advance(levels, dt, cfg, *, gamma, limiter=1, riemann_solver="hllc"):
-    """One synchronized same-dt step over the whole hierarchy."""
+def advance(levels, dt, cfg, *, gamma, limiter=1, riemann_solver="hllc",
+            reflux=True):
+    """One synchronized same-dt step over the whole hierarchy: per-level update
+    (conservative same-level seams), Berger-Colella reflux at every coarse-fine
+    interface (the coarse cells outside a fine patch see exactly the
+    transverse-averaged fine fluxes -> conserved quantities telescope across
+    levels to machine precision), then fine-authoritative restriction."""
+    from amr.reflux import apply_reflux_blocks
+
     ghosted = _fill_ghosts(levels, cfg, gamma)
 
-    # advance each level (conservative same-level seams; C/F faces ghost-based)
     new_data = []
+    fluxes = []
     for L, lvl in enumerate(levels):
-        dU = conservative_block_divergence(
+        dU, fl = conservative_block_divergence(
             ghosted[L], dt, L, cfg, lvl.neighbors,
             gamma=gamma, limiter=limiter, riemann_solver=riemann_solver,
+            return_face_fluxes=True,
         )
         new_data.append(lvl.data + dt * dU)
+        fluxes.append(fl)
+
+    # reflux finest -> coarsest so corrections propagate down before restriction
+    if reflux:
+        for L in range(len(levels) - 1, 0, -1):
+            new_data[L - 1] = apply_reflux_blocks(
+                new_data[L - 1], fluxes[L - 1], fluxes[L],
+                levels[L].coords, levels[L].parent_slots, levels[L].neighbors,
+                levels[L].n_active, levels[L - 1].neighbors, dt, L - 1, cfg)
 
     # restrict fine -> coarse, finest first
     for L in range(len(levels) - 1, 0, -1):

@@ -207,6 +207,7 @@ def conservative_block_divergence(
     gamma,
     limiter=1,
     riemann_solver="hllc",
+    return_face_fluxes=False,
 ):
     """Per-block flux divergence with **consistent same-level seam fluxes**.
 
@@ -259,7 +260,12 @@ def conservative_block_divergence(
             fs, spatial_dim=ndim, inv_dx=inv_dx, inv_dy=inv_dy, inv_dz=inv_dz
         )
 
-    return jax.vmap(_div)(*fluxes)
+    dU = jax.vmap(_div)(*fluxes)
+    if return_face_fluxes:
+        # the exact per-axis face fluxes the update used (seam-corrected) --
+        # consumed by amr.reflux for coarse-fine flux correction.
+        return dU, tuple(fluxes)
+    return dU
 
 
 def advance_blocks_conservative(

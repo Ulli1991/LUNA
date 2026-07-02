@@ -185,3 +185,83 @@ def restrict_fine_into_coarse_dense(U_coarse, fine_data, fine_coords, fine_level
         updated = jax.lax.dynamic_update_slice(acc, rc, start)
         acc = jnp.where(valid, updated, acc)
     return acc
+
+
+def apply_reflux_blocks(coarse_data, coarse_fluxes, fine_fluxes, fine_coords,
+                        fine_parent_slots, fine_neighbors, fine_n_active,
+                        coarse_neighbors, dt, coarse_level, cfg):
+    """Block-sparse Berger-Colella reflux (production version).
+
+    Corrects the UNREFINED coarse cells just outside every coarse-fine face so
+    the coarse update sees exactly the transverse-averaged fine fluxes: for the
+    fine patch's +d face  ``U_c += (dt/dx_c)(<F_f> - F_c)`` on the coarse cell
+    across it, mirrored for -d. Fully vectorised: a vmap builds one correction
+    block per fine slot and a ``segment_sum`` keyed by the target coarse slot
+    scatter-adds them (2*ndim passes total, no per-slot Python loops -- the
+    dense first cut above unrolled per slot and cannot compile at ~10^4 blocks).
+
+    Target resolution per fine face: the fine block occupies octant ``q`` of its
+    parent. Its +d face lies on the parent's midplane when ``q_d == 0`` (target
+    = the parent block, cell layer ``h_d``) and on the parent's +d boundary when
+    ``q_d == 1`` (target = the parent's +d coarse neighbour, cell layer 0);
+    mirrored for -d. Distinct fine faces correct disjoint coarse cells, and a
+    correction landing on a COVERED coarse cell is later overwritten by the
+    fine-authoritative restriction (harmless, per standard Berger-Colella).
+
+    ``coarse_fluxes`` / ``fine_fluxes`` are the per-axis seam-corrected face
+    fluxes the updates actually used (``conservative_block_divergence(...,
+    return_face_fluxes=True)``). Sentinel/inactive slots carry NaN fluxes; every
+    invalid contribution is masked to zero before the scatter.
+    """
+    ndim = cfg.ndim
+    bs = cfg.block_shape
+    hs = tuple(s // 2 for s in bs)
+    n_vars = coarse_data.shape[1]
+    Nc = coarse_data.shape[0]
+    dxc = cfg.level_dx(coarse_level)
+    cf = coarse_fine_face_mask(fine_neighbors, fine_n_active)    # (Nf, 2*ndim)
+    q = jnp.maximum(fine_coords, 0) % 2                           # (Nf, ndim)
+    parent = fine_parent_slots                                    # (Nf,)
+    parent_safe = jnp.maximum(parent, 0)
+    c_sent = Nc - 1
+
+    out = coarse_data
+    for d in range(ndim):
+        for s, col, f_idx in ((+1, 2 * d, -1), (-1, 2 * d + 1, 0)):
+            # fine boundary flux on this face, transverse-averaged to coarse
+            face = jax.vmap(lambda F: _fine_boundary_face(F, d, f_idx, ndim))(
+                fine_fluxes[d])                                   # (Nf, n_vars, *bs_trans)
+            ff = jax.vmap(lambda f: _restrict_transverse(f, ndim))(face)
+
+            qd = q[:, d]
+            if s > 0:
+                target = jnp.where(qd == 0, parent_safe,
+                                   coarse_neighbors[parent_safe, 2 * d])
+                cell_d = jnp.where(qd == 0, hs[d], 0)
+                face_d = cell_d                                   # cell's -d face
+            else:
+                target = jnp.where(qd == 1, parent_safe,
+                                   coarse_neighbors[parent_safe, 2 * d + 1])
+                cell_d = jnp.where(qd == 1, hs[d] - 1, bs[d] - 1)
+                face_d = cell_d + 1                               # cell's +d face
+            valid = cf[:, col] & (parent >= 0) & (target >= 0) & (target != c_sent)
+            tsafe = jnp.where(valid, target, c_sent)
+
+            def one(tslot, qq, cell, facei, ffp):
+                Fc_d = coarse_fluxes[d][tslot]
+                o = [qq[t] * hs[t] for t in range(ndim)]          # o[d] unused
+                Fcp = _coarse_face_patch(Fc_d, d, facei, o, hs, ndim)
+                corr = (dt / dxc[d]) * float(s) * (ffp - Fcp)     # (n_vars, *h_trans)
+                shape = [n_vars] + [1 if t == d else hs[t] for t in range(ndim)]
+                start = [_i32(0)] + [_i32(cell) if t == d else _i32(o[t])
+                                     for t in range(ndim)]
+                zero = jnp.zeros((n_vars,) + tuple(bs), coarse_data.dtype)
+                return jax.lax.dynamic_update_slice(zero, corr.reshape(shape), start)
+
+            patches = jax.vmap(one)(tsafe, q, cell_d, face_d, ff)
+            patches = jnp.where(valid.reshape((-1,) + (1,) * (1 + ndim)),
+                                patches, 0.0)
+            seg = jax.ops.segment_sum(patches, tsafe, num_segments=Nc)
+            seg = seg.at[c_sent].set(0.0)                         # keep sentinel NaN
+            out = out + seg
+    return out

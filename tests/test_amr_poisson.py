@@ -118,3 +118,36 @@ def test_kick_matches_dense_formula():
         m_new = m_old + dt * rho * g[d]
         got = np.asarray(assemble_base_level(out[0].data[:8], cfg))[1 + d]
         assert np.allclose(got, m_new, atol=1e-12), f"momentum axis {d}"
+
+
+def test_synchronized_advance_reflux_conserves():
+    """Berger-Colella reflux: composite mass and energy are conserved to machine
+    precision across a multi-level synchronized advance (periodic box, flowing
+    gas, partial refinement -> real coarse-fine faces). Without reflux the C/F
+    flux mismatch leaks conserved quantities; with it they telescope exactly."""
+    cfg = AMRConfig(ndim=3, box=(BOX,) * 3, base_grid=(N,) * 3,
+                    block_shape=(16,) * 3, max_levels=1, boundary=0)
+    U = _sine_U(N)
+    U = U.at[1].set(0.2 * U[0])                 # vx = 0.2: flow across C/F faces
+    U = U.at[4].set(U[4] + 0.5 * 0.2 ** 2 * U[0])
+    h = driver.build_hierarchy(U, cfg, thresholds=[1.2], criterion="overdensity",
+                               periodic=True)
+    na = int(h[1].n_active)
+    assert 0 < na < 8 * 8, f"want PARTIAL refinement, got {na} fine blocks"
+
+    def totals(hier):
+        comp = driver.composite_to_dense(hier, cfg)
+        dv = (BOX / (N * 2)) ** 3
+        return np.array([float(jnp.nansum(comp[0])) * dv,
+                         float(jnp.nansum(comp[4])) * dv])
+
+    t0 = totals(h)
+    step = jax.jit(lambda lv, dt: driver.advance(lv, dt, cfg, gamma=5 / 3,
+                                                 limiter=1, riemann_solver="hllc"))
+    for _ in range(10):
+        dt = 0.5 * float(driver.compute_dt(h, cfg, gamma=5 / 3, CFL=0.4))
+        h = step(h, dt)
+    t1 = totals(h)
+    drift = np.abs(t1 - t0) / np.abs(t0)
+    assert drift[0] < 1e-12, f"mass drift {drift[0]:.3e}"
+    assert drift[1] < 1e-12, f"energy drift {drift[1]:.3e}"
