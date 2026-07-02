@@ -49,7 +49,9 @@ def run(cfg):
 
     # Coupled gas + DM cosmological box: gas meshed from MUSIC baryon IC, DM as
     # particles, evolved under one joint potential. Builds its own grid/U/step_fn.
-    if getattr(cfg, "CosmoHydro", False):
+    # With cfg.AMR the coupled box goes through the block-AMR runner instead
+    # (quasi-Lagrangian refinement; DM via amr/particles.py).
+    if getattr(cfg, "CosmoHydro", False) and not getattr(cfg, "AMR", False):
         from setup.runner_cosmo_hydro import run_simulation_cosmo_hydro_music
         return run_simulation_cosmo_hydro_music(
             cfg, is_main_process=(jax.process_index() == 0))

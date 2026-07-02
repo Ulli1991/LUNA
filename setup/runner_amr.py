@@ -37,6 +37,43 @@ def run_simulation_amr(cfg, is_main_process=True):
     if ndim not in (2, 3):
         raise NotImplementedError("AMR runner supports SPATIAL_DIMENSION in {2, 3}")
 
+    # ---- coupled gas+DM cosmological box (MUSIC IC) ----------------------
+    # Gas (PartType0) is meshed to the base grid; DM (PartType1) stays as
+    # particles on the hierarchy (amr/particles.py: locate / ghosted-CIC
+    # deposit / inverse-CIC gather). Box + cosmology come from the IC header,
+    # so this MUST run before the grid/box reads below.
+    dm_state = None
+    if getattr(cfg, "CosmoHydro", False):
+        import numpy as _np
+        from cosmology.music_ic import (music_run_config, read_music_dm_ic,
+                                        read_music_gas_ic)
+        from gravity.particle_mesh import ParticleMeshGravity
+        from setup.runner_cosmo_hydro import mesh_gas_to_grid
+
+        gas = read_music_gas_ic(cfg.music_ic_path)
+        dm = read_music_dm_ic(cfg.music_ic_path, part_type=1)
+        cfg = music_run_config(dm, cfg.Nx, base=cfg)     # box + cosmology (header)
+        a0_music = float(cfg.a_init)
+        if float(_np.max(gas.u_int)) <= 0.0:             # MUSIC wrote no u -> seed T
+            z = 1.0 / a0_music - 1.0
+            T_init = float(getattr(cfg, "cosmo_T_init", 0.0)) or 2.725 * (1.0 + z)
+            mu = float(getattr(cfg, "cosmo_mu", 1.22))
+            u_init = 8.2543e-3 * T_init / ((float(cfg.gamma) - 1.0) * mu)
+            gas.u_int = _np.full(gas.n_part, u_init, dtype=_np.float64)
+            if is_main_process:
+                print(f"  cosmo-AMR DM: seeding gas T_init={T_init:.1f} K")
+        _pm = ParticleMeshGravity(cfg)
+        U0_music = jnp.asarray(mesh_gas_to_grid(gas, _pm, a0_music))
+        dm_state = dict(pos=jnp.asarray(dm.pos),
+                        p=jnp.asarray(dm.vel) * (a0_music ** 1.5),  # canonical p
+                        mass=jnp.asarray(dm.mass))
+        # bound early: the t=0 snapshot's DM dump reads these via the write()
+        # closure before the chunk section (re)assigns them.
+        dm_pos, dm_p = dm_state["pos"], dm_state["p"]
+        if is_main_process:
+            print(f"  cosmo-AMR DM: MUSIC IC {gas.n_part} gas + {dm.n_part} DM, "
+                  f"box={cfg.Lx:.1f}, z={1.0 / a0_music - 1.0:.1f}")
+
     block = int(getattr(cfg, "amr_block_shape", 16))
     levels = int(getattr(cfg, "amr_levels", 2))
     gamma = float(cfg.gamma)
@@ -98,7 +135,7 @@ def run_simulation_amr(cfg, is_main_process=True):
                 parent_slots=g(lvl.parent_slots), n_active=g(lvl.n_active)) for lvl in h)
 
     # --- base-grid conservative IC -> hierarchy ---
-    U0 = jnp.asarray(initial_conditions(cfg))
+    U0 = U0_music if dm_state is not None else jnp.asarray(initial_conditions(cfg))
     hierarchy = driver.build_hierarchy(
         U0, acfg, thresholds=thresholds, capacities=caps, periodic=periodic,
         bucket=bucket, pad_to=pad_to, criterion=criterion,
@@ -156,6 +193,9 @@ def run_simulation_amr(cfg, is_main_process=True):
             blk["block_shape"] = _np.array(acfg.block_shape)
             blk["t"] = _np.array(float(t))
             _np.savez(os.path.join(cfg.output_dir, f"blocks_{idx:03d}.npz"), **blk)
+            if dm_state is not None:                     # DM particle dump
+                _np.savez(os.path.join(cfg.output_dir, f"dm_{idx:03d}.npz"),
+                          pos=_np.asarray(dm_pos), p=_np.asarray(dm_p))
             print(f"  snapshot #{idx} at t={t:.5f}  (blocks: "
                   + " ".join(f"L{L}={int(l.n_active)}" for L, l in enumerate(hierarchy)) + ")")
 
@@ -210,12 +250,28 @@ def run_simulation_amr(cfg, is_main_process=True):
     from ic_generation.ic import is_cosmological
     cosmo_kit = None
     grav_apply = None
-    if is_cosmological(cfg.test_problem):
+    is_cosmo = is_cosmological(cfg.test_problem) or dm_state is not None
+    if is_cosmo:
         from amr.cosmo import make_cosmo_amr
-        from amr.poisson import apply_gravity_kick, solve_phi_hierarchy
+        from amr.poisson import _ghost_phi, apply_gravity_kick, solve_phi_hierarchy
         rho_bar0 = float(jnp.nanmean(hierarchy[0].data[:, 0]))
+        if dm_state is not None:
+            _V = 1.0
+            for d in range(ndim):
+                _V *= float(acfg.box[d])
+            rho_bar0 = rho_bar0 + float(jnp.sum(dm_state["mass"])) / _V
         cosmo_kit = make_cosmo_amr(cfg, acfg, rho_bar0, is_main_process=is_main_process)
         _n_vc = int(getattr(cfg, "amr_grav_vcycles", 3) or 3)
+        if dm_state is not None:
+            # MUSIC header owns a_init, so tau targets can only be derived here:
+            # run to a_end in conformal time, snapshots evenly in tau.
+            tau_end = float(np.interp(cosmo_kit["a_end"],
+                                      cosmo_kit["a_tab"], cosmo_kit["tau_tab"]))
+            cfg.t_end = tau_end
+            cfg.time_bet_snaps = tau_end / max(1, int(getattr(cfg, "amr_n_snaps", 4)))
+            if is_main_process:
+                print(f"  cosmo-AMR DM: a {cosmo_kit['a_start']:.4f} -> "
+                      f"{cosmo_kit['a_end']:.4f}, t_end(tau)={tau_end:.4f}")
 
         def grav_cosmo(levels, dt, aa):
             phis = solve_phi_hierarchy(levels, acfg, fourpiG=cosmo_kit["coeff"](aa),
@@ -224,6 +280,35 @@ def run_simulation_amr(cfg, is_main_process=True):
             return cosmo_kit["floors"](levels, aa)
     else:
         grav_apply = make_amr_self_gravity(cfg, acfg, is_main_process=is_main_process)
+
+    if dm_state is not None:
+        # ---- coupled gas+DM step pieces (all jit/scan-safe) ---------------
+        from amr.particles import (accel_blocks, deposit_cic, gather_cic,
+                                   locate_particles)
+        dm_mass = dm_state["mass"]
+        _box_arr = jnp.asarray([float(acfg.box[d]) for d in range(ndim)])
+        _dm_eta = float(getattr(cfg, "dm_eta", 0.025))
+        _eps_soft = (float(getattr(cfg, "dm_softening", 0.0))
+                     or float(acfg.level_dx(acfg.max_levels)[0]))
+
+        def _dm_forces(h, pos, aa):
+            """One JOINT solve (gas + deposited DM) -> (phis, accel at particles).
+            Mirrors the dense runner's forces(): deposit at owning level, total
+            source into the level-by-level Dirichlet MG, inverse-CIC gather."""
+            lev_p, slot_p = locate_particles(pos, h, acfg)
+            rho_dm = deposit_cic(pos, dm_mass, h, lev_p, slot_p, acfg)
+            rho_tot = [hh.data[:, 0:1] + rd for hh, rd in zip(h, rho_dm)]
+            phis = solve_phi_hierarchy(h, acfg, fourpiG=cosmo_kit["coeff"](aa),
+                                       boundary=0, n_vcycles=_n_vc,
+                                       rho_blocks=rho_tot)
+            fields, cg = [], None
+            for L, (hh, ph) in enumerate(zip(h, phis)):
+                gw = _ghost_phi(ph, hh, cg, acfg)
+                fields.append(accel_blocks(gw, L, acfg))
+                if L + 1 < len(h):
+                    cg = gw
+            gp = gather_cic(fields, h, pos, lev_p, slot_p, acfg)
+            return phis, gp
 
     def _chunk(hier, tt, target):
         def body(carry, _):
@@ -243,13 +328,49 @@ def run_simulation_amr(cfg, is_main_process=True):
             body, (hier, tt, jnp.zeros((), jnp.int32)), None, length=chunk_len)
         return h, tf, taken
 
-    chunk_step = jax.jit(_chunk, donate_argnums=0)
+    def _chunk_dm(hier, pos, p, g, tt, target):
+        """Coupled gas+DM chunk: the dense runner's KDK, per scan step --
+        DM half-kick (reusing last force) -> drift -> gas hydro -> ONE joint
+        solve at a_next -> gas kick -> DM closing half-kick -> floors."""
+        def body(carry, _):
+            h, ps, pp, gg, tc, taken = carry
+            aa = jnp.interp(tc, cosmo_kit["tau_tab"], cosmo_kit["a_tab"])
+            gmax = jnp.max(jnp.sqrt(jnp.sum(gg * gg, axis=1)))
+            dt = jnp.minimum(dt_fn(h), cosmo_kit["dtau_cap"](aa))
+            dt = jnp.minimum(dt, _dm_eta * jnp.sqrt(_eps_soft / (gmax + 1e-30)))
+            dt = jnp.minimum(dt, jnp.maximum(target - tc, 0.0))
+            pp = pp + gg * (0.5 * dt)
+            ps = jnp.mod(ps + pp * dt, _box_arr)
+            h = step(h, dt)
+            a_next = jnp.interp(tc + dt, cosmo_kit["tau_tab"], cosmo_kit["a_tab"])
+            phis, g2 = _dm_forces(h, ps, a_next)
+            h = apply_gravity_kick(h, phis, dt, acfg)
+            pp = pp + g2 * (0.5 * dt)
+            h = cosmo_kit["floors"](h, a_next)
+            return (h, ps, pp, g2, tc + dt,
+                    taken + (dt > 0).astype(jnp.int32)), None
+        (h, ps, pp, gg, tf, taken), _ = jax.lax.scan(
+            body, (hier, pos, p, g, tt, jnp.zeros((), jnp.int32)),
+            None, length=chunk_len)
+        return h, ps, pp, gg, tf, taken
+
+    if dm_state is not None:
+        chunk_step_dm = jax.jit(_chunk_dm, donate_argnums=(0, 1, 2, 3))
+        _, dm_g = _dm_forces(hierarchy, dm_pos,
+                             jnp.asarray(cosmo_kit["a_start"], jnp.float64))
+    else:
+        chunk_step = jax.jit(_chunk, donate_argnums=0)
 
     last_print, t_prev = 0, t
     while t < cfg.t_end - 1e-12:
         target = min(cfg.t_end, snapshot_times[si] if si < num else cfg.t_end)
-        hierarchy, t_dev, taken_dev = chunk_step(
-            hierarchy, jnp.asarray(t, jnp.float64), jnp.asarray(target, jnp.float64))
+        if dm_state is not None:
+            hierarchy, dm_pos, dm_p, dm_g, t_dev, taken_dev = chunk_step_dm(
+                hierarchy, dm_pos, dm_p, dm_g,
+                jnp.asarray(t, jnp.float64), jnp.asarray(target, jnp.float64))
+        else:
+            hierarchy, t_dev, taken_dev = chunk_step(
+                hierarchy, jnp.asarray(t, jnp.float64), jnp.asarray(target, jnp.float64))
         taken = int(taken_dev)                           # one host sync per chunk
         t_prev, t = t, float(t_dev)
         if taken == 0:

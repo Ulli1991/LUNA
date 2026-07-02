@@ -196,7 +196,8 @@ def _init_phi_from_parent(lvl, coarse_ghosted, cfg):
 
 
 def solve_phi_hierarchy(levels, cfg, *, fourpiG, boundary, n_vcycles=3,
-                        n_pre=4, n_post=4, n_coarse=12, fmg_kwargs=None):
+                        n_pre=4, n_post=4, n_coarse=12, fmg_kwargs=None,
+                        rho_blocks=None):
     """Solve Poisson on the whole hierarchy. Returns per-level phi blocks
     ``(n_slots, 1, *block_shape)`` (sentinel slots NaN).
 
@@ -204,7 +205,11 @@ def solve_phi_hierarchy(levels, cfg, *, fourpiG, boundary, n_vcycles=3,
     Level L>0: ``n_vcycles`` within-block V-cycles with Dirichlet ghosts from
     level L-1's phi. Periodic domains use the standard Jeans-swindle source
     (rho - <rho>), with <rho> taken once from level 0 (mass conservation
-    keeps it exact)."""
+    keeps it exact).
+
+    ``rho_blocks`` (optional, per-level list of (n_slots, 1, *bs)): explicit
+    source density -- e.g. gas + deposited DM for the coupled cosmological
+    step. Default: the hierarchy's own gas density (levels[L].data[:, 0:1])."""
     from gravity.poisson_multigrid import solve_poisson_fmg
 
     ndim = cfg.ndim
@@ -213,7 +218,8 @@ def solve_phi_hierarchy(levels, cfg, *, fourpiG, boundary, n_vcycles=3,
         n_base *= cfg.base_blocks[d]
 
     # ---- level 0: dense solve ----
-    rho0 = assemble_base_level(levels[0].data[:n_base, 0:1], cfg)[0]
+    src0 = rho_blocks[0] if rho_blocks is not None else levels[0].data[:, 0:1]
+    rho0 = assemble_base_level(src0[:n_base], cfg)[0]
     dx0 = cfg.level_dx(0)[0]
     # Jeans-swindle: the low-level FMG does NOT subtract the mean (the dense
     # self-gravity caller does it) -- an un-subtracted periodic source is
@@ -233,7 +239,8 @@ def solve_phi_hierarchy(levels, cfg, *, fourpiG, boundary, n_vcycles=3,
     for L in range(1, len(levels)):
         lvl = levels[L]
         phi = _init_phi_from_parent(lvl, coarse_ghosted, cfg)
-        rhs = fourpiG * (lvl.data[:, 0:1] - mean_rho)
+        srcL = rho_blocks[L] if rho_blocks is not None else lvl.data[:, 0:1]
+        rhs = fourpiG * (srcL - mean_rho)
         for _ in range(n_vcycles):
             phi = _vcycle_phi(phi, rhs, lvl, coarse_ghosted, cfg, L,
                               n_pre, n_post, n_coarse)

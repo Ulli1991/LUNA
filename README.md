@@ -432,6 +432,21 @@ de-refines back to the coarse levels as the remnant expands. Shell density jump 
 γ=5/3 Sedov strong-shock limit), NaN-free, reflection-symmetric to <0.02%, and the full
 64³→512³ run takes ~400 s on a single A100.
 
+**Validation — self-gravitating collapse on AMR: Evrard spherical collapse, 64³ base → 512³ effective:**
+
+![Evrard collapse: radial density profile (dense vs AMR) + refinement mesh](code_paper_figs/evrard_amr_t075.png)
+
+Cold spherical cloud in free-fall self-gravity, at t = 0.75 (~0.68 t_ff). **Left:** the
+spherically-averaged density profile — the AMR run (orange) matches the dense 64³ reference
+(blue) from the envelope through the accretion-shock break at r≈0.12, then continues the
+collapse profile **another decade inward** where the fixed 64³ hits its resolution floor
+(core ρ≈236 vs 41). **Right:** the mesh — nested quasi-Lagrangian refinement (level 1 cyan,
+2 yellow, 3 green) wraps the cloud and piles onto the collapsing core, ambient stays coarse.
+This is the AMR hierarchy coupled to the **level-by-level Dirichlet multigrid Poisson solver**
+(`amr/poisson.py`): L0 by the dense FMG, refined levels by within-block V-cycles with
+linearly-prolonged Dirichlet ghosts — gravity + hydro + dynamic regridding all cooperating.
+Validated on Jeans growth (dense 64³ +0.06%, AMR full chain +0.55% of the analytic σ).
+
 **What works (2D + 3D, end-to-end through `main`):**
 - Block layer: x64 Morton ids, conservative prolong/restrict, O(N log N) neighbour
   finding, NaN-sentinel padding.

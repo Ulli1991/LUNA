@@ -69,8 +69,6 @@ def main():
         ax.set_ylabel(r"$y\ [h^{-1}\,\mathrm{Mpc}]$")
         ax.text(0.035, 0.955, label, transform=ax.transAxes, color="white",
                 ha="left", va="top", fontsize=13, fontweight="bold")
-        cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
-        cb.set_label(r"projected $\Sigma/\langle\Sigma\rangle$")
     axes[1].text(0.965, 0.955, f"$z={z:.2f}$", transform=axes[1].transAxes,
                  color="white", ha="right", va="top", fontsize=12)
 
