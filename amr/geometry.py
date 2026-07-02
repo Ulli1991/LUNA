@@ -114,6 +114,62 @@ def prolong(data, ndim):
 
 
 @partial(jax.jit, static_argnums=(1,))
+def prolong_linear(data, ndim):
+    """Coarse -> fine, cell-centred (tri)linear interpolation (ratio 2).
+
+    Per axis: ``fine[2i] = 0.75 c[i] + 0.25 c[i-1]``, ``fine[2i+1] = 0.75 c[i]
+    + 0.25 c[i+1]`` (edges clamp one-sided). NOT conservative -- meant for
+    smooth scalars, e.g. Dirichlet phi ghosts at coarse-fine boundaries, where
+    the piecewise-constant :func:`prolong` puts an O(dx_coarse) interpolation
+    error (~5% of a k=2pi/L mode) straight into the fine level's boundary
+    values."""
+    out = data
+    nd_total = data.ndim
+    for d in range(ndim):
+        ax = nd_total - ndim + d
+        out = jnp.moveaxis(out, ax, -1)
+        lo = jnp.concatenate([out[..., :1], out[..., :-1]], axis=-1)
+        hi = jnp.concatenate([out[..., 1:], out[..., -1:]], axis=-1)
+        even = 0.75 * out + 0.25 * lo
+        odd = 0.75 * out + 0.25 * hi
+        inter = jnp.stack([even, odd], axis=-1)
+        inter = inter.reshape(out.shape[:-1] + (2 * out.shape[-1],))
+        out = jnp.moveaxis(inter, -1, ax)
+    return out
+
+
+@partial(jax.jit, static_argnums=(1,))
+def prolong_linear_cons(data, ndim):
+    """Coarse -> fine, CONSERVATIVE minmod-limited linear (ratio 2).
+
+    The two children of a parent cell along each axis are ``parent -/+ slope/4``
+    with ``slope = minmod(c_i - c_{i-1}, c_{i+1} - c_i)`` -- the child pair mean
+    equals the parent exactly (mass/momentum/energy conserving), and minmod
+    keeps the interpolation monotone (no new extrema, positivity-safe). Edge
+    cells limit to zero slope (piecewise-constant). This is the RAMSES-style
+    initialization for NEWLY REFINED cells: piecewise-constant injection there
+    plants an O(dx_coarse) staircase right on the feature that triggered
+    refinement, which a converging flow then amplifies (measured: 11% density
+    error at a Zeldovich pancake peak vs ~1% with limited-linear)."""
+    out = data
+    nd_total = data.ndim
+    for d in range(ndim):
+        ax = nd_total - ndim + d
+        out = jnp.moveaxis(out, ax, -1)
+        dl = out - jnp.concatenate([out[..., :1], out[..., :-1]], axis=-1)
+        dr = jnp.concatenate([out[..., 1:], out[..., -1:]], axis=-1) - out
+        slope = jnp.where(dl * dr > 0.0,
+                          jnp.sign(dl) * jnp.minimum(jnp.abs(dl), jnp.abs(dr)),
+                          0.0)
+        lo = out - 0.25 * slope
+        hi = out + 0.25 * slope
+        inter = jnp.stack([lo, hi], axis=-1)
+        inter = inter.reshape(out.shape[:-1] + (2 * out.shape[-1],))
+        out = jnp.moveaxis(inter, -1, ax)
+    return out
+
+
+@partial(jax.jit, static_argnums=(1,))
 def restrict(data, ndim):
     """Fine -> coarse, ``2**ndim`` average (refinement ratio 2).
 

@@ -72,7 +72,6 @@ def run_simulation_amr(cfg, is_main_process=True):
     mesh = None
     if shard_amr:
         from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
-        import numpy as np
         mesh = Mesh(np.asarray(jax.devices()), ("blocks",))
 
         repl = NamedSharding(mesh, P())                  # replicated across all devices
@@ -81,9 +80,13 @@ def run_simulation_amr(cfg, is_main_process=True):
             # reshard=True: input is already a GLOBAL multi-process array (regrid
             # output) -> device_put reshards it to replicated ON-DEVICE (cheap,
             # no host round-trip). reshard=False: input is this process's local
-            # build array -> LUNA's create_sharded_array_from_local pattern
-            # (put on local device, make_array_from_single_device_arrays).
-            if reshard:
+            # build array. Single-process (e.g. 1 node, 4 local GPUs): plain
+            # device_put replicates correctly -- all mesh devices are addressable.
+            # Multi-process: LUNA's create_sharded_array_from_local pattern (put on
+            # THE local device, make_array_from_single_device_arrays), because
+            # make_array_* wants exactly one shard per *addressable* device and a
+            # naive host-array device_put deadlocks across processes.
+            if reshard or jax.process_count() == 1:
                 return jax.device_put(a, repl)
             local = jax.device_put(np.asarray(a), jax.local_devices()[0])
             return jax.make_array_from_single_device_arrays(local.shape, repl, [local])
@@ -194,12 +197,47 @@ def run_simulation_amr(cfg, is_main_process=True):
     # ----------------------------------------------------------------------
     chunk_len = regrid_interval if regrid_interval > 0 else 16
 
+    # optional self-gravity: level-by-level Dirichlet solve + operator-split
+    # kick (amr/poisson.py), applied after each hydro step INSIDE the scan --
+    # the FMG + fixed-sweep RB-GS are fully jittable.
+    #
+    # Cosmological runs (super-comoving variables): the SAME hydro advance and
+    # the SAME gravity machinery, but time is conformal (tt = tau), a(tau) is
+    # interpolated on-device from the background table, dt gets the dloga
+    # expansion cap, the Poisson coefficient becomes 1.5 Om H0^2 a / <rho>, and
+    # the cosmo floor stack runs after each step (amr/cosmo.py).
+    from amr.poisson import make_amr_self_gravity
+    from ic_generation.ic import is_cosmological
+    cosmo_kit = None
+    grav_apply = None
+    if is_cosmological(cfg.test_problem):
+        from amr.cosmo import make_cosmo_amr
+        from amr.poisson import apply_gravity_kick, solve_phi_hierarchy
+        rho_bar0 = float(jnp.nanmean(hierarchy[0].data[:, 0]))
+        cosmo_kit = make_cosmo_amr(cfg, acfg, rho_bar0, is_main_process=is_main_process)
+        _n_vc = int(getattr(cfg, "amr_grav_vcycles", 3) or 3)
+
+        def grav_cosmo(levels, dt, aa):
+            phis = solve_phi_hierarchy(levels, acfg, fourpiG=cosmo_kit["coeff"](aa),
+                                       boundary=0, n_vcycles=_n_vc)
+            levels = apply_gravity_kick(levels, phis, dt, acfg)
+            return cosmo_kit["floors"](levels, aa)
+    else:
+        grav_apply = make_amr_self_gravity(cfg, acfg, is_main_process=is_main_process)
+
     def _chunk(hier, tt, target):
         def body(carry, _):
             h, tc, taken = carry
             dt = dt_fn(h)
+            if cosmo_kit is not None:
+                aa = jnp.interp(tc, cosmo_kit["tau_tab"], cosmo_kit["a_tab"])
+                dt = jnp.minimum(dt, cosmo_kit["dtau_cap"](aa))
             dt = jnp.minimum(dt, jnp.maximum(target - tc, 0.0))
             h = step(h, dt)
+            if cosmo_kit is not None:
+                h = grav_cosmo(h, dt, aa)
+            elif grav_apply is not None:
+                h = grav_apply(h, dt)
             return (h, tc + dt, taken + (dt > 0).astype(jnp.int32)), None
         (h, tf, taken), _ = jax.lax.scan(
             body, (hier, tt, jnp.zeros((), jnp.int32)), None, length=chunk_len)
@@ -233,7 +271,11 @@ def run_simulation_amr(cfg, is_main_process=True):
             cu_step = _cu_per_base_step(hierarchy)       # block counts changed
             if is_main_process:
                 counts = " ".join(f"L{L}={int(l.n_active)}" for L, l in enumerate(hierarchy))
-                print(f"  regrid @ step {nstep} (t={t:.4f}): {counts}")
+                extra = ""
+                if cosmo_kit is not None:
+                    a_now = float(np.interp(t, cosmo_kit["tau_tab"], cosmo_kit["a_tab"]))
+                    extra = f" a={a_now:.4f} z={1.0 / a_now - 1.0:.2f}"
+                print(f"  regrid @ step {nstep} (t={t:.4f}{extra}): {counts}")
         if is_main_process and nstep - last_print >= cadence:
             last_print = nstep
             now = time.time()

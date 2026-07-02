@@ -16,7 +16,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-from amr.geometry import prolong
+from amr.geometry import prolong, prolong_linear
 
 
 def _spatial_slices(ndim, per_axis):
@@ -179,7 +179,7 @@ def fill_ghost_from_coarse(fine_ghosted, fine_coords, parent_field, level, cfg,
 
 
 def fill_ghost_from_coarse_sparse(fine_ghosted, fine_coords, parent_slots,
-                                  coarse_ghosted, cfg):
+                                  coarse_ghosted, cfg, interp="const"):
     """Sparse coarse-fine ghost fill: gather each fine block's coarse underlay
     from its parent *block* (not a dense field) and prolong.
 
@@ -214,7 +214,14 @@ def fill_ghost_from_coarse_sparse(fine_ghosted, fine_coords, parent_slots,
     if g % 2 != 0:
         raise ValueError(f"fill_ghost_from_coarse_sparse needs even n_ghost; got {g}")
     gc = g // 2
-    patch = tuple(bs[d] // 2 + 2 * gc for d in range(ndim))
+    # interp="linear": cell-centred (tri)linear underlay for smooth scalars
+    # (phi Dirichlet ghosts) -- gather ONE extra coarse cell of margin so the
+    # interpolation stencil never clamps inside the footprint, then crop the
+    # prolonged patch back. "const" (default) is the conservative hydro fill.
+    if interp == "linear" and gc + 1 > g:
+        raise ValueError(f"linear coarse fill needs n_ghost >= {2 * (gc + 1) - g + g}")
+    margin = gc + 1 if interp == "linear" else gc
+    patch = tuple(bs[d] // 2 + 2 * margin for d in range(ndim))
     n_vars = coarse_ghosted.shape[1]
 
     def one_block(fc, pslot):
@@ -222,11 +229,15 @@ def fill_ghost_from_coarse_sparse(fine_ghosted, fine_coords, parent_slots,
         q = jnp.maximum(fc, 0) % 2                       # quadrant per dim
         # extended footprint start in the parent's *ghosted* coords.
         start = [jnp.asarray(0, jnp.int32)] + [
-            jnp.asarray(g + q[d] * (bs[d] // 2) - gc, jnp.int32) for d in range(ndim)
+            jnp.asarray(g + q[d] * (bs[d] // 2) - margin, jnp.int32) for d in range(ndim)
         ]
         size = [n_vars] + list(patch)
         coarse_patch = jax.lax.dynamic_slice(parent, start, size)
-        return prolong(coarse_patch, ndim)              # (n_vars, *(bs+2g))
+        if interp == "linear":
+            up = prolong_linear(coarse_patch, ndim)      # (n_vars, *(bs+2g+4))
+            crop = (slice(None),) + (slice(2, -2),) * ndim
+            return up[crop]                              # (n_vars, *(bs+2g))
+        return prolong(coarse_patch, ndim)               # (n_vars, *(bs+2g))
 
     underlay = jax.vmap(one_block)(fine_coords, parent_slots)
     return jnp.where(jnp.isnan(fine_ghosted), underlay, fine_ghosted)

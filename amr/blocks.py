@@ -24,7 +24,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from amr.geometry import _morton_params, morton_encode, prolong
+from amr.geometry import _morton_params, morton_encode, prolong, prolong_linear_cons
 
 
 def _offset_table(ndim):
@@ -170,16 +170,20 @@ def build_children(parent_coords, parent_data, flags, level, cfg, max_parents):
 
     offsets = _offset_table(ndim)                   # (C, ndim) static rows
 
+    # Prolong the WHOLE parent once with the conservative minmod-limited linear
+    # operator (slopes see the full block; only the parent's outer faces limit
+    # to piecewise-constant), then slice each child octant out. PC injection
+    # here planted an O(dx_coarse) staircase on the very feature that triggered
+    # refinement (see geometry.prolong_linear_cons).
+    big = prolong_linear_cons(pd, ndim)              # (P, n_vars, *(2*bs))
+
     coords_per_off = []
     data_per_off = []
     for o in itertools.product((0, 1), repeat=ndim):  # static loop, C iters
-        # slice the parent half selected by this offset, then prolong by 2.
         sl = [slice(None), slice(None)]
         for d in range(ndim):
-            sl.append(slice(o[d] * hs[d], (o[d] + 1) * hs[d]))
-        half = pd[tuple(sl)]                         # (P, n_vars, *hs)
-        child = prolong(half, ndim)                  # (P, n_vars, *bs)
-        data_per_off.append(child)
+            sl.append(slice(o[d] * bs[d], (o[d] + 1) * bs[d]))
+        data_per_off.append(big[tuple(sl)])          # (P, n_vars, *bs)
         off = jnp.asarray(o, dtype=jnp.int32)
         coords_per_off.append(2 * pc + off)          # (P, ndim)
 

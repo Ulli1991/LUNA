@@ -52,10 +52,23 @@ def main():
         evrard_u=u,
         PLOT_AFTER_SIM=False,
         production_mode=True,
-        output_dir=f"snapshots/evrard_Nx{Nx}",
+        output_dir=os.environ.get("LUNA_EVRARD_OUT", f"snapshots/evrard_Nx{Nx}"),
         clear_output_dir=True,
         enable_x64=True,
         enable_checkpointing=False,
+        # Optional AMR path (env-driven): dynamic refinement tracks the
+        # collapsing cloud / core through the levels. The gated
+        # pressure_density criterion refines the overdense sphere (sharp
+        # gradients + rho above the box mean) and leaves the ambient coarse.
+        AMR=os.environ.get("LUNA_EVRARD_AMR", "0") == "1",
+        amr_levels=int(os.environ.get("LUNA_EVRARD_AMR_LEVELS", "3")),
+        amr_block_shape=16,
+        amr_criterion="pressure_density",
+        amr_thresholds=[float(os.environ.get("LUNA_EVRARD_AMR_THR", "0.15"))]
+        * max(1, int(os.environ.get("LUNA_EVRARD_AMR_LEVELS", "3"))),
+        amr_regrid_interval=int(os.environ.get("LUNA_EVRARD_AMR_REGRID", "8")),
+        amr_subcycle=False,
+        amr_shard=os.environ.get("LUNA_EVRARD_AMR_SHARD", "0") == "1",
     )
 
     print(

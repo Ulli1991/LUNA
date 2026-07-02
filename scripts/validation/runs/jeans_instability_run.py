@@ -81,7 +81,21 @@ def main():
         PLOT_AFTER_SIM=False,
         production_mode=True,
         clear_output_dir=True,           # fresh run: no stale snapshots in analysis
-        output_dir=f"snapshots/jeans_Nx{Nx}",
+        output_dir=os.environ.get("LUNA_JEANS_OUT", f"snapshots/jeans_Nx{Nx}"),
+        # Optional AMR-path validation (env-driven): same problem + same sigma
+        # fit through setup/runner_amr. LEVELS=0 exercises the block/chunked
+        # machinery at base resolution; LEVELS=1 with a tiny threshold refines
+        # the whole box (static grid -- the mode is domain-wide), so an
+        # Nx=32 + 1-level run is directly comparable to the dense Nx=64 run.
+        AMR=os.environ.get("LUNA_JEANS_AMR", "0") == "1",
+        amr_levels=int(os.environ.get("LUNA_JEANS_AMR_LEVELS", "1")),
+        amr_block_shape=16,
+        amr_criterion="density",
+        amr_thresholds=[float(os.environ.get("LUNA_JEANS_AMR_THR", "1e-9"))]
+        * max(1, int(os.environ.get("LUNA_JEANS_AMR_LEVELS", "1"))),
+        amr_regrid_interval=int(os.environ.get("LUNA_JEANS_AMR_REGRID", "0")),
+        amr_subcycle=False,
+        amr_shard=False,
         enable_x64=True,            # tight test — fp64 for clean growth rate
         enable_checkpointing=False,
         MESH_SHAPE=(

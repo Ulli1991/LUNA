@@ -240,10 +240,36 @@ def flag_pressure_density(data, neighbors, n_active, cfg, threshold, buffer=None
     return flagged & active
 
 
+def flag_overdensity(data, neighbors, n_active, cfg, threshold, buffer=None,
+                     rho_ref=None):
+    """Quasi-Lagrangian refinement: flag cells with rho > threshold * rho_ref.
+
+    The RAMSES-style constant-mass-per-cell criterion for cosmology: with
+    per-level thresholds ~ 2**(ndim*(L+1)) each refinement level keeps roughly
+    the same mass per cell, so resolution tracks collapsing structures (haloes,
+    pancakes) into the nonlinear regime. ``rho_ref`` is the level-0 domain mean
+    (in super-comoving variables it is conserved), so the threshold is an
+    overdensity 1+delta. NaN sentinel cells compare False and never flag."""
+    ndim = cfg.ndim
+    rho = data[:, 0:1]
+    if rho_ref is None:
+        rho_ref = jnp.nanmean(rho)
+    cell_flag = (rho[:, 0] > threshold * rho_ref).astype(jnp.float32)
+    from amr.blocks import cross_block_dilate
+    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
+    flagged = refinement_block_mask(cell_flag, ndim)
+    active = jnp.arange(data.shape[0]) < n_active
+    return flagged & active
+
+
 def _flag_blocks(parent, cfg, threshold, level, criterion, rho_ref=None):
     """Dispatch to the chosen refinement criterion (used by build_hierarchy/regrid).
     ``rho_ref`` (level-0 domain mean density) feeds the overdensity gate of the
-    combined pressure+density criterion."""
+    combined pressure+density criterion and the quasi-Lagrangian overdensity
+    criterion."""
+    if criterion == "overdensity":
+        return flag_overdensity(parent.data, parent.neighbors, parent.n_active,
+                                cfg, threshold, rho_ref=rho_ref)
     if criterion == "vorticity":
         return flag_vorticity(parent.data, parent.neighbors, parent.n_active, cfg, threshold, level)
     if criterion == "pressure":
@@ -388,7 +414,8 @@ def _fill_ghosts(levels, cfg, gamma):
         W = cons_to_prim_blocks(lvl.data, gamma)
         gw = fill_ghost_same_level(W, lvl.neighbors, cfg)
         if L > 0:
-            gw = fill_ghost_from_coarse_sparse(gw, lvl.coords, lvl.parent_slots, ghosted[L - 1], cfg)
+            gw = fill_ghost_from_coarse_sparse(gw, lvl.coords, lvl.parent_slots, ghosted[L - 1], cfg,
+                                               interp="linear")
         gw = fill_ghost_physical(gw, W, cfg)
         ghosted.append(gw)
     return ghosted
@@ -480,6 +507,10 @@ def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="
             never gathers an unfilled parent edge ghost)."""
             gw = fill_ghost_same_level(cons_to_prim_blocks(data, gamma), lvl.neighbors, cfg)
             if L > 0:
+                # PC (const) here on purpose: the subcycle scheme's C/F fluxes telescope
+                # exactly against restriction with piecewise-constant ghosts (the
+                # conservation test asserts this); the synchronized path uses
+                # interp="linear" for accuracy. Reflux will reconcile both.
                 gw = fill_ghost_from_coarse_sparse(gw, lvl.coords, lvl.parent_slots, parent_gprim, cfg)
             return gw
 
