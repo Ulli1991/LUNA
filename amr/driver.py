@@ -262,6 +262,39 @@ def flag_overdensity(data, neighbors, n_active, cfg, threshold, buffer=None,
     return flagged & active
 
 
+def flag_jeans(data, neighbors, n_active, cfg, threshold, level, buffer=None):
+    """Truelove refinement: flag cells that under-resolve the local Jeans length.
+
+    The Jeans length ``lambda_J = sqrt(pi gamma P / (G rho^2))`` (isothermal
+    sound speed generalised, c_s^2 = gamma P / rho). Truelove et al. (1997)
+    showed a self-gravitating grid must resolve lambda_J by >= 4 cells or it
+    fragments artificially; refine wherever ``lambda_J < threshold * dx``
+    (``threshold`` = the Jeans number N_J, default caller passes 4). Rearranged
+    to avoid the sqrt and stay robust at rho->0 / P->0:
+
+        lambda_J < N_J dx   <=>   pi gamma (gamma-1) e_int  <  G rho^2 (N_J dx)^2
+
+    with e_int = E - 1/2 rho v^2 = P/(gamma-1). gamma and G come from the config
+    (``AMRConfig.gamma`` / ``AMRConfig.grav_G``). NaN sentinel cells compare
+    False and never flag. This is the criterion established self-gravity codes
+    (RAMSES, Enzo, FLASH) use for collapse; it is what makes an AMR collapse
+    result defensible rather than resolution-dependent."""
+    ndim = cfg.ndim
+    rho = data[:, 0:1]
+    mom = data[:, 1:1 + ndim]
+    E = data[:, -1:]
+    eint = E - 0.5 * jnp.sum(mom * mom, axis=1, keepdims=True) / rho
+    dx = cfg.level_dx(level)[0]
+    lhs = jnp.pi * cfg.gamma * (cfg.gamma - 1.0) * eint          # pi gamma P
+    rhs = cfg.grav_G * rho * rho * (threshold * dx) ** 2         # G rho^2 (N_J dx)^2
+    cell_flag = (lhs[:, 0] < rhs[:, 0]).astype(jnp.float32)      # NaN -> False
+    from amr.blocks import cross_block_dilate
+    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
+    flagged = refinement_block_mask(cell_flag, ndim)
+    active = jnp.arange(data.shape[0]) < n_active
+    return flagged & active
+
+
 def _flag_blocks(parent, cfg, threshold, level, criterion, rho_ref=None):
     """Dispatch to the chosen refinement criterion (used by build_hierarchy/regrid).
     ``rho_ref`` (level-0 domain mean density) feeds the overdensity gate of the
@@ -277,6 +310,8 @@ def _flag_blocks(parent, cfg, threshold, level, criterion, rho_ref=None):
     if criterion in ("pressure_density", "prho"):
         return flag_pressure_density(parent.data, parent.neighbors, parent.n_active, cfg, threshold,
                                      rho_ref=rho_ref)
+    if criterion == "jeans":
+        return flag_jeans(parent.data, parent.neighbors, parent.n_active, cfg, threshold, level)
     return flag_density_gradient(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
 
 
@@ -492,7 +527,7 @@ def advance(levels, dt, cfg, *, gamma, limiter=1, riemann_solver="hllc",
 # Subcycled (Berger-Oliger) time stepping: the AMR time-win
 # ---------------------------------------------------------------------------
 def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="hllc",
-                     divergence_fn=None):
+                     divergence_fn=None, gravity=None, reflux=False, t0=0.0):
     """Berger-Oliger subcycled step (ratio r=2): level L advances by
     ``dt_base / r**L``. The coarse level steps once; each finer level then takes
     ``r`` sub-steps of half the dt, its coarse-fine ghosts gathered from the
@@ -503,47 +538,104 @@ def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="
     This is the point of AMR in *time*: coarse cells (most of the domain) step
     only once per base step instead of paying the finest timestep everywhere
     (the synchronized :func:`advance`), so total work tracks the refined region.
-    Recursion depth is the static ``max_levels`` -> the whole thing jits. No flux
-    reflux yet (same coarse-fine conservation level as :func:`advance`).
+    Recursion depth is the static ``max_levels`` -> the whole thing jits.
+
+    Optional hooks make it the *full* AMR advance, not hydro-only:
+
+    * ``gravity``: ``(L, lvl, parent_phig, dt, t_sub) -> (new_data, child_phig)``.
+      Called per level per sub-step AFTER the hydro update: it solves Poisson on
+      level L with the parent's ghosted phi as Dirichlet (``parent_phig``; None at
+      L0 -> dense FMG), applies the kick + any floors, and returns the kicked
+      conserved data plus level-L's *own* ghosted phi to pass down as the
+      children's Dirichlet boundary. ``t_sub`` is the absolute (conformal) time at
+      the start of this sub-step -> lets the callable evaluate a(t) per sub-step.
+      The elliptic L0 solve thus runs ONCE per base step, not r**Lmax times: the
+      subcycling win extends to gravity.
+    * ``reflux``: Berger-Colella flux correction, time-accumulated across the r
+      sub-steps. Each level captures its own face fluxes; a parent corrects its
+      coarse cells with ``coarse_flux - mean_over_substeps(fine_flux)`` so
+      conserved quantities telescope across the coarse-fine interface to machine
+      precision even though the two sides stepped at different dt.
     """
     r = cfg.refinement_ratio
-    lv = list(levels)
+    n = len(levels)
+    if reflux:
+        from amr.reflux import apply_reflux_blocks
 
     if divergence_fn is None:
-        def divergence_fn(gw, neighbors, level, dt_l):
+        def divergence_fn(gw, neighbors, level, dt_l, want_flux=False):
             return conservative_block_divergence(
                 gw, dt_l, level, cfg, neighbors,
-                gamma=gamma, limiter=limiter, riemann_solver=riemann_solver)
+                gamma=gamma, limiter=limiter, riemann_solver=riemann_solver,
+                return_face_fluxes=want_flux)
 
-    def rec(L, dt, parent_gprim):
-        lvl = lv[L]
+    def ghost_prim(L, data, parent_gprim):
+        """Level-L fully-ghosted primitives: same-level halo + (L>0) the
+        coarse-fine underlay from the fully-ghosted parent (so a grandchild
+        never gathers an unfilled parent edge ghost). PC (const) C/F ghosts on
+        purpose: the subcycle scheme's C/F fluxes telescope exactly against
+        restriction with piecewise-constant ghosts (the conservation test
+        asserts this); the synchronized path uses interp="linear" for accuracy.
+        Reflux reconciles both when on."""
+        lvl = levels[L]
+        gw = fill_ghost_same_level(cons_to_prim_blocks(data, gamma), lvl.neighbors, cfg)
+        if L > 0:
+            gw = fill_ghost_from_coarse_sparse(gw, lvl.coords, lvl.parent_slots,
+                                               parent_gprim, cfg)
+        return gw
 
-        def ghost_prim(data):
-            """Level-L fully-ghosted primitives: same-level halo + (L>0) the
-            coarse-fine underlay from the fully-ghosted parent (so a grandchild
-            never gathers an unfilled parent edge ghost)."""
-            gw = fill_ghost_same_level(cons_to_prim_blocks(data, gamma), lvl.neighbors, cfg)
-            if L > 0:
-                # PC (const) here on purpose: the subcycle scheme's C/F fluxes telescope
-                # exactly against restriction with piecewise-constant ghosts (the
-                # conservation test asserts this); the synchronized path uses
-                # interp="linear" for accuracy. Reflux will reconcile both.
-                gw = fill_ghost_from_coarse_sparse(gw, lvl.coords, lvl.parent_slots, parent_gprim, cfg)
-            return gw
+    def step_level(L, datas, dt, t_sub, parent_gprim, parent_phig):
+        """Advance levels L..n-1 by one level-L step of ``dt``. ``datas`` is the
+        tuple of data arrays for levels L..n-1; returns (new datas, level-L flux).
+        Pure in its carries, so the r sub-steps of the child subtree run under
+        ``lax.scan`` instead of being unrolled: the traced graph is O(n levels),
+        not O(r**n) -- the unrolled version took minutes of XLA compile at 3
+        levels (measured 233 s for the SYNC graph and a slow-compile alarm for
+        the subcycled one); the scan form compiles the child body once."""
+        lvl = levels[L]
+        L_old = datas[0]
+        gp = ghost_prim(L, L_old, parent_gprim)
+        if reflux:
+            dU, my_flux = divergence_fn(gp, lvl.neighbors, L, dt, want_flux=True)
+        else:
+            dU = divergence_fn(gp, lvl.neighbors, L, dt)
+            my_flux = jnp.zeros(())                              # scan-stable dummy
+        data_L = L_old + dt * dU
 
-        L_old = lvl.data
-        dU = divergence_fn(ghost_prim(L_old), lvl.neighbors, L, dt)
-        lv[L] = lvl._replace(data=L_old + dt * dU)
+        # --- per-level gravity: solve (parent-Dirichlet) + kick + floors ---
+        if gravity is not None:
+            data_L, my_phig = gravity(L, lvl._replace(data=data_L), parent_phig,
+                                      dt, t_sub)
+        else:
+            my_phig = None
 
-        if L + 1 < len(lv):
-            L_new = lv[L].data
-            for s in range(r):
-                c = (1.0 - s / r) * L_old + (s / r) * L_new      # parent at sub-step start
-                rec(L + 1, dt / r, ghost_prim(c))                # pass FULLY-ghosted parent
-            lv[L] = lv[L]._replace(data=_restrict_into_parent(lv[L].data, lv[L + 1], cfg))
+        if L + 1 < n:
+            L_new = data_L
 
-    rec(0, dt_base, None)                                        # level 0 has no parent
-    return tuple(lv)
+            def body(child_datas, s):
+                w = s / r
+                c = (1.0 - w) * L_old + w * L_new                # parent at sub-step start
+                pg = ghost_prim(L, c, parent_gprim)              # FULLY-ghosted parent
+                nds, cflux = step_level(L + 1, child_datas, dt / r,
+                                        t_sub + s * (dt / r), pg, my_phig)
+                return nds, cflux
+
+            child_datas, cflux_stack = jax.lax.scan(
+                body, datas[1:], jnp.arange(r, dtype=L_old.dtype))
+            if reflux:
+                child = levels[L + 1]
+                acc = tuple(f.sum(axis=0) for f in cflux_stack)  # sum over sub-steps
+                data_L = apply_reflux_blocks(
+                    data_L, my_flux, tuple(a / r for a in acc),
+                    child.coords, child.parent_slots, child.neighbors,
+                    child.n_active, lvl.neighbors, dt, L, cfg)
+            data_L = _restrict_into_parent(
+                data_L, levels[L + 1]._replace(data=child_datas[0]), cfg)
+            return (data_L,) + tuple(child_datas), my_flux
+        return (data_L,), my_flux
+
+    datas, _ = step_level(0, tuple(l.data for l in levels), dt_base, t0, None, None)
+    return tuple(l._replace(data=d) for l, d in zip(levels, datas))
 
 
 def compute_dt_subcycle(levels, cfg, *, gamma, CFL):

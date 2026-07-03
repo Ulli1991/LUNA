@@ -138,5 +138,11 @@ def make_cosmo_amr(cfg, acfg, rho_bar, *, is_main_process=True):
               f"floors: rho={rho_floor:.3e} T={T_floor} Tmax={T_max} "
               f"NJ={jeans_N} vmax={v_max}")
 
+    def floor_level(data, aa, level):
+        """Per-level floor stack (the subcycling hook floors one level per
+        sub-step, not the whole hierarchy at once)."""
+        return _floor_level(data, aa, acfg.level_dx(level)[0])
+
     return dict(a_tab=a_tab, tau_tab=tau_tab, a_start=a_start, a_end=a_end,
-                dtau_cap=dtau_cap, coeff=coeff, floors=floors)
+                dtau_cap=dtau_cap, coeff=coeff, floors=floors,
+                floor_level=floor_level)

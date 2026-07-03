@@ -50,6 +50,11 @@ class AMRConfig:
     # domain-edge ghosts (no same-level neighbour, no coarse parent) — otherwise
     # they stay NaN and the unsplit MUSCL-Hancock predictor reads them.
     boundary: int = 0
+    # Physics constants for refinement criteria that need them (Truelove/Jeans:
+    # lambda_J = sqrt(pi gamma P / (G rho^2))). Pure geometry otherwise; the
+    # defaults keep every non-self-gravity caller valid without change.
+    gamma: float = 5.0 / 3.0
+    grav_G: float = 1.0
 
     def __post_init__(self):
         nd = self.ndim

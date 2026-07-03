@@ -91,6 +91,8 @@ def run_simulation_amr(cfg, is_main_process=True):
         block_shape=(block,) * ndim,
         max_levels=levels,
         boundary=int(cfg.BOUNDARY),
+        gamma=float(cfg.gamma),
+        grav_G=float(getattr(cfg, "GRAVITATIONAL_G", 1.0)),
     )
 
     # capacities: None -> build_hierarchy sizes each level to the EXACT flagged
@@ -281,6 +283,49 @@ def run_simulation_amr(cfg, is_main_process=True):
     else:
         grav_apply = make_amr_self_gravity(cfg, acfg, is_main_process=is_main_process)
 
+    # --- Berger-Oliger gravity hook: per-level Poisson solve + kick + floors,
+    #     threaded through the subcycle recursion with the parent's phi as the
+    #     Dirichlet boundary (a(tau) is re-evaluated at each sub-step's time).
+    #     The dense L0 FMG then runs ONCE per BASE step instead of r**Lmax times
+    #     -> the subcycling win reaches gravity, not just hydro. DM path (below)
+    #     keeps its own base-dt KDK; this covers cosmo-gas and self-gravity.
+    grav_hook = sub_advance = sub_advance_dm = None
+    if subcycle and not shard_amr and dm_state is None and \
+            (cosmo_kit is not None or grav_apply is not None):
+        from amr.poisson import _ghost_phi, kick_level, solve_phi_level
+        from amr.state import assemble_base_level
+        _n_base = int(np.prod(acfg.base_blocks))
+        _mrho = {"v": jnp.asarray(0.0, jnp.float64)}
+        if cosmo_kit is not None:
+            _fourpiG_of, _bnd, _nvc_h = (lambda aa: cosmo_kit["coeff"](aa)), 0, _n_vc
+        else:
+            _G = float(getattr(cfg, "GRAVITATIONAL_G", 1.0))
+            _fourpiG_of = lambda aa: 4.0 * jnp.pi * _G
+            _bnd = int(cfg.BOUNDARY)
+            _nvc_h = int(getattr(cfg, "amr_grav_vcycles", 3) or 3)
+
+        def grav_hook(L, lvl, parent_phig, dt, t_sub):
+            aa = (jnp.interp(t_sub, cosmo_kit["tau_tab"], cosmo_kit["a_tab"])
+                  if cosmo_kit is not None else jnp.asarray(1.0, jnp.float64))
+            if L == 0 and _bnd == 0:            # Jeans-swindle mean, base level, once
+                _mrho["v"] = jnp.mean(assemble_base_level(lvl.data[:_n_base, 0:1], acfg)[0])
+            mean_rho = _mrho["v"] if _bnd == 0 else jnp.asarray(0.0, jnp.float64)
+            phi = solve_phi_level(lvl, parent_phig, acfg, fourpiG=_fourpiG_of(aa),
+                                  boundary=_bnd, mean_rho=mean_rho, level=L,
+                                  n_vcycles=_nvc_h)
+            data = kick_level(lvl, phi, parent_phig, dt, L, acfg)
+            if cosmo_kit is not None:
+                data = cosmo_kit["floor_level"](data, aa, L)
+            return data, _ghost_phi(phi, lvl, parent_phig, acfg)
+
+        def sub_advance(h, dt, t_sub):
+            return driver.advance_subcycle(
+                h, dt, acfg, gamma=gamma, limiter=limiter, riemann_solver=riemann,
+                gravity=grav_hook, reflux=True, t0=t_sub)
+        if is_main_process:
+            print("  Berger-Oliger: per-level subcycled gravity + time-accumulated "
+                  "reflux (L0 FMG once/base step)")
+
     if dm_state is not None:
         # ---- coupled gas+DM step pieces (all jit/scan-safe) ---------------
         from amr.particles import (accel_blocks, deposit_cic, gather_cic,
@@ -310,6 +355,42 @@ def run_simulation_amr(cfg, is_main_process=True):
             gp = gather_cic(fields, h, pos, lev_p, slot_p, acfg)
             return phis, gp
 
+        # --- Berger-Oliger for the coupled box: gas hydro+gravity subcycled,
+        #     DM particles KDK'd at the BASE dt (v1). The DM density is deposited
+        #     once per base step (positions frozen for the gas sub-cycle) and fed
+        #     into the per-level gas Poisson source; the DM force is re-solved once
+        #     at a_next for the closing half-kick. Gas thus pays the fine dt only
+        #     on refined blocks, while the L0 gas FMG + the DM solve run once/base.
+        _dm_src = {"rho": None}
+        if subcycle and not shard_amr:
+            from amr.poisson import kick_level, solve_phi_level
+            from amr.state import assemble_base_level
+            _n_base_dm = int(np.prod(acfg.base_blocks))
+            _mrho_dm = {"v": jnp.asarray(0.0, jnp.float64)}
+
+            def grav_hook_dm(L, lvl, parent_phig, dt, t_sub):
+                aa = jnp.interp(t_sub, cosmo_kit["tau_tab"], cosmo_kit["a_tab"])
+                src = lvl.data[:, 0:1] + _dm_src["rho"][L]     # gas(now) + frozen DM
+                if L == 0:
+                    _mrho_dm["v"] = jnp.mean(
+                        assemble_base_level(src[:_n_base_dm], acfg)[0])
+                phi = solve_phi_level(lvl, parent_phig, acfg,
+                                      fourpiG=cosmo_kit["coeff"](aa), boundary=0,
+                                      mean_rho=_mrho_dm["v"], level=L,
+                                      n_vcycles=_n_vc, src=src)
+                data = kick_level(lvl, phi, parent_phig, dt, L, acfg)
+                data = cosmo_kit["floor_level"](data, aa, L)
+                return data, _ghost_phi(phi, lvl, parent_phig, acfg)
+
+            def sub_advance_dm(h, dt, t_sub):
+                return driver.advance_subcycle(
+                    h, dt, acfg, gamma=gamma, limiter=limiter,
+                    riemann_solver=riemann, gravity=grav_hook_dm, reflux=True,
+                    t0=t_sub)
+            if is_main_process:
+                print("  Berger-Oliger (gas+DM): subcycled gas gravity + reflux, "
+                      "DM KDK at base dt")
+
     def _chunk(hier, tt, target):
         def body(carry, _):
             h, tc, taken = carry
@@ -318,11 +399,14 @@ def run_simulation_amr(cfg, is_main_process=True):
                 aa = jnp.interp(tc, cosmo_kit["tau_tab"], cosmo_kit["a_tab"])
                 dt = jnp.minimum(dt, cosmo_kit["dtau_cap"](aa))
             dt = jnp.minimum(dt, jnp.maximum(target - tc, 0.0))
-            h = step(h, dt)
-            if cosmo_kit is not None:
-                h = grav_cosmo(h, dt, aa)
-            elif grav_apply is not None:
-                h = grav_apply(h, dt)
+            if sub_advance is not None:                  # Berger-Oliger: fused
+                h = sub_advance(h, dt, tc)               # hydro+gravity+reflux, subcycled
+            else:
+                h = step(h, dt)
+                if cosmo_kit is not None:
+                    h = grav_cosmo(h, dt, aa)
+                elif grav_apply is not None:
+                    h = grav_apply(h, dt)
             return (h, tc + dt, taken + (dt > 0).astype(jnp.int32)), None
         (h, tf, taken), _ = jax.lax.scan(
             body, (hier, tt, jnp.zeros((), jnp.int32)), None, length=chunk_len)
@@ -341,12 +425,18 @@ def run_simulation_amr(cfg, is_main_process=True):
             dt = jnp.minimum(dt, jnp.maximum(target - tc, 0.0))
             pp = pp + gg * (0.5 * dt)
             ps = jnp.mod(ps + pp * dt, _box_arr)
-            h = step(h, dt)
             a_next = jnp.interp(tc + dt, cosmo_kit["tau_tab"], cosmo_kit["a_tab"])
-            phis, g2 = _dm_forces(h, ps, a_next)
-            h = apply_gravity_kick(h, phis, dt, acfg)
+            if sub_advance_dm is not None:               # Berger-Oliger gas + base-dt DM
+                lev_p, slot_p = locate_particles(ps, h, acfg)
+                _dm_src["rho"] = deposit_cic(ps, dm_mass, h, lev_p, slot_p, acfg)
+                h = sub_advance_dm(h, dt, tc)            # gas fused, DM source frozen
+                _, g2 = _dm_forces(h, ps, a_next)        # DM force at base dt
+            else:
+                h = step(h, dt)
+                phis, g2 = _dm_forces(h, ps, a_next)
+                h = apply_gravity_kick(h, phis, dt, acfg)
+                h = cosmo_kit["floors"](h, a_next)
             pp = pp + g2 * (0.5 * dt)
-            h = cosmo_kit["floors"](h, a_next)
             return (h, ps, pp, g2, tc + dt,
                     taken + (dt > 0).astype(jnp.int32)), None
         (h, ps, pp, gg, tf, taken), _ = jax.lax.scan(

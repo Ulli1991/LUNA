@@ -67,7 +67,7 @@ def main():
         amr_thresholds=[float(os.environ.get("LUNA_EVRARD_AMR_THR", "0.15"))]
         * max(1, int(os.environ.get("LUNA_EVRARD_AMR_LEVELS", "3"))),
         amr_regrid_interval=int(os.environ.get("LUNA_EVRARD_AMR_REGRID", "8")),
-        amr_subcycle=False,
+        amr_subcycle=os.environ.get("LUNA_EVRARD_SUBCYCLE", "0") == "1",
         amr_shard=os.environ.get("LUNA_EVRARD_AMR_SHARD", "0") == "1",
     )
 

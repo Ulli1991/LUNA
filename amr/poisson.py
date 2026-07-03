@@ -290,6 +290,70 @@ def apply_gravity_kick(levels, phis, dt, cfg):
     return tuple(lvl._replace(data=nd) for lvl, nd in zip(levels, new_data))
 
 
+def solve_phi_level(lvl, coarse_ghosted, cfg, *, fourpiG, boundary, mean_rho,
+                    level, src=None, n_vcycles=3, n_pre=4, n_post=4,
+                    n_coarse=12, fmg_kwargs=None):
+    """Solve Poisson for ONE level, the subcycling primitive (Berger-Oliger).
+
+    Level 0: dense FMG on the assembled base grid (exact). Level L>0: within-block
+    V-cycles with Dirichlet ghosts from the parent's already-ghosted phi
+    (``coarse_ghosted``). ``mean_rho`` is the Jeans-swindle subtraction (base-level
+    mean, threaded in so it is identical across all sub-steps); pass 0 for the
+    isolated/boundary!=0 case. ``src`` overrides the gravitating density (gas +
+    deposited DM for the coupled step); default is the level's own gas density.
+    Extracted verbatim from :func:`solve_phi_hierarchy` so the two paths agree."""
+    from gravity.poisson_multigrid import solve_poisson_fmg
+
+    ndim = cfg.ndim
+    srcL = src if src is not None else lvl.data[:, 0:1]
+    if level == 0:
+        n_base = 1
+        for d in range(ndim):
+            n_base *= cfg.base_blocks[d]
+        rho0 = assemble_base_level(srcL[:n_base], cfg)[0]
+        dx0 = cfg.level_dx(0)[0]
+        phi0 = solve_poisson_fmg(rho0 - mean_rho, dx0, fourpiG, boundary,
+                                 **(fmg_kwargs or {}))
+        phi0_blocks = partition_to_blocks(phi0[None], cfg)
+        n_slots = lvl.data.shape[0]
+        if n_slots > n_base:
+            pad = jnp.full((n_slots - n_base,) + phi0_blocks.shape[1:], jnp.nan,
+                           dtype=phi0_blocks.dtype)
+            phi0_blocks = jnp.concatenate([phi0_blocks, pad], axis=0)
+        return phi0_blocks
+    phi = _init_phi_from_parent(lvl, coarse_ghosted, cfg)
+    rhs = fourpiG * (srcL - mean_rho)
+    for _ in range(n_vcycles):
+        phi = _vcycle_phi(phi, rhs, lvl, coarse_ghosted, cfg, level,
+                          n_pre, n_post, n_coarse)
+    return phi
+
+
+def kick_level(lvl, phi, coarse_ghosted, dt, level, cfg):
+    """Operator-split gravity kick on ONE level (no restrict -- the subcycle
+    recursion owns fine->coarse restriction). Body identical to the per-level
+    loop in :func:`apply_gravity_kick`; returns the kicked conserved data."""
+    ndim = cfg.ndim
+    g = cfg.n_ghost
+    bs = cfg.block_shape
+    gw = _ghost_phi(phi, lvl, coarse_ghosted, cfg)
+    dx = cfg.level_dx(level)
+    U = lvl.data
+    rho = U[:, 0:1]
+    mom = U[:, 1:1 + ndim]
+    E = U[:, ndim + 1:ndim + 2]
+    gvec = []
+    for d in range(ndim):
+        inv_2dx = 0.5 / dx[d]
+        gvec.append(-(_shift(gw, d, +1, ndim, g, bs)
+                      - _shift(gw, d, -1, ndim, g, bs)) * inv_2dx)
+    gvec = jnp.concatenate(gvec, axis=1)
+    new_mom = mom + dt * rho * gvec
+    mom_mid = 0.5 * (mom + new_mom)
+    new_E = E + dt * jnp.sum(mom_mid * gvec, axis=1, keepdims=True)
+    return jnp.concatenate([rho, new_mom, new_E], axis=1)
+
+
 def make_amr_self_gravity(cfg, acfg, *, is_main_process=True):
     """Runner-facing factory: returns ``apply(levels, dt) -> levels`` or None.
 
