@@ -7,6 +7,7 @@ Snapshot format (written by runner_cosmo_hydro): datasets rho_dm, rho_gas
 (super-comoving density grids), attrs a, z, BoxSize [kpc/h]. Reusable as-is for
 the 256^3 run now and the 512^3 run when it lands -- just pass the new file.
 """
+import os
 import sys
 
 import h5py
@@ -16,6 +17,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LogNorm
+
+# Shared cosmic-web overdensity colour scale (also used by plot_dm_validation.py)
+CW_VMIN = float(os.environ.get("CW_VMIN", "0.05"))
+CW_VMAX = float(os.environ.get("CW_VMAX", "120.0"))
 
 
 def _proj(rho, axis=2, slab_frac=0.25):
@@ -51,10 +56,12 @@ def main():
     dm = dm / dm.mean()
     gas = gas / gas.mean()
 
-    def _norm(field):
-        lo = max(np.percentile(field[field > 0], 2.0), 1e-3)
-        hi = np.percentile(field, 99.95)
-        return LogNorm(vmin=lo, vmax=hi)
+    # ONE shared colour scale for both panels AND the DM-only Arepo-vs-LUNA
+    # figure (plot_dm_validation.py): projected overdensity Sigma/<Sigma> spans
+    # the SAME range in all cosmic-web panels (measured p2~0.03-0.06,
+    # p99.95~107-134 across DM/gas/PM/Arepo), so identical overdensities map to
+    # identical colours -- the DM-sharper / gas-smoother contrast is then honest.
+    norm = LogNorm(vmin=CW_VMIN, vmax=CW_VMAX)
 
     cmap = sys.argv[3] if len(sys.argv) > 3 else "inferno"  # match DM-only figs
     fig, axes = plt.subplots(1, 2, figsize=(11.0, 5.6), constrained_layout=True)
@@ -64,7 +71,7 @@ def main():
     ]
     for ax, field, cmap, label in panels:
         im = ax.imshow(field.T, origin="lower", extent=[0, L, 0, L],
-                       cmap=cmap, norm=_norm(field), interpolation="nearest")
+                       cmap=cmap, norm=norm, interpolation="nearest")
         ax.set_xlabel(r"$x\ [h^{-1}\,\mathrm{Mpc}]$")
         ax.set_ylabel(r"$y\ [h^{-1}\,\mathrm{Mpc}]$")
         ax.text(0.035, 0.955, label, transform=ax.transAxes, color="white",

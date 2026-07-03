@@ -16,13 +16,21 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 
 sys.path.insert(0, os.getcwd())
 from utils.figstyle import apply_style, decorate, FIGSIZE
 
 LUNA = "snapshots/cosmo_dm_l9_512/snap_a1.0001.hdf5"
-AREPO = os.environ.get("LUNA_AREPO_DM_SNAP", "arepo/cosmo_l9_dmo/snap_003.hdf5")
+AREPO = os.environ.get("LUNA_AREPO_DM_SNAP",
+                       "/ptmp/uli/arepo/cosmo_l9_dmo/snap_003.hdf5")
 OUT = "code_paper_figs"
+
+# Shared cosmic-web overdensity colour scale -- identical to plot_cosmic_web.py
+# so the DM-only validation and the coupled gas+DM figure map the same
+# projected overdensity Sigma/<Sigma> to the same colour.
+CW_VMIN = float(os.environ.get("CW_VMIN", "0.05"))
+CW_VMAX = float(os.environ.get("CW_VMAX", "120.0"))
 
 
 def _load_pos(fn):
@@ -40,14 +48,17 @@ def cosmic_web(Ng=768, slab_frac=0.25):
         sel = pos[:, 2] < slab_frac * box
         H, _, _ = np.histogram2d(pos[sel, 0], pos[sel, 1], bins=Ng,
                                  range=[[0, box], [0, box]])
-        panels.append((tag, np.log10(H.T + 0.5), box))
-    allv = np.concatenate([p[1].ravel() for p in panels])
-    vmin, vmax = np.percentile(allv, 1), np.percentile(allv, 99.7)
+        # projected overdensity Sigma/<Sigma> (the +0.5 count floor keeps voids
+        # off log(0)); SAME quantity + scale as the coupled gas+DM figure.
+        od = (H.T + 0.5)
+        od = od / od.mean()
+        panels.append((tag, od, box))
+    norm = LogNorm(vmin=CW_VMIN, vmax=CW_VMAX)
 
     fig, ax = plt.subplots(1, 2, figsize=(2 * FIGSIZE[1], FIGSIZE[1]))
     for a, (tag, img, box) in zip(ax, panels):
         L = box / 1000.0
-        a.imshow(img, origin="lower", cmap="inferno", vmin=vmin, vmax=vmax,
+        a.imshow(img, origin="lower", cmap="inferno", norm=norm,
                  extent=[0, L, 0, L], interpolation="nearest")
         a.text(0.035, 0.965, tag, transform=a.transAxes, ha="left", va="top",
                color="w", fontsize=14,
