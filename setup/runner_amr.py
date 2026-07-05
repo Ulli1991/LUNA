@@ -100,6 +100,11 @@ def run_simulation_amr(cfg, is_main_process=True):
     # amr_capacities to override (e.g. to leave regrid headroom later).
     caps = getattr(cfg, "amr_capacities", None)
     bucket = int(getattr(cfg, "amr_block_bucket", 0))
+    # hard per-level block ceiling (0 = unlimited): the deep-hierarchy memory
+    # guard -- blanket refinement x the pow2 ladder otherwise requests
+    # device-breaking arrays (41 GiB measured at 5 levels). Excess flags are
+    # dropped in slot order; the regrid print shows "AT CAP" when saturated.
+    max_blocks = int(getattr(cfg, "amr_max_blocks", 0) or 0)
     thresholds = getattr(cfg, "amr_thresholds", None) or [0.05] * levels
     criterion = getattr(cfg, "amr_criterion", "density")   # "density" | "vorticity"
     periodic = (cfg.BOUNDARY == 0)
@@ -114,33 +119,45 @@ def run_simulation_amr(cfg, is_main_process=True):
         mesh = Mesh(np.asarray(jax.devices()), ("blocks",))
 
         repl = NamedSharding(mesh, P())                  # replicated across all devices
+        blk = NamedSharding(mesh, P("blocks"))           # sharded on the block axis
+        # Distributed STORAGE (step 1 of the sharded-memory plan): the per-level
+        # block-axis arrays (data/coords/neighbors/parent_slots) live sharded
+        # across devices -> between-step memory is total/n_dev. n_active is a
+        # scalar (replicated). advance_shmap still all-gathers internally, so the
+        # PEAK during a step is unchanged and correctness is identical (step 2
+        # removes that gather). Block-sharding needs the block axis divisible by
+        # n_dev -- guaranteed by pad_to=n_dev in build_hierarchy/regrid.
+        _shard_storage = bool(getattr(cfg, "amr_shard_storage", True))
 
-        def _to_global(a, reshard=False):
-            # reshard=True: input is already a GLOBAL multi-process array (regrid
-            # output) -> device_put reshards it to replicated ON-DEVICE (cheap,
-            # no host round-trip). reshard=False: input is this process's local
-            # build array. Single-process (e.g. 1 node, 4 local GPUs): plain
-            # device_put replicates correctly -- all mesh devices are addressable.
-            # Multi-process: LUNA's create_sharded_array_from_local pattern (put on
-            # THE local device, make_array_from_single_device_arrays), because
-            # make_array_* wants exactly one shard per *addressable* device and a
-            # naive host-array device_put deadlocks across processes.
+        def _to_global(a, sharding, reshard=False):
+            # reshard=True: input is already a GLOBAL on-device array (regrid
+            # output) -> device_put reshards it (cheap, no host round-trip).
+            # Single-process (1 node, N local GPUs -- the current target): all
+            # mesh devices are addressable, so a plain device_put shards/replicates
+            # correctly. Multi-process sharded construction (one local shard per
+            # process) is the follow-up; until then multi-process falls back to
+            # replicated storage (correct, just no per-device memory win).
             if reshard or jax.process_count() == 1:
-                return jax.device_put(a, repl)
+                return jax.device_put(a, sharding)
             local = jax.device_put(np.asarray(a), jax.local_devices()[0])
             return jax.make_array_from_single_device_arrays(local.shape, repl, [local])
 
         def _global_hierarchy(h, reshard=False):
-            g = lambda a: _to_global(a, reshard)
+            multiproc = jax.process_count() > 1
+            # array fields sharded on the block axis (unless multi-proc fallback)
+            arr = repl if (multiproc or not _shard_storage) else blk
             return tuple(lvl._replace(
-                data=g(lvl.data), coords=g(lvl.coords), neighbors=g(lvl.neighbors),
-                parent_slots=g(lvl.parent_slots), n_active=g(lvl.n_active)) for lvl in h)
+                data=_to_global(lvl.data, arr, reshard),
+                coords=_to_global(lvl.coords, arr, reshard),
+                neighbors=_to_global(lvl.neighbors, arr, reshard),
+                parent_slots=_to_global(lvl.parent_slots, arr, reshard),
+                n_active=_to_global(lvl.n_active, repl, reshard)) for lvl in h)
 
     # --- base-grid conservative IC -> hierarchy ---
     U0 = U0_music if dm_state is not None else jnp.asarray(initial_conditions(cfg))
     hierarchy = driver.build_hierarchy(
         U0, acfg, thresholds=thresholds, capacities=caps, periodic=periodic,
-        bucket=bucket, pad_to=pad_to, criterion=criterion,
+        bucket=bucket, pad_to=pad_to, criterion=criterion, max_blocks=max_blocks,
     )
     if shard_amr:
         hierarchy = _global_hierarchy(hierarchy)
@@ -183,14 +200,26 @@ def run_simulation_amr(cfg, is_main_process=True):
     if ndim == 3:
         scfg.Nz = finest
 
+    # Dense-composite snapshots materialize the FULL finest-resolution cube:
+    # (Nx * 2**levels)**ndim * n_vars * 8 B -- 40 GiB at 32^3 + 5 levels,
+    # regardless of AMR sparsity. Deep hierarchies must write block data only
+    # (blocks_*.npz carries the complete AMR state + per-level data below).
+    dense_snaps = bool(getattr(cfg, "amr_dense_snapshots", True))
+    if not dense_snaps and is_main_process:
+        print("  snapshots: block data only (amr_dense_snapshots=False)")
+
     def write(idx, t):
-        img = driver.composite_to_dense(hierarchy, acfg)        # (n_vars, finest, finest)
-        write_snapshot_distributed(jnp.asarray(img), scfg, t, idx)
+        if dense_snaps:
+            img = driver.composite_to_dense(hierarchy, acfg)    # (n_vars, finest, finest)
+            write_snapshot_distributed(jnp.asarray(img), scfg, t, idx)
         if is_main_process:
             # also dump per-level active block coords for plotting the mesh overlay
             import numpy as _np
             blk = {f"L{L}_coords": _np.asarray(lvl.coords[: int(lvl.n_active)])
                    for L, lvl in enumerate(hierarchy)}
+            if not dense_snaps:                          # block DATA too: the
+                for L, lvl in enumerate(hierarchy):      # snapshot IS the blocks
+                    blk[f"L{L}_data"] = _np.asarray(lvl.data[: int(lvl.n_active)])
             blk["levels"] = _np.array(len(hierarchy))
             blk["block_shape"] = _np.array(acfg.block_shape)
             blk["t"] = _np.array(float(t))
@@ -290,7 +319,7 @@ def run_simulation_amr(cfg, is_main_process=True):
     #     -> the subcycling win reaches gravity, not just hydro. DM path (below)
     #     keeps its own base-dt KDK; this covers cosmo-gas and self-gravity.
     grav_hook = sub_advance = sub_advance_dm = None
-    if subcycle and not shard_amr and dm_state is None and \
+    if subcycle and dm_state is None and \
             (cosmo_kit is not None or grav_apply is not None):
         from amr.poisson import _ghost_phi, kick_level, solve_phi_level
         from amr.state import assemble_base_level
@@ -318,13 +347,22 @@ def run_simulation_amr(cfg, is_main_process=True):
                 data = cosmo_kit["floor_level"](data, aa, L)
             return data, _ghost_phi(phi, lvl, parent_phig, acfg)
 
-        def sub_advance(h, dt, t_sub):
-            return driver.advance_subcycle(
-                h, dt, acfg, gamma=gamma, limiter=limiter, riemann_solver=riemann,
-                gravity=grav_hook, reflux=True, t0=t_sub)
+        if shard_amr:
+            # sharded divergence + replicated gravity/reflux (amr/shard.py owns
+            # the GSPMD-safe reflux wrapper); same hooks, same semantics.
+            def sub_advance(h, dt, t_sub):
+                return shard.advance_subcycle_shmap(
+                    h, dt, acfg, mesh, gamma=gamma, limiter=limiter,
+                    riemann_solver=riemann, gravity=grav_hook, reflux=True,
+                    t0=t_sub)
+        else:
+            def sub_advance(h, dt, t_sub):
+                return driver.advance_subcycle(
+                    h, dt, acfg, gamma=gamma, limiter=limiter, riemann_solver=riemann,
+                    gravity=grav_hook, reflux=True, t0=t_sub)
         if is_main_process:
             print("  Berger-Oliger: per-level subcycled gravity + time-accumulated "
-                  "reflux (L0 FMG once/base step)")
+                  f"reflux (L0 FMG once/base step){' | sharded divergence' if shard_amr else ''}")
 
     if dm_state is not None:
         # ---- coupled gas+DM step pieces (all jit/scan-safe) ---------------
@@ -391,6 +429,21 @@ def run_simulation_amr(cfg, is_main_process=True):
                 print("  Berger-Oliger (gas+DM): subcycled gas gravity + reflux, "
                       "DM KDK at base dt")
 
+    # opt-in positivity floor (0 = off): quiescent-reset unphysical cells after
+    # each step so a capped shock seam degrades gracefully instead of stalling.
+    _rho_floor = float(getattr(cfg, "amr_rho_floor", 0.0) or 0.0)
+    _p_floor = float(getattr(cfg, "amr_p_floor", 0.0) or 0.0)
+    _floor_on = _rho_floor > 0.0
+    if _floor_on and is_main_process:
+        print(f"  positivity floor ON: rho>={_rho_floor:.3e}, p>={_p_floor:.3e} "
+              "(quiescent reset)")
+
+    def _apply_floor(h):
+        if _floor_on:
+            return driver.floor_positivity(h, acfg, gamma=gamma,
+                                           rho_floor=_rho_floor, p_floor=_p_floor)
+        return h
+
     def _chunk(hier, tt, target):
         def body(carry, _):
             h, tc, taken = carry
@@ -407,6 +460,7 @@ def run_simulation_amr(cfg, is_main_process=True):
                     h = grav_cosmo(h, dt, aa)
                 elif grav_apply is not None:
                     h = grav_apply(h, dt)
+            h = _apply_floor(h)
             return (h, tc + dt, taken + (dt > 0).astype(jnp.int32)), None
         (h, tf, taken), _ = jax.lax.scan(
             body, (hier, tt, jnp.zeros((), jnp.int32)), None, length=chunk_len)
@@ -436,6 +490,7 @@ def run_simulation_amr(cfg, is_main_process=True):
                 phis, g2 = _dm_forces(h, ps, a_next)
                 h = apply_gravity_kick(h, phis, dt, acfg)
                 h = cosmo_kit["floors"](h, a_next)
+            h = _apply_floor(h)
             pp = pp + g2 * (0.5 * dt)
             return (h, ps, pp, g2, tc + dt,
                     taken + (dt > 0).astype(jnp.int32)), None
@@ -465,6 +520,15 @@ def run_simulation_amr(cfg, is_main_process=True):
         t_prev, t = t, float(t_dev)
         if taken == 0:
             break                                        # dt collapsed -- don't spin
+        if (t - t_prev) / taken < 1e-14 * cfg.t_end:
+            # dt > 0 but denormal (a vacuum/NaN cell drove the CFL to ~0):
+            # taken keeps counting, t is frozen -- without this the loop
+            # regrids forever at fixed t until the walltime kills the job
+            # (watched happen on the 5-level Sedov). Stop loudly instead.
+            if is_main_process:
+                print(f"  STALLED: dt_avg={(t - t_prev) / taken:.3e} at t={t:.6f}"
+                      f" -- stopping (positivity/vacuum suspected)", flush=True)
+            break
         nstep += taken
         cu_total += cu_step * taken
         if si < num and t >= snapshot_times[si] - 1e-12:
@@ -476,12 +540,16 @@ def run_simulation_amr(cfg, is_main_process=True):
         if regrid_interval:
             hierarchy = driver.regrid(hierarchy, acfg, thresholds=thresholds,
                                       periodic=periodic, bucket=bucket, pad_to=pad_to,
-                                      criterion=criterion)
+                                      criterion=criterion, max_blocks=max_blocks)
             if shard_amr:
                 hierarchy = _global_hierarchy(hierarchy, reshard=True)   # on-device, no host round-trip
             cu_step = _cu_per_base_step(hierarchy)       # block counts changed
             if is_main_process:
-                counts = " ".join(f"L{L}={int(l.n_active)}" for L, l in enumerate(hierarchy))
+                counts = " ".join(
+                    f"L{L}={int(l.n_active)}"
+                    + (" AT-CAP" if max_blocks and L > 0
+                       and int(l.n_active) >= max_blocks - 1 else "")
+                    for L, l in enumerate(hierarchy))
                 extra = ""
                 if cosmo_kit is not None:
                     a_now = float(np.interp(t, cosmo_kit["tau_tab"], cosmo_kit["a_tab"]))

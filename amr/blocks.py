@@ -151,7 +151,7 @@ def build_children(parent_coords, parent_data, flags, level, cfg, max_parents):
     -------
     child_coords : (max_parents * 2**ndim, ndim) int  (last slot = sentinel -1)
     child_data   : (max_parents * 2**ndim, n_vars, *block_shape)  (last = NaN)
-    n_active     : int scalar = (#flagged parents) * 2**ndim
+    n_active     : int scalar = min(#flagged, max_parents - 1) * 2**ndim
     """
     ndim = cfg.ndim
     C = cfg.children_per_block
@@ -161,8 +161,16 @@ def build_children(parent_coords, parent_data, flags, level, cfg, max_parents):
         if s % 2 != 0:
             raise ValueError(f"block_shape must be even per dim to refine; got {bs}")
 
+    # At most max_parents - 1 parents may refine: the last slot group hosts the
+    # NaN sentinel. Uncapped, _sized_parents allocates flagged+1 so this never
+    # binds; under an amr_max_blocks cap the overflow parents are NOT refined --
+    # and their children must be fully invalidated (coords -1 / NaN data), or
+    # they'd sit outside the neighbor map, advance against unfilled ghosts and
+    # restrict NaN into the parent (n_active alone doesn't guard restriction,
+    # which keys on coords >= 0; found by the capacity test).
+    n_par = jnp.minimum(jnp.sum(flags), max_parents - 1)
     pidx = jnp.nonzero(flags, size=max_parents, fill_value=-1)[0]
-    valid = pidx >= 0
+    valid = (pidx >= 0) & (jnp.arange(max_parents) < n_par)
     safe = jnp.where(valid, pidx, 0)
     pc = parent_coords[safe]                       # (P, ndim)
     pd = parent_data[safe]                          # (P, n_vars, *bs)
@@ -170,28 +178,41 @@ def build_children(parent_coords, parent_data, flags, level, cfg, max_parents):
 
     offsets = _offset_table(ndim)                   # (C, ndim) static rows
 
-    # Prolong the WHOLE parent once with the conservative minmod-limited linear
-    # operator (slopes see the full block; only the parent's outer faces limit
-    # to piecewise-constant), then slice each child octant out. PC injection
-    # here planted an O(dx_coarse) staircase on the very feature that triggered
-    # refinement (see geometry.prolong_linear_cons).
-    big = prolong_linear_cons(pd, ndim)              # (P, n_vars, *(2*bs))
+    def _octants(block_data):
+        """Conservative minmod-limited prolongation of a batch of parents, sliced
+        into the C child octants and interleaved parent-major: (B, nv, *bs) ->
+        (B*C, nv, *bs). Slopes see the full block; only the parent's outer faces
+        limit to PC (avoids the O(dx_coarse) staircase on the refining feature)."""
+        big = prolong_linear_cons(block_data, ndim)  # (B, n_vars, *(2*bs))
+        outs = []
+        for o in itertools.product((0, 1), repeat=ndim):
+            sl = [slice(None), slice(None)]
+            for d in range(ndim):
+                sl.append(slice(o[d] * bs[d], (o[d] + 1) * bs[d]))
+            outs.append(big[tuple(sl)])              # (B, n_vars, *bs)
+        return jnp.stack(outs, axis=1).reshape(block_data.shape[0] * C, n_vars, *bs)
+
+    # Memory: the whole-batch prolongation materializes (P, n_vars, *(2*bs)) plus
+    # its minmod-slope temporaries at once -- 17.8 GiB at P=2048 (measured, the
+    # deep-hierarchy OOM). Chunk the parent axis so the transient is only one
+    # chunk's worth; the stacked output is bit-identical (scan is a deterministic
+    # replay of the same ops). Only kicks in when it helps (P a multiple of the
+    # chunk and large enough); otherwise the direct whole-batch path.
+    _CH = 256
+    if max_parents >= 2 * _CH and max_parents % _CH == 0:
+        n_ch = max_parents // _CH
+        _, cds = jax.lax.scan(
+            lambda _c, blk: (None, _octants(blk)),
+            None, pd.reshape(n_ch, _CH, n_vars, *bs))
+        child_data = cds.reshape(max_parents * C, n_vars, *bs)
+    else:
+        child_data = _octants(pd)
 
     coords_per_off = []
-    data_per_off = []
-    for o in itertools.product((0, 1), repeat=ndim):  # static loop, C iters
-        sl = [slice(None), slice(None)]
-        for d in range(ndim):
-            sl.append(slice(o[d] * bs[d], (o[d] + 1) * bs[d]))
-        data_per_off.append(big[tuple(sl)])          # (P, n_vars, *bs)
+    for o in itertools.product((0, 1), repeat=ndim):
         off = jnp.asarray(o, dtype=jnp.int32)
         coords_per_off.append(2 * pc + off)          # (P, ndim)
-
-    # Interleave so a parent's C children are contiguous: (P, C, ...) -> (P*C, ...)
     child_coords = jnp.stack(coords_per_off, axis=1).reshape(max_parents * C, ndim)
-    child_data = jnp.stack(data_per_off, axis=1).reshape(
-        max_parents * C, n_vars, *bs
-    )
 
     # Validity per child follows its parent; invalidate coords + NaN the data.
     child_valid = jnp.repeat(valid, C)
@@ -203,7 +224,7 @@ def build_children(parent_coords, parent_data, flags, level, cfg, max_parents):
     child_data = child_data.at[-1].set(jnp.nan)
     child_coords = child_coords.at[-1].set(-1)
 
-    n_active = jnp.sum(flags) * C
+    n_active = n_par * C
     return child_coords, child_data, n_active
 
 

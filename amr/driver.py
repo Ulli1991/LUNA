@@ -338,7 +338,7 @@ def _pad_blocks(data, coords, pad_to):
     return data, coords
 
 
-def _sized_parents(flags, cpb, bucket, floor=0):
+def _sized_parents(flags, cpb, bucket, floor=0, cap=0):
     """Number of parent slots to allocate for a refined level: the exact flagged
     count (+1 for sentinel headroom). With ``bucket`` set, rounded UP onto the
     geometric ladder ``bucket * 2**k`` and clamped to at least ``floor`` (the
@@ -347,18 +347,31 @@ def _sized_parents(flags, cpb, bucket, floor=0):
     a dynamic run (a linear bucket recompiled on every ``bucket``-crossing --
     dozens of multi-second XLA compiles for a growing Sedov shell) and never
     recompiles on shrink. Padding waste is bounded at 2x the active count.
-    ``bucket`` in (None, 0, 1) means exact (no rounding)."""
+    ``bucket`` in (None, 0, 1) means exact (no rounding).
+
+    ``cap`` (parent units, 0 = unlimited) is a HARD ceiling on the allocation:
+    the memory guard for deep hierarchies, where a blanket-refining criterion x
+    the pow2 ladder otherwise requests device-breaking arrays (measured: 41 GiB
+    at 5 levels on Sedov). When flagged > cap the excess parents are simply not
+    refined this regrid (``_children_j`` takes the first ``max_parents`` flagged
+    slots -> deterministic slot/Morton order); the caller logs the shortfall.
+    The never-shrink floor is capped too, so a once-capped level stays capped."""
     n = int(jnp.sum(flags)) + 1
+    if cap and cap > 0:
+        floor = min(int(floor), int(cap))
     if bucket and bucket > 1:
-        cap = int(bucket)
-        while cap < max(n, floor):
-            cap *= 2
-        return cap
-    return max(n, int(floor))
+        size = int(bucket)
+        while size < max(n, floor):
+            size *= 2
+    else:
+        size = max(n, int(floor))
+    if cap and cap > 0:
+        size = min(size, int(cap))
+    return size
 
 
 def build_hierarchy(U0, cfg, *, thresholds, capacities=None, periodic=True, bucket=None,
-                    pad_to=1, criterion="density"):
+                    pad_to=1, criterion="density", max_blocks=0):
     """Construct the level hierarchy from a uniform field.
 
     thresholds : sequence length ``max_levels`` — density-gradient flag threshold
@@ -387,7 +400,8 @@ def build_hierarchy(U0, cfg, *, thresholds, capacities=None, periodic=True, buck
         else:
             # build runs eagerly (not under jit) -> size to the flagged count
             # (exact, or bucketed for shape stability under dynamic regridding).
-            max_parents = _sized_parents(flags, cpb, bucket)
+            max_parents = _sized_parents(flags, cpb, bucket,
+                                         cap=max_blocks // cpb if max_blocks else 0)
         cc, cd, na = _children_j(parent.coords, parent.data, flags, level=L, cfg=cfg,
                                  max_parents=max_parents)
         cd, cc = _pad_blocks(cd, cc, pad_to)
@@ -398,7 +412,8 @@ def build_hierarchy(U0, cfg, *, thresholds, capacities=None, periodic=True, buck
     return tuple(levels)
 
 
-def regrid(levels, cfg, *, thresholds, periodic=True, bucket=None, pad_to=1, criterion="density"):
+def regrid(levels, cfg, *, thresholds, periodic=True, bucket=None, pad_to=1,
+           criterion="density", max_blocks=0):
     """Re-evaluate the refinement criterion on the CURRENT solution and rebuild
     every refined level — the adaptive heart of AMR.
 
@@ -424,7 +439,9 @@ def regrid(levels, cfg, *, thresholds, periodic=True, bucket=None, pad_to=1, cri
         # regrids only ever grow capacities -> no recompile thrash on shrink.
         prev_parents = old_child.data.shape[0] // cfg.children_per_block
         max_parents = _sized_parents(flags, cfg.children_per_block, bucket,
-                                     floor=prev_parents)
+                                     floor=prev_parents,
+                                     cap=max_blocks // cfg.children_per_block
+                                     if max_blocks else 0)
         cc, cd, na = _children_j(parent.coords, parent.data, flags, level=L, cfg=cfg,
                                  max_parents=max_parents)
         old_slot = _match_blocks_j(cc, na, old_child.coords, old_child.n_active, cfg.ndim)
@@ -527,7 +544,8 @@ def advance(levels, dt, cfg, *, gamma, limiter=1, riemann_solver="hllc",
 # Subcycled (Berger-Oliger) time stepping: the AMR time-win
 # ---------------------------------------------------------------------------
 def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="hllc",
-                     divergence_fn=None, gravity=None, reflux=False, t0=0.0):
+                     divergence_fn=None, gravity=None, reflux=False, t0=0.0,
+                     reflux_fn=None):
     """Berger-Oliger subcycled step (ratio r=2): level L advances by
     ``dt_base / r**L``. The coarse level steps once; each finer level then takes
     ``r`` sub-steps of half the dt, its coarse-fine ghosts gathered from the
@@ -559,8 +577,12 @@ def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="
     """
     r = cfg.refinement_ratio
     n = len(levels)
-    if reflux:
+    if reflux and reflux_fn is None:
+        # reflux_fn hook: the shard path substitutes a replicated-shard_map
+        # wrapper here (GSPMD re-partitions the raw segment-sums under an
+        # outer jit, silently dropping shard-remote flux contributions).
         from amr.reflux import apply_reflux_blocks
+        reflux_fn = apply_reflux_blocks
 
     if divergence_fn is None:
         def divergence_fn(gw, neighbors, level, dt_l, want_flux=False):
@@ -625,7 +647,7 @@ def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="
             if reflux:
                 child = levels[L + 1]
                 acc = tuple(f.sum(axis=0) for f in cflux_stack)  # sum over sub-steps
-                data_L = apply_reflux_blocks(
+                data_L = reflux_fn(
                     data_L, my_flux, tuple(a / r for a in acc),
                     child.coords, child.parent_slots, child.neighbors,
                     child.n_active, lvl.neighbors, dt, L, cfg)
@@ -636,6 +658,39 @@ def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="
 
     datas, _ = step_level(0, tuple(l.data for l in levels), dt_base, t0, None, None)
     return tuple(l._replace(data=d) for l, d in zip(levels, datas))
+
+
+def floor_positivity(levels, cfg, *, gamma, rho_floor, p_floor):
+    """Opt-in positivity floor: quiescent-reset any active cell that has gone
+    unphysical (rho <= rho_floor, e_int <= 0, or non-finite) to a quiet state
+    ``(rho_floor, v=0, p_floor)``. Uses ``where`` (NOT ``max``) so a NaN/inf cell
+    is REPLACED, not propagated through a maximum. Inactive/sentinel blocks
+    (coords[:, 0] < 0, all-NaN by construction) are left untouched so the
+    sentinel machinery keeps working.
+
+    This is the robustness knob for extreme-depth AMR: when a capped level puts
+    a coarse-fine seam through a strong shock (the L5 Sedov shell needs more
+    blocks than one device holds, so the cap truncates mid-front), the seam flux
+    can drive a cell negative and collapse the CFL dt to a denormal. The floor
+    localizes that to a few quietly-reset cells instead of a run-ending spiral.
+    Off by default (rho_floor = 0); a validated shallow run never triggers it."""
+    ndim = cfg.ndim
+    out = []
+    for lvl in levels:
+        d = lvl.data
+        rho = d[:, 0:1]
+        mom = d[:, 1:1 + ndim]
+        E = d[:, ndim + 1:ndim + 2]
+        eint = E - 0.5 * jnp.sum(mom * mom, axis=1, keepdims=True) / rho
+        good = (jnp.isfinite(rho) & jnp.isfinite(E) & (rho > rho_floor)
+                & (eint > 0.0))
+        active = (lvl.coords[:, 0] >= 0).reshape((-1,) + (1,) * (ndim + 1))
+        bad = active & ~good                                # never touch sentinels
+        rho_n = jnp.where(bad, rho_floor, rho)
+        mom_n = jnp.where(bad, 0.0, mom)
+        E_n = jnp.where(bad, p_floor / (gamma - 1.0), E)
+        out.append(lvl._replace(data=jnp.concatenate([rho_n, mom_n, E_n], axis=1)))
+    return tuple(out)
 
 
 def compute_dt_subcycle(levels, cfg, *, gamma, CFL):

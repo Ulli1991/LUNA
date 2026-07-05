@@ -99,17 +99,19 @@ def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
             fluxes[d] = F
 
         dU = jax.vmap(lambda *fs: divergence_from_face_fluxes(fs, spatial_dim=ndim, **inv))(*fluxes)
-        dU_g = jax.lax.all_gather(dU, "blocks", axis=0, tiled=True)       # -> full, replicated
+        # Step 2: return the LOCAL (per-device) divergence + seam-corrected
+        # fluxes SHARDED on the block axis -- no output all_gather. The flux
+        # compute above is already per-device (W_loc is this shard); only the
+        # small face-state halo (Ld_g/Rd_g) is gathered. So the divergence peak
+        # is now total/n_dev instead of replicated. dU stays sharded through
+        # ``new_data = data + dt*dU`` in advance_shmap.
         if return_face_fluxes:
-            # replicated seam-corrected fluxes for the (replicated) reflux pass
-            fl_g = tuple(jax.lax.all_gather(F, "blocks", axis=0, tiled=True)
-                         for F in fluxes)
-            return dU_g, fl_g
-        return dU_g
+            return dU, tuple(fluxes)
+        return dU
 
-    out_specs = (P(), tuple(P() for _ in range(ndim))) if return_face_fluxes else P()
-    # all_gather makes the result replicated, but shard_map can't infer that
-    # statically (check_vma) -> disable the check for this gathered output.
+    blk_spec = P("blocks", *([None] * (W_ghosted.ndim - 1)))
+    out_specs = ((blk_spec, tuple(blk_spec for _ in range(ndim)))
+                 if return_face_fluxes else blk_spec)
     try:
         return _shard_map(local, mesh=mesh, in_specs=(W_spec, nbr_spec),
                           out_specs=out_specs, check_vma=False)(W_ghosted, neighbors)
@@ -139,14 +141,13 @@ def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1, riemann_solver=
                                   gamma=gamma, limiter=limiter,
                                   riemann_solver=riemann_solver,
                                   return_face_fluxes=True)
-        # Pin the (all-gathered) outputs EXPLICITLY replicated. shard_map with
-        # check_vma=False only ASSERTS replication; under an outer jit the SPMD
-        # partitioner is then free to re-partition the downstream reflux's
-        # segment-sums/gathers over the block axis, silently summing only
-        # shard-local contributions (measured: reflux corrections vanished
-        # under jit while every component was jit-clean in isolation).
-        dU = jax.lax.with_sharding_constraint(dU, repl)
-        fl = tuple(jax.lax.with_sharding_constraint(f, repl) for f in fl)
+        # Step 2: dU / fl now come back SHARDED on the block axis (no output
+        # all_gather), so new_data stays sharded -> the divergence peak is
+        # total/n_dev. The reflux below still needs the fluxes replicated for its
+        # cross-device coarse-fine scatter; it all_gathers them itself inside its
+        # own replicated shard_map (the GSPMD-safe path -- so the peak there is
+        # only the small flux/coarse arrays, not the big dU). No upstream repl
+        # constraint here: pinning dU replicated is exactly what we are removing.
         new_data.append(lvl.data + dt * dU)
         fluxes.append(fl)
     # Berger-Colella reflux on the replicated fluxes (cheap, O(face area)),
@@ -174,23 +175,81 @@ def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1, riemann_solver=
     for L in range(len(hierarchy) - 1, 0, -1):
         fine = hierarchy[L]._replace(data=new_data[L])
         new_data[L - 1] = _restrict_into_parent(new_data[L - 1], fine, cfg)
+    new_data = _reshard_blocks(new_data, mesh)
     return tuple(lvl._replace(data=nd) for lvl, nd in zip(hierarchy, new_data))
 
 
+def _reshard_blocks(datas, mesh):
+    """Pin each level's updated data back to block-sharded storage (step 1 of the
+    sharded-memory plan). The all_gather in :func:`divergence_shmap` makes the
+    step's intermediates replicated; without this the returned hierarchy would be
+    replicated too and between-step storage would not be distributed. This is a
+    cheap slice of the already-materialized replicated result -- it does NOT
+    reduce the in-step PEAK (that is step 2: removing the gather). A no-op when
+    the block axis is not divisible by the device count (leaves it replicated)."""
+    from jax.sharding import NamedSharding
+    D = mesh.devices.size
+    blk = NamedSharding(mesh, P("blocks"))
+    out = []
+    for nd in datas:
+        if nd.shape[0] % D == 0:
+            out.append(jax.lax.with_sharding_constraint(nd, blk))
+        else:
+            out.append(nd)
+    return out
+
+
 def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
-                           gamma, limiter=1, riemann_solver="hllc"):
+                           gamma, limiter=1, riemann_solver="hllc",
+                           gravity=None, reflux=False, t0=0.0):
     """Subcycled (Berger-Oliger) step with each per-level divergence sharded via
     :func:`divergence_shmap`. Reuses :func:`amr.driver.advance_subcycle`'s
     recursion + time-interpolated coarse ghosts, swapping the divergence kernel
-    for the distributed one. Matches the single-device subcycled step."""
-    from amr.driver import advance_subcycle
+    for the distributed one. Matches the single-device subcycled step.
 
-    def div(gw, neighbors, level, dt_l):
-        return divergence_shmap(gw, neighbors, mesh, dt_l, level, cfg,
-                                gamma=gamma, limiter=limiter, riemann_solver=riemann_solver)
+    ``gravity``/``reflux``/``t0`` mirror the driver hooks. The gravity solve and
+    kick run on the REPLICATED hierarchy (same as the synchronized shard path --
+    every device redundantly computes the identical phi; distribution buys
+    memory/flops only in the divergence). Fluxes coming out of the sharded
+    divergence are pinned explicitly replicated and the Berger-Colella
+    correction executes INSIDE a fully-replicated shard_map -- the same GSPMD
+    trap + fix as :func:`advance_shmap` (an outer jit otherwise silently
+    re-partitions the segment-sums to shard-local scope)."""
+    from jax.sharding import NamedSharding
+
+    from amr.driver import advance_subcycle
+    from amr.reflux import apply_reflux_blocks
+
+    repl = NamedSharding(mesh, P())
+
+    def div(gw, neighbors, level, dt_l, want_flux=False):
+        out = divergence_shmap(gw, neighbors, mesh, dt_l, level, cfg,
+                               gamma=gamma, limiter=limiter,
+                               riemann_solver=riemann_solver,
+                               return_face_fluxes=want_flux)
+        if not want_flux:
+            return out
+        dU, fl = out
+        dU = jax.lax.with_sharding_constraint(dU, repl)
+        fl = tuple(jax.lax.with_sharding_constraint(f, repl) for f in fl)
+        return dU, fl
+
+    def reflux_repl(cd, fc, ff, cc, ps, nb, na, cnb, dt_l, L, _cfg):
+        def _rf(cd_, fc_, ff_, cc_, ps_, nb_, na_, cnb_):
+            return apply_reflux_blocks(cd_, fc_, ff_, cc_, ps_, nb_, na_,
+                                       cnb_, dt_l, L, _cfg)
+        args = (cd, fc, ff, cc, ps, nb, na, cnb)
+        try:
+            return _shard_map(_rf, mesh=mesh, in_specs=P(),
+                              out_specs=P(), check_vma=False)(*args)
+        except TypeError:                                # older jax: check_rep
+            return _shard_map(_rf, mesh=mesh, in_specs=P(),
+                              out_specs=P(), check_rep=False)(*args)
 
     return advance_subcycle(hierarchy, dt_base, cfg, gamma=gamma, limiter=limiter,
-                            riemann_solver=riemann_solver, divergence_fn=div)
+                            riemann_solver=riemann_solver, divergence_fn=div,
+                            gravity=gravity, reflux=reflux, t0=t0,
+                            reflux_fn=reflux_repl)
 
 
 def advance_level_shmap(data, neighbors, mesh, dt, level, cfg, *,

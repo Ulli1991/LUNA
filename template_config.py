@@ -474,6 +474,23 @@ class Config:
     #                             from a well-resolved base; the right trigger for KH
     amr_criterion: str = "density"
     amr_capacities: list = None          # per-level max child blocks; None -> exact (no padding)
+    # Hard per-level block ceiling (0 = unlimited): the deep-hierarchy memory
+    # guard. Blanket refinement x the pow2 bucket ladder otherwise requests
+    # device-breaking arrays (41 GiB measured at 5 levels); excess flagged
+    # blocks are simply not refined that regrid (dropped in slot order; the
+    # regrid log prints AT-CAP when a level saturates).
+    amr_max_blocks: int = 0
+    # Opt-in positivity floor for the AMR advance (0 = off). When a capped level
+    # seams a strong shock, the coarse-fine flux can drive a cell negative and
+    # collapse dt; the floor quiescent-resets such cells to (rho_floor, v=0,
+    # p_floor) instead of spiraling. A validated shallow run never triggers it.
+    amr_rho_floor: float = 0.0
+    amr_p_floor: float = 0.0
+    # Dense-composite snapshots materialize the FULL finest-resolution cube
+    # ((Nx*2^levels)^ndim * n_vars * 8 B = 40 GiB at 32^3+5 levels) regardless
+    # of AMR sparsity. False -> write per-level block data into blocks_*.npz
+    # instead (the complete AMR state, sized to what's actually refined).
+    amr_dense_snapshots: bool = True
     # Adaptive re-check cadence: re-run the refinement criterion on the live
     # solution and rebuild the grid every N steps (0 -> static, flag once at t=0).
     # The flagging dilation margin (n_ghost cells) must cover how far a feature
