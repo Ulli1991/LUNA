@@ -296,3 +296,111 @@ def advance_level_shmap(data, neighbors, mesh, dt, level, cfg, *,
 
     return _shard_map(local, mesh=mesh, in_specs=(data_spec, nbr_spec),
                       out_specs=data_spec)(data, neighbors)
+
+
+# ---------------------------------------------------------------------------
+# Shard-aware regrid (#2): the child DATA built sharded, topology replicated
+# ---------------------------------------------------------------------------
+def build_children_sharded(parent_coords, parent_data, flags, level, cfg, mesh,
+                           max_parents):
+    """Sharded twin of :func:`amr.blocks.build_children`. Refine flagged parents
+    into child blocks, but produce the (big) child DATA array SHARDED on the
+    block axis while all TOPOLOGY (coords / valid / n_active -- small int arrays)
+    stays replicated. Bit-identical to build_children on the active blocks.
+
+    Why: the regrid rebuild is the last replicated big-data op -- measured 70 GiB
+    at 6 levels (2048^3-eff) -> OOM even on 4xA100. The prolongation is
+    per-parent-independent, so it shards cleanly: gather the flagged parents'
+    data replicated (transient, ~1.3 GB at the coarse parent level, << the 70 GiB
+    child output), then prolong under a shard_map so each device owns 1/D of the
+    children. Topology stays replicated because it is tiny (~2 MB/level).
+    """
+    import itertools
+    from amr.geometry import prolong_linear_cons
+
+    ndim = cfg.ndim
+    C = cfg.children_per_block
+    bs = cfg.block_shape
+    n_vars = parent_data.shape[1]
+    D = mesh.devices.size
+
+    # --- topology (replicated) ---
+    n_par = jnp.minimum(jnp.sum(flags), max_parents - 1)
+    pidx = jnp.nonzero(flags, size=max_parents, fill_value=-1)[0]
+    valid = (pidx >= 0) & (jnp.arange(max_parents) < n_par)
+    safe = jnp.where(valid, pidx, 0)
+    pc = parent_coords[safe]                            # (P, ndim)
+    pd = parent_data[safe]                              # (P, n_vars, *bs) gathered
+
+    coords_per_off = []
+    for o in itertools.product((0, 1), repeat=ndim):
+        coords_per_off.append(2 * pc + jnp.asarray(o, dtype=jnp.int32))
+    child_coords = jnp.stack(coords_per_off, axis=1).reshape(max_parents * C, ndim)
+
+    # --- data (sharded): prolong each device's shard of parents ---
+    def _octants(block_data):
+        big = prolong_linear_cons(block_data, ndim)     # (B, n_vars, *(2*bs))
+        outs = []
+        for o in itertools.product((0, 1), repeat=ndim):
+            sl = [slice(None), slice(None)]
+            for d in range(ndim):
+                sl.append(slice(o[d] * bs[d], (o[d] + 1) * bs[d]))
+            outs.append(big[tuple(sl)])
+        return jnp.stack(outs, axis=1).reshape(block_data.shape[0] * C, n_vars, *bs)
+
+    blk = P("blocks", *([None] * (pd.ndim - 1)))
+    if max_parents % D == 0:
+        try:
+            child_data = _shard_map(_octants, mesh=mesh, in_specs=blk,
+                                    out_specs=blk, check_vma=False)(pd)
+        except TypeError:                               # older jax: check_rep
+            child_data = _shard_map(_octants, mesh=mesh, in_specs=blk,
+                                    out_specs=blk, check_rep=False)(pd)
+    else:
+        child_data = _octants(pd)                       # fallback: replicated
+
+    # --- invalidate + sentinel (mask replicated, data sharded -> sharded) ---
+    child_valid = jnp.repeat(valid, C)
+    child_coords = jnp.where(child_valid[:, None], child_coords, -1)
+    child_data = jnp.where(child_valid[:, None, *([None] * ndim)], child_data,
+                           jnp.nan)
+    child_data = child_data.at[-1].set(jnp.nan)
+    child_coords = child_coords.at[-1].set(-1)
+    n_active = n_par * C
+    return child_coords, child_data, n_active
+
+
+def regrid_sharded(levels, cfg, mesh, *, thresholds, periodic=True, bucket=None,
+                   pad_to=1, criterion="density", max_blocks=0):
+    """Shard-aware twin of :func:`amr.driver.regrid`: child DATA built sharded
+    (:func:`build_children_sharded`), all TOPOLOGY on the existing replicated
+    kernels. Removes the regrid's 70 GiB replicated child-data peak (6 levels)
+    so 2048^3-eff fits across devices. The one remaining transient is
+    ``_preserve_j``'s gather of the OLD level's data (carries evolved fine state
+    across the regrid); it briefly replicates the old level (~its own size, not
+    the new 8x-larger one). Bit-identical to driver.regrid on active blocks."""
+    from amr.driver import (Level, _flag_blocks, _match_blocks_j, _neighbors_j,
+                            _pad_blocks, _parent_slots_j, _preserve_j,
+                            _sized_parents)
+
+    new = [levels[0]]
+    rho0 = jnp.nanmean(levels[0].data[:, 0])
+    for L in range(cfg.max_levels):
+        parent = new[L]
+        old_child = levels[L + 1]
+        flags = _flag_blocks(parent, cfg, thresholds[L], L, criterion, rho_ref=rho0)
+        prev_parents = old_child.data.shape[0] // cfg.children_per_block
+        max_parents = _sized_parents(flags, cfg.children_per_block, bucket,
+                                     floor=prev_parents,
+                                     cap=max_blocks // cfg.children_per_block
+                                     if max_blocks else 0)
+        cc, cd, na = build_children_sharded(parent.coords, parent.data, flags, L,
+                                            cfg, mesh, max_parents)
+        old_slot = _match_blocks_j(cc, na, old_child.coords, old_child.n_active, cfg.ndim)
+        cd = _preserve_j(cd, old_slot, old_child.data)
+        cd, cc = _pad_blocks(cd, cc, pad_to)
+        nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=False)
+        pslots = _parent_slots_j(cc, parent.coords, parent.n_active, cfg)
+        new.append(Level(data=cd, coords=cc, neighbors=nbrs,
+                         parent_slots=pslots, n_active=na))
+    return tuple(new)

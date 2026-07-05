@@ -538,11 +538,18 @@ def run_simulation_amr(cfg, is_main_process=True):
         # ladder and never shrink (_sized_parents), so `chunk_step` recompiles
         # only ~log2(peak/bucket) times across the whole run.
         if regrid_interval:
-            hierarchy = driver.regrid(hierarchy, acfg, thresholds=thresholds,
-                                      periodic=periodic, bucket=bucket, pad_to=pad_to,
-                                      criterion=criterion, max_blocks=max_blocks)
             if shard_amr:
-                hierarchy = _global_hierarchy(hierarchy, reshard=True)   # on-device, no host round-trip
+                # shard-aware regrid: child DATA built sharded (no 70 GiB
+                # replicated peak that OOM'd at 6 levels), topology replicated;
+                # returns the hierarchy already sharded, no separate reshard.
+                hierarchy = shard.regrid_sharded(
+                    hierarchy, acfg, mesh, thresholds=thresholds, periodic=periodic,
+                    bucket=bucket, pad_to=pad_to, criterion=criterion,
+                    max_blocks=max_blocks)
+            else:
+                hierarchy = driver.regrid(hierarchy, acfg, thresholds=thresholds,
+                                          periodic=periodic, bucket=bucket, pad_to=pad_to,
+                                          criterion=criterion, max_blocks=max_blocks)
             cu_step = _cu_per_base_step(hierarchy)       # block counts changed
             if is_main_process:
                 counts = " ".join(
