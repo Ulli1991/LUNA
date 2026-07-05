@@ -17,6 +17,8 @@ same-level seam exchange. Coarse-fine (parent gather) extends the same pattern.
 
 from __future__ import annotations
 
+import itertools
+
 import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec as P
@@ -26,9 +28,15 @@ from amr.hydro import (
     block_boundary_states,
     block_face_fluxes,
     cons_to_prim_blocks,
+    _inner_ghost_index,
     _set_boundary_face,
 )
-from hydro.muscl_hancock import divergence_from_face_fluxes, riemann_face_flux
+from hydro.muscl_hancock import (
+    divergence_from_face_fluxes,
+    muscl_hancock_boundary_states,
+    muscl_hancock_face_fluxes,
+    riemann_face_flux,
+)
 
 _shard_map = getattr(jax, "shard_map", None)
 if _shard_map is None:  # older jax
@@ -59,6 +67,264 @@ def _fill_same_level_2src(local_data, global_data, neighbors, cfg):
         out_minus[sax] = slice(0, g)
         out = out.at[tuple(out_minus)].set(minus_nb[tuple(nb_last)])
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Distributed ghost fill (the replicated ``driver._fill_ghosts`` was ~half of
+# the 6-level advance's OOM). Same-level fill is made corner-EXACT and sharded:
+# the replicated ``fill_ghost_same_level`` runs a sequential axis sweep whose
+# LAST-writing pass sets each ghost region to a *diagonal* neighbour (the unsplit
+# MUSCL-Hancock predictor reads edges/corners). We reproduce that diagonal by
+# composing face-hops on the small (replicated) neighbour table -- highest axis
+# hopped first (the sweep order z,y,x makes the highest nonzero axis the outer
+# read), then gather each region's tensor-product sub-cube from the all-gathered
+# UNGHOSTED data, so the big ghosted array is born sharded (1/D).
+# --------------------------------------------------------------------------- #
+def _same_level_offsets(ndim):
+    """Ghost-region offsets in a fixed order (matches ``_same_level_stencil``)."""
+    return list(itertools.product((-1, 0, 1), repeat=ndim))
+
+
+def _same_level_stencil(neighbors, cfg):
+    """Global source slot for every ghost region, per block. ``neighbors`` is the
+    (replicated, small) face table (order ``[+d,-d]`` per axis, sentinel = last
+    slot). Returns ``(n_slots, 3**ndim)`` int32: column ``o`` is the block reached
+    by composing the face-hops of offset ``offsets[o]`` from HIGHEST nonzero axis
+    to lowest (the exact neighbour the sweep's last pass reads). Any missing hop
+    collapses to the sentinel -> that region fills NaN, matching the sweep."""
+    ndim = cfg.ndim
+    n = neighbors.shape[0]
+    sentinel = n - 1
+    base = jnp.arange(n, dtype=jnp.int32)
+
+    def hop(slots, d, sign):
+        col = 2 * d + (0 if sign > 0 else 1)            # [+d, -d]
+        nxt = neighbors[slots, col].astype(jnp.int32)
+        return jnp.where(slots == sentinel, sentinel, nxt)
+
+    cols = []
+    for off in _same_level_offsets(ndim):
+        s = base
+        for d in reversed(range(ndim)):                 # highest axis first
+            if off[d] != 0:
+                s = hop(s, d, off[d])
+        cols.append(s)
+    return jnp.stack(cols, axis=1)                      # (n_slots, 3**ndim)
+
+
+def _fill_same_level_diag(W, stencil_idx, mesh, cfg):
+    """Corner-exact same-level ghost fill, sharded on the block axis. ``W`` is the
+    (sharded) unghosted primitive data; ``stencil_idx`` (:func:`_same_level_stencil`,
+    sharded rows) gives each local block's global source slot per ghost region.
+    Returns the local blocks' ghosted array, sharded -- bit-identical to
+    ``halo.fill_ghost_same_level`` on the active blocks."""
+    g, ndim, bs = cfg.n_ghost, cfg.ndim, cfg.block_shape
+    offsets = _same_level_offsets(ndim)
+    W_spec = P("blocks", *([None] * (W.ndim - 1)))
+    idx_spec = P("blocks", None)
+    out_spec = P("blocks", *([None] * (ndim + 1)))
+
+    def local(W_loc, idx_loc):
+        Wg = jax.lax.all_gather(W_loc, "blocks", axis=0, tiled=True)   # global unghosted
+        Nloc, n_vars = W_loc.shape[0], W_loc.shape[1]
+        out = jnp.full((Nloc, n_vars) + tuple(s + 2 * g for s in bs),
+                       jnp.nan, W_loc.dtype)
+        for o, off in enumerate(offsets):
+            src = Wg[idx_loc[:, o]]                       # (Nloc, n_vars, *bs)
+            ssl = [slice(None), slice(None)]
+            dsl = [slice(None), slice(None)]
+            for d in range(ndim):
+                if off[d] == -1:                          # -face: src last g -> dst first g
+                    ssl.append(slice(bs[d] - g, bs[d])); dsl.append(slice(0, g))
+                elif off[d] == 0:                         # interior
+                    ssl.append(slice(0, bs[d]));         dsl.append(slice(g, g + bs[d]))
+                else:                                     # +face: src first g -> dst last g
+                    ssl.append(slice(0, g));             dsl.append(slice(g + bs[d], g + bs[d] + g))
+            out = out.at[tuple(dsl)].set(src[tuple(ssl)])
+        return out
+
+    try:
+        return _shard_map(local, mesh=mesh, in_specs=(W_spec, idx_spec),
+                          out_specs=out_spec, check_vma=False)(W, stencil_idx)
+    except TypeError:                                     # older jax: check_rep
+        return _shard_map(local, mesh=mesh, in_specs=(W_spec, idx_spec),
+                          out_specs=out_spec, check_rep=False)(W, stencil_idx)
+
+
+def _coarse_underlay_sharded(fine_ghosted, fine_coords, parent_slots,
+                             coarse_ghosted, mesh, cfg, interp="linear"):
+    """Sparse coarse-fine ghost fill (``halo.fill_ghost_from_coarse_sparse``) with
+    the fine blocks sharded. Each device all-gathers the (smaller) parent ghosted
+    level, then runs the identical per-block gather+prolong for its local fine
+    blocks. Output sharded on the fine block axis."""
+    from amr.halo import fill_ghost_from_coarse_sparse
+    fg_spec = P("blocks", *([None] * (fine_ghosted.ndim - 1)))
+    coord_spec = P("blocks", None)
+    ps_spec = P("blocks")
+    cg_spec = P("blocks", *([None] * (coarse_ghosted.ndim - 1)))
+
+    def local(fg_loc, coord_loc, ps_loc, cg_loc):
+        cg = jax.lax.all_gather(cg_loc, "blocks", axis=0, tiled=True)  # global parent ghosted
+        return fill_ghost_from_coarse_sparse(fg_loc, coord_loc, ps_loc, cg,
+                                             cfg, interp=interp)
+
+    ins = (fg_spec, coord_spec, ps_spec, cg_spec)
+    try:
+        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=fg_spec,
+                          check_vma=False)(fine_ghosted, fine_coords, parent_slots, coarse_ghosted)
+    except TypeError:
+        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=fg_spec,
+                          check_rep=False)(fine_ghosted, fine_coords, parent_slots, coarse_ghosted)
+
+
+def _fill_ghosts_sharded(levels, cfg, mesh, gamma):
+    """Sharded twin of ``driver._fill_ghosts``: per-level ghost-filled PRIMITIVE
+    blocks, each level's ghosted array born SHARDED on the block axis (the big
+    array), with only the smaller unghosted / parent gathers transient. Same-level
+    fill is corner-exact (:func:`_fill_same_level_diag`); finer levels add the
+    sparse coarse underlay; a physical BC (per-block, sharding-preserving) fills
+    domain-edge NaNs. Bit-identical to the replicated ``_fill_ghosts``."""
+    from amr.halo import fill_ghost_physical
+    D = mesh.devices.size
+    ghosted = []
+    for L, lvl in enumerate(levels):
+        W = cons_to_prim_blocks(lvl.data, gamma)
+        if W.shape[0] % D != 0:                          # not shardable -> replicated fallback
+            from amr.halo import fill_ghost_same_level, fill_ghost_from_coarse_sparse
+            gw = fill_ghost_same_level(W, lvl.neighbors, cfg)
+            if L > 0:
+                gw = fill_ghost_from_coarse_sparse(gw, lvl.coords, lvl.parent_slots,
+                                                   ghosted[L - 1], cfg, interp="linear")
+            gw = fill_ghost_physical(gw, W, cfg)
+            ghosted.append(gw)
+            continue
+        stencil = _same_level_stencil(lvl.neighbors, cfg)
+        gw = _fill_same_level_diag(W, stencil, mesh, cfg)
+        if L > 0:
+            gw = _coarse_underlay_sharded(gw, lvl.coords, lvl.parent_slots,
+                                          ghosted[L - 1], mesh, cfg, interp="linear")
+        gw = fill_ghost_physical(gw, W, cfg)
+        ghosted.append(gw)
+    return ghosted
+
+
+# --------------------------------------------------------------------------- #
+# Batched single-launch divergence across ALL levels (task #3/#69). The 6-level
+# advance compiled 6 distinct MUSCL divergence kernels (one per level's block
+# count) -> the wall was COMPILE time, not memory. Every level shares the same
+# per-block ghosted shape, so we concatenate all levels onto ONE block axis and
+# run a SINGLE kernel with a per-block ``inv_dx`` (the only per-level variation
+# under a synchronized dt) and globally-offset neighbour indices -> one compile,
+# one dispatch. Bit-identical to summing the per-level ``divergence_shmap`` (the
+# seam Riemann is just gather-by-global-index; a block's neighbours stay within
+# its own level so no cross-level coupling is introduced).
+# --------------------------------------------------------------------------- #
+def _inv_kw(iv, ndim):
+    kw = dict(inv_dx=iv[0], inv_dy=iv[1])
+    kw["inv_dz"] = iv[2] if ndim == 3 else 1.0
+    return kw
+
+
+def _block_fluxes_vec(W_ghosted, dt, inv, cfg, *, gamma, limiter, riemann_solver):
+    """``block_face_fluxes`` with a PER-BLOCK ``inv`` (n, ndim) instead of a scalar
+    level -- the inner MUSCL kernel is unchanged, ``inv`` is just vmapped."""
+    ndim, g = cfg.ndim, cfg.n_ghost
+    W_pad = W_ghosted[_inner_ghost_index(ndim, g)]
+
+    def one_block(Wp, iv):
+        return muscl_hancock_face_fluxes(
+            Wp, dt, gamma=gamma, limiter=limiter, riemann_solver=riemann_solver,
+            spatial_dim=ndim, boundary=1, exact_wrap=False, **_inv_kw(iv, ndim))
+
+    return jax.vmap(one_block)(W_pad, inv)
+
+
+def _block_bstates_vec(W_ghosted, dt, inv, cfg, *, gamma, limiter):
+    """``block_boundary_states`` with a per-block ``inv`` (n, ndim)."""
+    ndim, g = cfg.ndim, cfg.n_ghost
+    W_pad = W_ghosted[_inner_ghost_index(ndim, g)]
+
+    def one_block(Wp, iv):
+        return muscl_hancock_boundary_states(
+            Wp, dt, gamma=gamma, limiter=limiter, spatial_dim=ndim, **_inv_kw(iv, ndim))
+
+    return jax.vmap(one_block)(W_pad, inv)
+
+
+def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *,
+                             gamma, limiter=1, riemann_solver="hllc"):
+    """Single sharded divergence over the concatenated all-levels block axis.
+    ``W_all`` (N, n_vars, *ghosted) is every level's ghosted blocks stacked;
+    ``inv_all`` (N, ndim) the per-block 1/dx; ``nbr_all`` (N, 2*ndim) GLOBAL
+    same-level neighbour slots (invalid -> that level's NaN sentinel slot);
+    ``mask_all`` (N, 2*ndim) bool marks real neighbours. Returns (dU_all, fluxes)
+    sharded on the block axis. Bit-matches the per-level ``divergence_shmap``."""
+    ndim = cfg.ndim
+    blk = P("blocks", *([None] * (W_all.ndim - 1)))
+    vec = P("blocks", None)
+    out_specs = (blk, tuple(blk for _ in range(ndim)))
+
+    def local(W_loc, inv_loc, nbr_loc, mask_loc):
+        fluxes = list(_block_fluxes_vec(W_loc, dt, inv_loc, cfg, gamma=gamma,
+                                        limiter=limiter, riemann_solver=riemann_solver))
+        states = _block_bstates_vec(W_loc, dt, inv_loc, cfg, gamma=gamma, limiter=limiter)
+
+        def seam(a, b, d):
+            return jax.vmap(lambda x, y: riemann_face_flux(
+                x, y, axis=d, gamma=gamma, riemann_solver=riemann_solver))(a, b)
+
+        for d in range(ndim):
+            Ld, Rd = states[d]
+            Ld_g = jax.lax.all_gather(Ld, "blocks", axis=0, tiled=True)
+            Rd_g = jax.lax.all_gather(Rd, "blocks", axis=0, tiled=True)
+            npl, nmi = nbr_loc[:, 2 * d], nbr_loc[:, 2 * d + 1]
+            mpl, mmi = mask_loc[:, 2 * d], mask_loc[:, 2 * d + 1]
+            F = fluxes[d]
+            F = _set_boundary_face(F, d, -1, seam(Rd, Ld_g[npl], d), mpl, ndim)
+            F = _set_boundary_face(F, d, 0, seam(Rd_g[nmi], Ld, d), mmi, ndim)
+            fluxes[d] = F
+
+        def dv(iv, *fs):
+            return divergence_from_face_fluxes(fs, spatial_dim=ndim, **_inv_kw(iv, ndim))
+
+        dU = jax.vmap(dv)(inv_loc, *fluxes)
+        return dU, tuple(fluxes)
+
+    ins = (blk, vec, vec, vec)
+    try:
+        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=out_specs,
+                          check_vma=False)(W_all, inv_all, nbr_all, mask_all)
+    except TypeError:
+        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=out_specs,
+                          check_rep=False)(W_all, inv_all, nbr_all, mask_all)
+
+
+def _batch_levels(ghosted, hierarchy, cfg):
+    """Stack per-level ghosted blocks + topology into the concatenated-block-axis
+    arrays for :func:`divergence_batched_shmap`. Returns (W_all, inv_all, nbr_all,
+    mask_all, offsets) where offsets[L] is level L's start in the stacked axis."""
+    ndim = cfg.ndim
+    W_list, inv_list, nbr_list, mask_list, offsets = [], [], [], [], []
+    acc = 0
+    for L, lvl in enumerate(hierarchy):
+        gL = ghosted[L]
+        nL = gL.shape[0]
+        dxL = cfg.level_dx(L)
+        invL = jnp.broadcast_to(
+            jnp.asarray([1.0 / dxL[d] for d in range(ndim)], gL.dtype), (nL, ndim))
+        nbrL = lvl.neighbors                              # (nL, 2ndim) local, sentinel = nL-1
+        maskL = nbrL != (nL - 1)
+        offsets.append(acc)
+        W_list.append(gL)
+        inv_list.append(invL)
+        nbr_list.append((nbrL + acc).astype(jnp.int32))   # invalid -> level's NaN sentinel slot
+        mask_list.append(maskL)
+        acc += nL
+    return (jnp.concatenate(W_list, axis=0),
+            jnp.concatenate(inv_list, axis=0),
+            jnp.concatenate(nbr_list, axis=0),
+            jnp.concatenate(mask_list, axis=0),
+            offsets)
 
 
 def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
@@ -120,36 +386,50 @@ def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
                           out_specs=out_specs, check_rep=False)(W_ghosted, neighbors)
 
 
-def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1, riemann_solver="hllc"):
+def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
+                  riemann_solver="hllc", use_batched=True):
     """Synchronized multi-level step with the per-level divergence sharded across
-    devices (:func:`divergence_shmap`). Ghost fill (same-level + sparse coarse-
-    fine) and restrict run on the replicated hierarchy via the existing driver
-    helpers; only the hot flux/divergence kernel is distributed. Matches
+    devices. Ghost fill is sharded (:func:`_fill_ghosts_sharded`); the divergence
+    is a SINGLE batched kernel over all levels (:func:`divergence_batched_shmap`,
+    ``use_batched=True``) -- collapsing the 6 per-level compiles into one -- or
+    the per-level :func:`divergence_shmap` loop (``use_batched=False``, kept as a
+    bit-identical fallback). Restrict/reflux stay per-level. Matches
     :func:`amr.driver.advance`."""
-    from amr.driver import _fill_ghosts, _restrict_into_parent
+    from amr.driver import _restrict_into_parent
     from amr.reflux import apply_reflux_blocks
 
     from jax.sharding import NamedSharding
 
     repl = NamedSharding(mesh, P())
 
-    ghosted = _fill_ghosts(hierarchy, cfg, gamma)
+    # Sharded ghost fill: each level's (big) ghosted array is born sharded on the
+    # block axis instead of replicated -- this was ~half of the 6-level advance's
+    # ~90 GB peak. Bit-identical to driver._fill_ghosts (validated 4xA100).
+    ghosted = _fill_ghosts_sharded(hierarchy, cfg, mesh, gamma)
     new_data = []
     fluxes = []
-    for L, lvl in enumerate(hierarchy):
-        dU, fl = divergence_shmap(ghosted[L], lvl.neighbors, mesh, dt, L, cfg,
-                                  gamma=gamma, limiter=limiter,
-                                  riemann_solver=riemann_solver,
-                                  return_face_fluxes=True)
-        # Step 2: dU / fl now come back SHARDED on the block axis (no output
-        # all_gather), so new_data stays sharded -> the divergence peak is
-        # total/n_dev. The reflux below still needs the fluxes replicated for its
-        # cross-device coarse-fine scatter; it all_gathers them itself inside its
-        # own replicated shard_map (the GSPMD-safe path -- so the peak there is
-        # only the small flux/coarse arrays, not the big dU). No upstream repl
-        # constraint here: pinning dU replicated is exactly what we are removing.
-        new_data.append(lvl.data + dt * dU)
-        fluxes.append(fl)
+    if use_batched:
+        # ONE divergence launch across all levels (per-block inv_dx, global
+        # neighbour offsets) -> one XLA compile instead of one per level.
+        W_all, inv_all, nbr_all, mask_all, offsets = _batch_levels(ghosted, hierarchy, cfg)
+        dU_all, fl_all = divergence_batched_shmap(
+            W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg,
+            gamma=gamma, limiter=limiter, riemann_solver=riemann_solver)
+        for L, lvl in enumerate(hierarchy):
+            nL = ghosted[L].shape[0]
+            s = offsets[L]
+            new_data.append(lvl.data + dt * dU_all[s:s + nL])
+            fluxes.append(tuple(f[s:s + nL] for f in fl_all))
+    else:
+        for L, lvl in enumerate(hierarchy):
+            dU, fl = divergence_shmap(ghosted[L], lvl.neighbors, mesh, dt, L, cfg,
+                                      gamma=gamma, limiter=limiter,
+                                      riemann_solver=riemann_solver,
+                                      return_face_fluxes=True)
+            # dU / fl come back SHARDED on the block axis (no output all_gather);
+            # new_data stays sharded so the divergence peak is total/n_dev.
+            new_data.append(lvl.data + dt * dU)
+            fluxes.append(fl)
     # Berger-Colella reflux on the replicated fluxes (cheap, O(face area)),
     # executed INSIDE a shard_map with fully-replicated specs: every device
     # redundantly computes the identical correction, so the SPMD partitioner
