@@ -295,6 +295,28 @@ def flag_jeans(data, neighbors, n_active, cfg, threshold, level, buffer=None):
     return flagged & active
 
 
+def flag_static(parent, cfg, level):
+    """Static (geometric) refinement: flag blocks whose CENTER lies inside
+    ``cfg.static_region`` = ``((lo, hi), ...)`` in box-fraction coords [0, 1] per
+    axis (None -> central half on every axis). Solution-INDEPENDENT, so the
+    coarse-fine boundary is FIXED at the same physical location across resolutions
+    -- the setup for SMR convergence-order tests across refinement interfaces.
+    Block center fraction along axis d is ``(coord_d + 0.5) / n_blocks_d(level)``."""
+    ndim = cfg.ndim
+    coords = parent.coords
+    region = cfg.static_region
+    if region is None:
+        region = tuple((0.25, 0.75) for _ in range(ndim))
+    nblk = [cfg.base_blocks[d] * (cfg.refinement_ratio ** level) for d in range(ndim)]
+    inside = jnp.ones(coords.shape[0], dtype=bool)
+    for d in range(ndim):
+        c = (jnp.maximum(coords[:, d], 0) + 0.5) / float(nblk[d])
+        lo, hi = region[d]
+        inside = inside & (c >= lo) & (c < hi)
+    active = jnp.arange(coords.shape[0]) < parent.n_active
+    return inside & active
+
+
 def _flag_blocks(parent, cfg, threshold, level, criterion, rho_ref=None):
     """Dispatch to the chosen refinement criterion (used by build_hierarchy/regrid).
     ``rho_ref`` (level-0 domain mean density) feeds the overdensity gate of the
@@ -312,6 +334,8 @@ def _flag_blocks(parent, cfg, threshold, level, criterion, rho_ref=None):
                                      rho_ref=rho_ref)
     if criterion == "jeans":
         return flag_jeans(parent.data, parent.neighbors, parent.n_active, cfg, threshold, level)
+    if criterion == "static":
+        return flag_static(parent, cfg, level)
     return flag_density_gradient(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
 
 

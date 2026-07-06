@@ -34,7 +34,7 @@ from functools import partial
 def _morton_params(ndim):
     if jax.config.jax_enable_x64:
         return jnp.uint64, 21
-    return jnp.uint32, (16 if ndim == 2 else 10)
+    return jnp.uint32, (31 if ndim == 1 else 16 if ndim == 2 else 10)
 
 
 def morton_capacity(ndim):

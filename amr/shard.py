@@ -220,7 +220,7 @@ def _fill_ghosts_sharded(levels, cfg, mesh, gamma):
 # its own level so no cross-level coupling is introduced).
 # --------------------------------------------------------------------------- #
 def _inv_kw(iv, ndim):
-    kw = dict(inv_dx=iv[0], inv_dy=iv[1])
+    kw = dict(inv_dx=iv[0], inv_dy=iv[1] if ndim >= 2 else 1.0)
     kw["inv_dz"] = iv[2] if ndim == 3 else 1.0
     return kw
 

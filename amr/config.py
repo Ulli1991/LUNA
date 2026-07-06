@@ -55,11 +55,16 @@ class AMRConfig:
     # defaults keep every non-self-gravity caller valid without change.
     gamma: float = 5.0 / 3.0
     grav_G: float = 1.0
+    # Static (geometric) refinement region for criterion="static": a per-axis
+    # ((lo, hi), ...) box in box-fraction coords [0, 1]. Solution-INDEPENDENT, so
+    # the coarse-fine boundary is fixed (SMR convergence tests). None -> central
+    # half on every axis. Blocks whose center falls inside are refined.
+    static_region: tuple = None
 
     def __post_init__(self):
         nd = self.ndim
-        if nd not in (2, 3):
-            raise ValueError(f"ndim must be 2 or 3; got {nd}")
+        if nd not in (1, 2, 3):
+            raise ValueError(f"ndim must be 1, 2 or 3; got {nd}")
         for name, val in (
             ("box", self.box),
             ("base_grid", self.base_grid),

@@ -98,7 +98,7 @@ def block_divergence(
 
     dx = cfg.level_dx(level)
     inv_dx = 1.0 / dx[0]
-    inv_dy = 1.0 / dx[1]
+    inv_dy = 1.0 / dx[1] if ndim >= 2 else 1.0
     inv_dz = 1.0 / dx[2] if ndim == 3 else 1.0          # unused when ndim==2
 
     def one_block(Wp):
@@ -147,7 +147,7 @@ def block_face_fluxes(
 
     dx = cfg.level_dx(level)
     inv_dx = 1.0 / dx[0]
-    inv_dy = 1.0 / dx[1]
+    inv_dy = 1.0 / dx[1] if ndim >= 2 else 1.0
     inv_dz = 1.0 / dx[2] if ndim == 3 else 1.0
 
     def one_block(Wp):
@@ -172,7 +172,7 @@ def block_boundary_states(W_ghosted, dt, level, cfg, *, gamma, limiter=1):
     W_pad = W_ghosted[_inner_ghost_index(ndim, g)]
     dx = cfg.level_dx(level)
     inv_dx = 1.0 / dx[0]
-    inv_dy = 1.0 / dx[1]
+    inv_dy = 1.0 / dx[1] if ndim >= 2 else 1.0
     inv_dz = 1.0 / dx[2] if ndim == 3 else 1.0
 
     def one_block(Wp):
@@ -251,7 +251,7 @@ def conservative_block_divergence(
 
     dx = cfg.level_dx(level)
     inv_dx = 1.0 / dx[0]
-    inv_dy = 1.0 / dx[1]
+    inv_dy = 1.0 / dx[1] if ndim >= 2 else 1.0
     inv_dz = 1.0 / dx[2] if ndim == 3 else 1.0
 
     # fluxes carry a leading block axis; assemble the divergence per block.

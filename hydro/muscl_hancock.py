@@ -267,6 +267,30 @@ def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_
 # divergence functions line-for-line, so the two stay bit-consistent.
 
 
+def _muscl_hancock_1d_fluxes(W_pad, dt, dWx, *, gamma, riemann_solver, inv_dx, boundary):
+    """1D face fluxes for the AMR path — identical predictor + Riemann solve as
+    :func:`_muscl_hancock_1d`, but returns the face-flux array ``(Fx,)`` (shape
+    ``(n_vars, N+1)``) instead of assembling the divergence, so the AMR reflux /
+    seam layer can consume the raw faces. Bit-consistent with the divergence
+    variant (same slopes, same Jacobian half-step, same ``flux_fn``)."""
+    flux_fn = _pick_riemann(riemann_solver)
+    Wc = W_pad[:, 1:-1]
+    A_dW = apply_primitive_jacobian_1d(Wc, dWx * inv_dx, gamma)
+    W_half = Wc - 0.5 * dt * A_dW
+    Wr_x = W_half + 0.5 * dWx
+    Wl_x = W_half - 0.5 * dWx
+    if boundary == 0:
+        WL_bc = Wr_x[:, -1:]
+        WR_bc = Wl_x[:, 0:1]
+    else:
+        WL_bc = W_pad[:, 0:1]
+        WR_bc = W_pad[:, -1:]
+    WL = jnp.concatenate([WL_bc, Wr_x], axis=1)
+    WR = jnp.concatenate([Wl_x, WR_bc], axis=1)
+    Fx = flux_fn(WL, WR, axis=0, gamma=gamma)
+    return (Fx,)
+
+
 def _muscl_hancock_2d_fluxes(W_pad, dt, dWx, dWy, *, gamma, riemann_solver, inv_dx, inv_dy, boundary):
     flux_fn = _pick_riemann(riemann_solver)
     Wc = W_pad[:, 1:-1, 1:-1]
@@ -409,7 +433,13 @@ def muscl_hancock_face_fluxes(
             W_pad, dt, dWx, dWy, gamma=gamma, riemann_solver=riemann_solver,
             inv_dx=inv_dx, inv_dy=inv_dy, boundary=boundary,
         )
-    raise NotImplementedError(f"face-flux variant supports spatial_dim in (2,3); got {spatial_dim}")
+    if spatial_dim == 1:
+        dWx, _, _ = compute_slopes_from_padded(W_pad, limiter)
+        return _muscl_hancock_1d_fluxes(
+            W_pad, dt, dWx, gamma=gamma, riemann_solver=riemann_solver,
+            inv_dx=inv_dx, boundary=boundary,
+        )
+    raise NotImplementedError(f"face-flux variant supports spatial_dim in (1,2,3); got {spatial_dim}")
 
 
 def riemann_face_flux(W_L, W_R, *, axis, gamma, riemann_solver):
@@ -434,6 +464,15 @@ def muscl_hancock_boundary_states(
     seam flux built from these states matches the block's own interior
     reconstruction at that face.
     """
+    if spatial_dim == 1:
+        dWx, _, _ = compute_slopes_from_padded(W_pad, limiter)
+        Wc = W_pad[:, 1:-1]
+        A_dW = apply_primitive_jacobian_1d(Wc, dWx * inv_dx, gamma)
+        W_half = Wc - 0.5 * dt * A_dW
+        Lx = (W_half - 0.5 * dWx)[:, 0]
+        Rx = (W_half + 0.5 * dWx)[:, -1]
+        return ((Lx, Rx),)
+
     if spatial_dim == 2:
         dWx, dWy, _ = compute_slopes_from_padded(W_pad, limiter)
         Wc = W_pad[:, 1:-1, 1:-1]
@@ -464,7 +503,7 @@ def muscl_hancock_boundary_states(
         Rz = (W_half + 0.5 * dWz)[:, :, :, -1]
         return ((Lx, Rx), (Ly, Ry), (Lz, Rz))
 
-    raise NotImplementedError(f"boundary states support spatial_dim in (2,3); got {spatial_dim}")
+    raise NotImplementedError(f"boundary states support spatial_dim in (1,2,3); got {spatial_dim}")
 
 
 def divergence_from_face_fluxes(fluxes, *, spatial_dim, inv_dx, inv_dy, inv_dz):
@@ -474,6 +513,9 @@ def divergence_from_face_fluxes(fluxes, *, spatial_dim, inv_dx, inv_dy, inv_dz):
     functions, so ``divergence_from_face_fluxes(muscl_hancock_face_fluxes(...))``
     equals ``muscl_hancock_divergence(..., order=2)``.
     """
+    if spatial_dim == 1:
+        (Fx,) = fluxes
+        return (Fx[:, :-1] - Fx[:, 1:]) * inv_dx
     if spatial_dim == 2:
         Fx, Fy = fluxes
         return (Fx[:, :-1, :] - Fx[:, 1:, :]) * inv_dx + (Fy[:, :, :-1] - Fy[:, :, 1:]) * inv_dy
@@ -484,7 +526,7 @@ def divergence_from_face_fluxes(fluxes, *, spatial_dim, inv_dx, inv_dy, inv_dz):
             + (Fy[:, :, :-1, :] - Fy[:, :, 1:, :]) * inv_dy
             + (Fz[:, :, :, :-1] - Fz[:, :, :, 1:]) * inv_dz
         )
-    raise NotImplementedError(f"spatial_dim in (2,3); got {spatial_dim}")
+    raise NotImplementedError(f"spatial_dim in (1,2,3); got {spatial_dim}")
 
 
 # --------------------------------------------------------------------------
