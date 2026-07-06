@@ -60,6 +60,11 @@ class AMRConfig:
     # the coarse-fine boundary is fixed (SMR convergence tests). None -> central
     # half on every axis. Blocks whose center falls inside are refined.
     static_region: tuple = None
+    # Löhner (criterion="lohner") tunables: which conserved variable the normalized
+    # 2nd-derivative estimator acts on (0=density) and the eps noise filter that
+    # caps the switch where curvature is only discretisation ripple.
+    lohner_var: int = 0
+    lohner_eps: float = 0.01
 
     def __post_init__(self):
         nd = self.ndim

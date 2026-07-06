@@ -295,6 +295,60 @@ def flag_jeans(data, neighbors, n_active, cfg, threshold, level, buffer=None):
     return flagged & active
 
 
+def flag_lohner(data, neighbors, n_active, cfg, threshold, buffer=None):
+    """Löhner (1987) normalized second-derivative refinement estimator — the
+    dimensionless indicator RAMSES / FLASH / Enzo use. Per direction ``d`` the
+    switch on variable ``u`` is
+
+        E_d = |u_{i+1} - 2 u_i + u_{i-1}|
+              / (|u_{i+1}-u_i| + |u_i-u_{i-1}| + eps(|u_{i+1}| + 2|u_i| + |u_{i-1}|))
+
+    combined across directions in quadrature ``E = sqrt(Σ_d num_d^2 / Σ_d den_d^2)``.
+    The ``eps`` term (default 0.01) is a noise filter: it caps ``E`` where the
+    curvature is just discretisation ripple, so refinement tracks genuine features
+    (shocks, contact discontinuities, steep bumps) rather than smooth gradients or
+    round-off. ``E`` is ~O(1) at a sharp feature and ->0 in smooth flow (2nd
+    derivative vanishes on a linear ramp), so ``threshold`` is a resolution-
+    INDEPENDENT fraction (typ. 0.2-0.8) -- unlike the raw-gradient criteria, whose
+    threshold has physical units and must be retuned per problem/resolution.
+
+    Computed on ghost-filled variable ``cfg.lohner_var`` (default 0 = density) so
+    block-edge cells see across the boundary; a missing (coarse-fine / domain)
+    neighbour contributes 0 to that direction. Cross-block dilation adds a margin.
+    Returns (n_slots,) bool."""
+    ndim = cfg.ndim
+    g = cfg.n_ghost
+    bs = cfg.block_shape
+    var = int(getattr(cfg, "lohner_var", 0))
+    eps = float(getattr(cfg, "lohner_eps", 0.01))
+    u = data[:, var:var + 1]
+    gh = fill_ghost_same_level(u, neighbors, cfg)          # (n_slots, 1, *(bs+2g))
+
+    num2 = jnp.zeros((data.shape[0], 1) + tuple(bs))
+    den2 = jnp.zeros((data.shape[0], 1) + tuple(bs))
+    for d in range(ndim):
+        c = [slice(None), slice(None)] + [slice(g, g + bs[k]) for k in range(ndim)]
+        hi = list(c); lo = list(c)
+        hi[2 + d] = slice(g + 1, g + 1 + bs[d])
+        lo[2 + d] = slice(g - 1, g - 1 + bs[d])
+        uc = gh[tuple(c)]; uh = gh[tuple(hi)]; ul = gh[tuple(lo)]
+        num = uh - 2.0 * uc + ul
+        den = (jnp.abs(uh - uc) + jnp.abs(uc - ul)
+               + eps * (jnp.abs(uh) + 2.0 * jnp.abs(uc) + jnp.abs(ul)))
+        num = jnp.where(jnp.isnan(num), 0.0, num)          # missing neighbour -> 0
+        den = jnp.where(jnp.isnan(den), 0.0, den)
+        num2 = num2 + num * num
+        den2 = den2 + den * den
+    E = jnp.sqrt(num2 / (den2 + 1e-30))
+
+    cell_flag = (E[:, 0] > threshold).astype(jnp.float32)
+    from amr.blocks import cross_block_dilate
+    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
+    flagged = refinement_block_mask(cell_flag, ndim)
+    active = jnp.arange(data.shape[0]) < n_active
+    return flagged & active
+
+
 def flag_static(parent, cfg, level):
     """Static (geometric) refinement: flag blocks whose CENTER lies inside
     ``cfg.static_region`` = ``((lo, hi), ...)`` in box-fraction coords [0, 1] per
@@ -334,6 +388,8 @@ def _flag_blocks(parent, cfg, threshold, level, criterion, rho_ref=None):
                                      rho_ref=rho_ref)
     if criterion == "jeans":
         return flag_jeans(parent.data, parent.neighbors, parent.n_active, cfg, threshold, level)
+    if criterion == "lohner":
+        return flag_lohner(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
     if criterion == "static":
         return flag_static(parent, cfg, level)
     return flag_density_gradient(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
@@ -429,7 +485,7 @@ def build_hierarchy(U0, cfg, *, thresholds, capacities=None, periodic=True, buck
         cc, cd, na = _children_j(parent.coords, parent.data, flags, level=L, cfg=cfg,
                                  max_parents=max_parents)
         cd, cc = _pad_blocks(cd, cc, pad_to)
-        nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=False)
+        nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=periodic)
         pslots = _parent_slots_j(cc, parent.coords, parent.n_active, cfg)
         levels.append(Level(data=cd, coords=cc, neighbors=nbrs, parent_slots=pslots, n_active=na))
 
@@ -471,7 +527,7 @@ def regrid(levels, cfg, *, thresholds, periodic=True, bucket=None, pad_to=1,
         old_slot = _match_blocks_j(cc, na, old_child.coords, old_child.n_active, cfg.ndim)
         cd = _preserve_j(cd, old_slot, old_child.data)
         cd, cc = _pad_blocks(cd, cc, pad_to)
-        nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=False)
+        nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=periodic)
         pslots = _parent_slots_j(cc, parent.coords, parent.n_active, cfg)
         new.append(Level(data=cd, coords=cc, neighbors=nbrs, parent_slots=pslots, n_active=na))
     return tuple(new)
