@@ -582,7 +582,7 @@ def advance_level_shmap(data, neighbors, mesh, dt, level, cfg, *,
 # Shard-aware regrid (#2): the child DATA built sharded, topology replicated
 # ---------------------------------------------------------------------------
 def build_children_sharded(parent_coords, parent_data, flags, level, cfg, mesh,
-                           max_parents):
+                           max_parents, parent_ghosted=None):
     """Sharded twin of :func:`amr.blocks.build_children`. Refine flagged parents
     into child blocks, but produce the (big) child DATA array SHARDED on the
     block axis while all TOPOLOGY (coords / valid / n_active -- small int arrays)
@@ -596,7 +596,10 @@ def build_children_sharded(parent_coords, parent_data, flags, level, cfg, mesh,
     children. Topology stays replicated because it is tiny (~2 MB/level).
     """
     import itertools
-    from amr.geometry import prolong_linear_cons
+    from amr.geometry import prolong_centered_cons, prolong_linear_cons
+    _prolong = (prolong_centered_cons
+                if getattr(cfg, "prolong_limiter", "minmod") == "centered"
+                else prolong_linear_cons)
 
     ndim = cfg.ndim
     C = cfg.children_per_block
@@ -610,7 +613,13 @@ def build_children_sharded(parent_coords, parent_data, flags, level, cfg, mesh,
     valid = (pidx >= 0) & (jnp.arange(max_parents) < n_par)
     safe = jnp.where(valid, pidx, 0)
     pc = parent_coords[safe]                            # (P, ndim)
-    pd = parent_data[safe]                              # (P, n_vars, *bs) gathered
+    # ghost-aware source (2nd-order outer faces) when provided, else the bare block
+    src = parent_data if parent_ghosted is None else parent_ghosted
+    src_bs = tuple(src.shape[2:])
+    gsrc = (src_bs[0] - bs[0]) // 2
+    pd = src[safe]                                      # (P, n_vars, *src_bs) gathered
+    crop = (slice(None), slice(None)) + tuple(
+        slice(2 * gsrc, 2 * gsrc + 2 * bs[d]) for d in range(ndim))
 
     coords_per_off = []
     for o in itertools.product((0, 1), repeat=ndim):
@@ -619,7 +628,7 @@ def build_children_sharded(parent_coords, parent_data, flags, level, cfg, mesh,
 
     # --- data (sharded): prolong each device's shard of parents ---
     def _octants(block_data):
-        big = prolong_linear_cons(block_data, ndim)     # (B, n_vars, *(2*bs))
+        big = _prolong(block_data, ndim)[crop]          # (B, n_vars, *(2*bs))
         outs = []
         for o in itertools.product((0, 1), repeat=ndim):
             sl = [slice(None), slice(None)]
@@ -659,8 +668,8 @@ def regrid_sharded(levels, cfg, mesh, *, thresholds, periodic=True, bucket=None,
     ``_preserve_j``'s gather of the OLD level's data (carries evolved fine state
     across the regrid); it briefly replicates the old level (~its own size, not
     the new 8x-larger one). Bit-identical to driver.regrid on active blocks."""
-    from amr.driver import (Level, _flag_blocks, _match_blocks_j, _neighbors_j,
-                            _pad_blocks, _parent_slots_j, _preserve_j,
+    from amr.driver import (Level, _flag_blocks, _ghosted_parent, _match_blocks_j,
+                            _neighbors_j, _pad_blocks, _parent_slots_j, _preserve_j,
                             _sized_parents)
 
     new = [levels[0]]
@@ -675,7 +684,8 @@ def regrid_sharded(levels, cfg, mesh, *, thresholds, periodic=True, bucket=None,
                                      cap=max_blocks // cfg.children_per_block
                                      if max_blocks else 0)
         cc, cd, na = build_children_sharded(parent.coords, parent.data, flags, L,
-                                            cfg, mesh, max_parents)
+                                            cfg, mesh, max_parents,
+                                            parent_ghosted=_ghosted_parent(parent, cfg))
         old_slot = _match_blocks_j(cc, na, old_child.coords, old_child.n_active, cfg.ndim)
         cd = _preserve_j(cd, old_slot, old_child.data)
         cd, cc = _pad_blocks(cd, cc, pad_to)

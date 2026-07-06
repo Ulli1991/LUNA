@@ -450,6 +450,22 @@ def _sized_parents(flags, cpb, bucket, floor=0, cap=0):
     return size
 
 
+def _ghosted_parent(parent, cfg):
+    """1-cell halo of the parent level's CONSERVED data for GHOST-AWARE child
+    prolongation (``build_children(parent_ghosted=...)``): the same-level halo
+    lets a refined block's outer faces get 2nd-order slopes from its neighbours
+    instead of a 1st-order one-sided/PC fallback. Periodicity is already encoded
+    in ``parent.neighbors``; a missing neighbour (refined-region / domain edge)
+    clamps to the block's own edge (the old one-sided behaviour there). A cheap
+    1-ghost slice keeps the prolongation temporary small (OOM-sensitive)."""
+    g, ndim, bs = cfg.n_ghost, cfg.ndim, cfg.block_shape
+    gh = fill_ghost_same_level(parent.data, parent.neighbors, cfg)   # (n_slots, nv, *(bs+2g))
+    edge = jnp.pad(parent.data, [(0, 0), (0, 0)] + [(g, g)] * ndim, mode="edge")
+    gh = jnp.where(jnp.isnan(gh), edge, gh)
+    sl = (slice(None), slice(None)) + tuple(slice(g - 1, bs[d] + g + 1) for d in range(ndim))
+    return gh[sl]                                                    # (n_slots, nv, *(bs+2))
+
+
 def build_hierarchy(U0, cfg, *, thresholds, capacities=None, periodic=True, bucket=None,
                     pad_to=1, criterion="density", max_blocks=0):
     """Construct the level hierarchy from a uniform field.
@@ -483,7 +499,8 @@ def build_hierarchy(U0, cfg, *, thresholds, capacities=None, periodic=True, buck
             max_parents = _sized_parents(flags, cpb, bucket,
                                          cap=max_blocks // cpb if max_blocks else 0)
         cc, cd, na = _children_j(parent.coords, parent.data, flags, level=L, cfg=cfg,
-                                 max_parents=max_parents)
+                                 max_parents=max_parents,
+                                 parent_ghosted=_ghosted_parent(parent, cfg))
         cd, cc = _pad_blocks(cd, cc, pad_to)
         nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=periodic)
         pslots = _parent_slots_j(cc, parent.coords, parent.n_active, cfg)
@@ -523,7 +540,8 @@ def regrid(levels, cfg, *, thresholds, periodic=True, bucket=None, pad_to=1,
                                      cap=max_blocks // cfg.children_per_block
                                      if max_blocks else 0)
         cc, cd, na = _children_j(parent.coords, parent.data, flags, level=L, cfg=cfg,
-                                 max_parents=max_parents)
+                                 max_parents=max_parents,
+                                 parent_ghosted=_ghosted_parent(parent, cfg))
         old_slot = _match_blocks_j(cc, na, old_child.coords, old_child.n_active, cfg.ndim)
         cd = _preserve_j(cd, old_slot, old_child.data)
         cd, cc = _pad_blocks(cd, cc, pad_to)

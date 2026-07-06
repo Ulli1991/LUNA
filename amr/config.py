@@ -65,6 +65,11 @@ class AMRConfig:
     # caps the switch where curvature is only discretisation ripple.
     lohner_var: int = 0
     lohner_eps: float = 0.01
+    # Child-init prolongation limiter for newly refined blocks. "minmod"
+    # (default, conservative + monotone, safe at shocks) is 1st order at smooth
+    # extrema; "centered" is conservative unlimited centered-linear = 2nd order at
+    # smooth extrema (for smooth-flow refinement) but may overshoot at shocks.
+    prolong_limiter: str = "minmod"
 
     def __post_init__(self):
         nd = self.ndim
