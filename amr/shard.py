@@ -510,9 +510,27 @@ def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
         if not want_flux:
             return out
         dU, fl = out
-        dU = jax.lax.with_sharding_constraint(dU, repl)
+        # dU stays SHARDED (data carries sharded through the sub-step recursion ->
+        # the between-substep storage is distributed, not just the fill). Fluxes
+        # are pinned replicated for the GSPMD-safe reflux (its segment-sums must
+        # not be silently re-partitioned; it all-gathers the small flux arrays).
         fl = tuple(jax.lax.with_sharding_constraint(f, repl) for f in fl)
         return dU, fl
+
+    def fill_shard(L, data, parent_gprim):
+        """Distributed twin of driver.advance_subcycle's ``ghost_prim``: same-level
+        halo (corner-exact diagonal fill) + (L>0) the piecewise-CONSTANT coarse
+        underlay, each level's ghosted array born SHARDED. Bit-identical to the
+        replicated ghost_prim (no physical BC, interp='const' -- the subcycle's
+        C/F fluxes telescope against restriction with PC ghosts)."""
+        lvl = hierarchy[L]
+        W = cons_to_prim_blocks(data, gamma)
+        stencil = _same_level_stencil(lvl.neighbors, cfg)
+        gw = _fill_same_level_diag(W, stencil, mesh, cfg)
+        if L > 0:
+            gw = _coarse_underlay_sharded(gw, lvl.coords, lvl.parent_slots,
+                                          parent_gprim, mesh, cfg, interp="const")
+        return gw
 
     def reflux_repl(cd, fc, ff, cc, ps, nb, na, cnb, dt_l, L, _cfg):
         def _rf(cd_, fc_, ff_, cc_, ps_, nb_, na_, cnb_):
@@ -529,7 +547,7 @@ def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
     return advance_subcycle(hierarchy, dt_base, cfg, gamma=gamma, limiter=limiter,
                             riemann_solver=riemann_solver, divergence_fn=div,
                             gravity=gravity, reflux=reflux, t0=t0,
-                            reflux_fn=reflux_repl)
+                            reflux_fn=reflux_repl, fill_fn=fill_shard)
 
 
 def advance_level_shmap(data, neighbors, mesh, dt, level, cfg, *,

@@ -643,7 +643,7 @@ def advance(levels, dt, cfg, *, gamma, limiter=1, riemann_solver="hllc",
 # ---------------------------------------------------------------------------
 def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="hllc",
                      divergence_fn=None, gravity=None, reflux=False, t0=0.0,
-                     reflux_fn=None):
+                     reflux_fn=None, fill_fn=None):
     """Berger-Oliger subcycled step (ratio r=2): level L advances by
     ``dt_base / r**L``. The coarse level steps once; each finer level then takes
     ``r`` sub-steps of half the dt, its coarse-fine ghosts gathered from the
@@ -696,7 +696,11 @@ def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="
         purpose: the subcycle scheme's C/F fluxes telescope exactly against
         restriction with piecewise-constant ghosts (the conservation test
         asserts this); the synchronized path uses interp="linear" for accuracy.
-        Reflux reconciles both when on."""
+        Reflux reconciles both when on. ``fill_fn`` (shard path) substitutes a
+        distributed same-level + coarse-underlay fill so the big ghosted array is
+        born sharded; it must match this replicated fill bit-for-bit."""
+        if fill_fn is not None:
+            return fill_fn(L, data, parent_gprim)
         lvl = levels[L]
         gw = fill_ghost_same_level(cons_to_prim_blocks(data, gamma), lvl.neighbors, cfg)
         if L > 0:
