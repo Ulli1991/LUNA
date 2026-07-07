@@ -105,11 +105,15 @@ def run(cfg):
 
 def main():
     """Main entry point for distributed simulation."""
-    initialize_jax_distributed()
+    # Build the config first (pure dataclass, no JAX arrays yet) so the JAX
+    # backend can be initialized with the right precision. jax_enable_x64 must
+    # be set before any array is created, which initialize_jax_distributed does.
+    cfg = Config()
+    initialize_jax_distributed(enable_x64=getattr(cfg, "enable_x64", False))
     import jax
     if jax.process_index() == 0:
         print_LUNA_banner()
-    run(Config())
+    run(cfg)
 
 
 if __name__ == "__main__":

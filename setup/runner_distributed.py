@@ -175,8 +175,16 @@ def run_simulation_distributed(
         print(f"✓ Compilation complete ({compile_time:.1f}s)\n")
 
     # === SNAPSHOTS AND OUTPUT ===
-    # Use pre-computed snapshot times from config (numpy array, not JAX)
-    snapshot_times = cfg.snapshot_times
+    # Use pre-computed snapshot times from config (numpy array, not JAX). With
+    # snapshot I/O disabled (benchmark runs) there are no snapshot times at all,
+    # so the loop targets t_end directly — otherwise the first snapshot time
+    # (t_start) would clamp dt to 0 and stall, since snapshot_idx only advances
+    # inside the (skipped) write block.
+    snapshot_times = (
+        cfg.snapshot_times
+        if getattr(cfg, "write_snapshots", True)
+        else np.asarray([], dtype=float)
+    )
     snapshot_idx = int(np.searchsorted(snapshot_times, t_start)) if cfg.restart else 0
     num_snapshots = len(snapshot_times)
 
@@ -293,12 +301,21 @@ def run_simulation_distributed(
             U_new = apply_cooling(U_new, dt, cfg, cooling_solver)
         return U_new, new_a, new_key, new_pos, new_sink
 
-    while t < cfg.t_end:
+    # Benchmark cap: stop after a fixed number of steps regardless of t_end, so
+    # scaling runs do equal work and stay bounded (0/None = disabled -> run to
+    # t_end as normal). Steady-state Mcells/s is what the scaling study reads.
+    _bench_max_steps = getattr(cfg, "max_steps", 0) or 0
+    while t < cfg.t_end and (_bench_max_steps <= 0 or step < _bench_max_steps):
         t_snapshot_local = (
             snapshot_times[snapshot_idx] if snapshot_idx < num_snapshots else float("inf")
         )
 
+        _dbg = os.environ.get("LUNA_DBG_STEP") == "1" and is_main_process
+        if _dbg:
+            print(f"[dbg] step {step+1}: --> compute_dt", flush=True)
         dt_cfl = float(compute_dt_fn(U_sharded))
+        if _dbg:
+            print(f"[dbg] step {step+1}: compute_dt OK (dt={dt_cfl:.3e}) --> step_fn", flush=True)
         target = min(cfg.t_end, t_snapshot_local)
         remaining = target - t
         if dt_cfl >= remaining:
@@ -322,6 +339,9 @@ def run_simulation_distributed(
         U_sharded, fa_new, fk_new, ppos_new, sink_new = _attempt_step(
             U_sharded, dt, forcing_a_pre, forcing_key_pre, particle_pos_pre, sink_carry_pre
         )
+        if _dbg:
+            U_sharded.block_until_ready()
+            print(f"[dbg] step {step+1}: step_fn OK", flush=True)
         if forcing_state is not None:
             forcing_state["a"] = fa_new
             forcing_state["key"] = fk_new
@@ -398,8 +418,14 @@ def run_simulation_distributed(
                 last_perf_time = current_time
 
         # Save snapshot (all processes participate)
-        # Only check if we haven't written all snapshots yet
-        if snapshot_idx < num_snapshots and t >= snapshot_times[snapshot_idx]:
+        # Only check if we haven't written all snapshots yet. write_snapshots=False
+        # disables all snapshot I/O (benchmark/scaling runs, where a single
+        # multi-TB dump at high resolution would dwarf the compute being timed).
+        if (
+            getattr(cfg, "write_snapshots", True)
+            and snapshot_idx < num_snapshots
+            and t >= snapshot_times[snapshot_idx]
+        ):
             if is_main_process:
                 print(f"\n{'─'*60}")
                 print(f"💾 Saving snapshot #{snapshot_idx} at t = {t:.5f}")

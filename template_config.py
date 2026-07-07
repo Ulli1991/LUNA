@@ -212,6 +212,20 @@ class Config:
     t_start: float = 0.0
     t_end: float = 0.245
 
+    # Benchmark step cap: if > 0, the time loop stops after this many steps
+    # regardless of t_end (equal-work, bounded scaling runs). 0 = disabled.
+    max_steps: int = 0
+
+    # Disable ALL snapshot I/O (scaling/benchmark runs). Default True keeps
+    # production behaviour; set False so a high-resolution timing run doesn't
+    # emit a multi-TB dump that dwarfs the compute being measured.
+    write_snapshots: bool = True
+
+    # Enable float64 (double precision) for the whole solver. Default False
+    # (float32) for production throughput; True matches the FP64 scaling study.
+    # main() reads this to set jax_enable_x64 before any array is created.
+    enable_x64: bool = False
+
     # Time interval between snapshots (code units)
     time_bet_snaps: float = 0.01
 

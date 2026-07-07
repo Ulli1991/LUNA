@@ -32,6 +32,34 @@ from utils.grid_params import GridParams
 from utils.memory_utils import print_memory_usage
 
 
+def _local_device_ids_from_slurm():
+    """Return [local_gpu_index] for this process, or None to let JAX decide.
+
+    Returns None (JAX default: use all visible local devices) when we're not
+    under a multi-task SLURM step, or when the per-task GPU binding already
+    narrowed this process to a single visible device — both cases JAX handles
+    correctly on its own. Returns [SLURM_LOCALID] only when every task on the
+    node can see multiple GPUs, so JAX would otherwise pick the wrong one.
+    """
+    localid = os.environ.get("SLURM_LOCALID")
+    ntasks = int(os.environ.get("SLURM_NTASKS", 1))
+    if localid is None or ntasks <= 1:
+        return None
+
+    visible = (
+        os.environ.get("ROCR_VISIBLE_DEVICES")
+        or os.environ.get("CUDA_VISIBLE_DEVICES")
+        or os.environ.get("HIP_VISIBLE_DEVICES")
+    )
+    if visible is not None:
+        n_visible = len([x for x in visible.split(",") if x != ""])
+        # Per-task binding already isolated one GPU -> it's local index 0.
+        if n_visible <= 1:
+            return [0]
+    # No binding (all local GPUs visible to every task): claim ours by localid.
+    return [int(localid)]
+
+
 def initialize_jax_distributed(enable_x64: bool = False):
     """
     Initialize JAX for distributed multi-node execution.
@@ -49,13 +77,28 @@ def initialize_jax_distributed(enable_x64: bool = False):
     print("MULTI-NODE SHARDING MODE (1 GPU per process)")
     print("=" * 60)
 
+    # Which local GPU this process should own. On clusters where SLURM binds one
+    # GPU per task (per-task CUDA_/ROCR_VISIBLE_DEVICES, e.g. Raven's A100 nodes)
+    # each process already sees a single device at local index 0, so passing
+    # nothing is correct. On clusters where every task on a node sees ALL local
+    # GPUs (e.g. viper's MI300A nodes: ROCR_VISIBLE_DEVICES=0,1 for both tasks),
+    # JAX must be told which one to take via local_device_ids, otherwise every
+    # process tries to grab its *global* device id and the ROCm/CUDA backend
+    # fails ("hipDeviceGet HIP_ERROR_InvalidDevice" / topology-exchange timeout).
+    local_device_ids = _local_device_ids_from_slurm()
+
     try:
-        jax.distributed.initialize(
+        init_kwargs = dict(
             coordinator_address=os.environ.get("JAX_COORDINATOR_ADDRESS"),
             num_processes=int(os.environ.get("SLURM_NTASKS", 1)),
             process_id=int(os.environ.get("SLURM_PROCID", 0)),
         )
+        if local_device_ids is not None:
+            init_kwargs["local_device_ids"] = local_device_ids
+        jax.distributed.initialize(**init_kwargs)
         print("✓ JAX distributed initialized")
+        if local_device_ids is not None:
+            print(f"  local_device_ids={local_device_ids} (SLURM_LOCALID pinning)")
         print(f"  Process: {jax.process_index()} / {jax.process_count()}")
     except (RuntimeError, ValueError) as e:
         print("  Running in single-process mode (use SLURM/MPI for multi-node)")
@@ -315,7 +358,10 @@ def create_solver_distributed(
     from utils.halo_exchange_shardmap import make_halo_shardmap
 
     pad_halo_fn = make_halo_shardmap(mesh, cfg.SPATIAL_DIMENSION)
-    use_shardmap = True
+    # Toggle for A/B testing shard_map vs the (legacy) auto-sharding step path.
+    # NB the auto path reuses the ppermute halo, which needs a shard_map axis
+    # context — outside it this branch is expected to fail (auto halo was removed).
+    use_shardmap = os.environ.get("LUNA_USE_SHARDMAP", "1") == "1"
     if is_main_process:
         print("Using shard_map with explicit per-shard ppermute halos")
         print(f"Sharding spec: {sharding.spec}")

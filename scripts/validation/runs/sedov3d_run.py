@@ -40,6 +40,11 @@ T_END_YR = 1.0e4                                  # 10,000 yr
 T_END_CODE = T_END_YR * SEC_PER_YEAR / UNIT_TIME_S
 N_SNAPS = int(os.environ.get("LUNA_SEDOV_NSNAPS", "10"))   # benchmark sets =1
 TIME_BET_SNAPS = T_END_CODE / N_SNAPS
+# Scaling benchmark: cap the step count (throughput is the steady-state
+# Mcells/s of the first steps). 0 = run all the way to t_end (production).
+MAX_STEPS = int(os.environ.get("LUNA_SEDOV_MAX_STEPS", "0"))
+# Disable snapshot I/O for pure timing runs (a high-res dump dwarfs the compute).
+WRITE_SNAPSHOTS = os.environ.get("LUNA_SEDOV_WRITE_SNAPSHOTS", "1") == "1"
 
 
 def main():
@@ -61,6 +66,8 @@ def main():
         CFL=0.4,                   # 3D unsplit safety
         t_end=T_END_CODE,
         time_bet_snaps=TIME_BET_SNAPS,
+        max_steps=MAX_STEPS,
+        write_snapshots=WRITE_SNAPSHOTS,
         units=units,
         PLOT_AFTER_SIM=False,
         production_mode=True,
