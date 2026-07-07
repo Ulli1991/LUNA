@@ -10,8 +10,15 @@ aggregate Giga cell-updates / second.
             total cells by the whole runtime incl. ~20 s compile.
   AthenaK : "zone-cycles/cpu_second" reported at end of the main loop.
 
-Reads slurm_logs/scal_{luna,ak}_fp64_<NX>_<GPU>.out.* (newest per config).
-Missing configs (not yet run) are simply skipped.
+Two hardware platforms are overlaid:
+  * A100  (NVIDIA, Raven) — reference numbers cached in
+            figures/scaling_fp64_data.csv (original slurm_logs live on Raven).
+  * MI300A (AMD, viper)   — parsed live from the viper run dirs:
+            LUNA    -> scaling/runs/<label>/slurm.out.*
+            AthenaK -> athenak/viper_run/runs/<label>/slurm.out.*
+
+Missing configs (crashed / not-yet-run) are simply skipped, so the figure
+fills in as points land.
 """
 import glob
 import os
@@ -19,13 +26,15 @@ import re
 
 import numpy as np
 
-# Weak ladder: grid grows with the GPU count. 2048^3 does NOT fit on 64 GPUs in
-# FP64 (134M cells/GPU OOMs), so its rung is at 128 GPUs (67M cells/GPU, ~10 GB).
-# The 2048^3/128 FP64 run (submit/scaling/luna_fp64_2048_128.sh) is picked up
-# automatically once its log lands; until then it is skipped as a missing point.
-WEAK = [(32, 1), (64, 2), (128, 4), (256, 8), (512, 16), (1024, 32), (2048, 128)]
-# Strong ladder: fixed 1024^3, increasing GPU count.
-STRONG = [(1024, 32), (1024, 64), (1024, 128)]
+# Weak ladder: grid grows with the GPU count.
+#  A100 : 2048^3 does NOT fit on 64 GPUs in FP64 (134M cells/GPU OOMs on 40GB),
+#         so its rung is at 128 GPUs.
+#  MI300A (128GB): 2048^3 fits at 64 GPUs, and we push a 4096^3 rung at 128.
+A100_WEAK = [(32, 1), (64, 2), (128, 4), (256, 8), (512, 16), (1024, 32), (2048, 128)]
+AMD_WEAK  = [(32, 1), (64, 2), (128, 4), (256, 8), (512, 16), (1024, 32),
+             (2048, 64), (4096, 128)]
+A100_STRONG = [(1024, 32), (1024, 64), (1024, 128)]
+AMD_STRONG  = [(1024, 32), (1024, 64), (1024, 128), (1024, 256)]
 
 
 def _newest(pattern):
@@ -33,102 +42,203 @@ def _newest(pattern):
     return max(fs, key=os.path.getmtime) if fs else None
 
 
-def luna_gcells(nx, gpu):
-    """Median steady-state aggregate Gcell/s from a LUNA runner log."""
-    f = _newest(f"slurm_logs/scal_luna_fp64_{nx}_{gpu}.out.*")
-    if not f:
+def _luna_perf_median(logfile, min_samples=1):
+    """Median steady-state aggregate Mcell/s from a LUNA runner log (or None).
+
+    30-step scaling runs emit only ~3 `perf =` lines, so we drop just the first
+    (compile-warm) sample and take the median of the rest.
+    """
+    if not logfile:
         return None
     perf = []
-    for ln in open(f, errors="ignore"):
+    for ln in open(logfile, errors="ignore"):
         m = re.search(r"perf\s*=\s*([0-9.eE+-]+)\s*Mcells/s", ln)
-        if m:
-            v = float(m.group(1))
-            if v > 0:
-                perf.append(v)
-    if len(perf) < 5:
+        if m and float(m.group(1)) > 0:
+            perf.append(float(m.group(1)))
+    if len(perf) < min_samples:
         return None
-    perf = perf[2:]                       # drop first couple (compile-tainted)
-    return float(np.median(perf)) / 1e3   # Mcell/s -> Gcell/s
+    steady = perf[1:] if len(perf) > 1 else perf   # drop the compile-warm sample
+    return float(np.median(steady))
 
 
-def ak_gcells(nx, gpu):
-    """Aggregate Gcell/s from AthenaK zone-cycles/cpu_second."""
-    f = _newest(f"slurm_logs/scal_ak_fp64_{nx}_{gpu}.out.*")
-    if not f:
+def _ak_zonecyc(logfile):
+    """Aggregate zone-cycles/cpu_second from an AthenaK log (or None)."""
+    if not logfile:
         return None
     val = None
-    for ln in open(f, errors="ignore"):
+    for ln in open(logfile, errors="ignore"):
         m = re.search(r"zone-cycles/cpu_second\s*=\s*([0-9.eE+-]+)", ln)
         if m:
             val = float(m.group(1))
-    return val / 1e9 if val else None      # zone-cycles/s -> Gcell/s
+    return val
 
 
-def _collect(cfgs):
-    return [(nx, gpu, luna_gcells(nx, gpu), ak_gcells(nx, gpu))
-            for nx, gpu in cfgs]
+# ---------------------------------------------------------------------------
+# A100 (Raven) — reference. slurm_logs live on Raven; fall back to the cached
+# CSV (figures/scaling_fp64_data.csv) which is what persists on viper.
+# ---------------------------------------------------------------------------
+def a100_ref():
+    """Return {(test, nx, gpu): (luna_Gcells, ak_Gcells)} from the cached CSV."""
+    out = {}
+    path = "figures/scaling_fp64_data.csv"
+    if not os.path.exists(path):
+        return out
+    for ln in open(path):
+        p = ln.strip().split(",")
+        if len(p) != 5 or p[0] == "test":
+            continue
+        test, nx, gpu, l, a = p
+        out[(test, int(nx), int(gpu))] = (
+            float(l) if l else None, float(a) if a else None)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# MI300A (viper) — LUNA in scaling/runs/, AthenaK in athenak/viper_run/runs/.
+# Per-config run-dir label maps (labels are not uniform across weak/strong).
+# ---------------------------------------------------------------------------
+_LUNA_ROOT = "scaling/runs"
+_AK_ROOT = "/viper/u2/uli/athenak/viper_run/runs"
+
+AMD_LUNA_DIR = {
+    ("weak", 32, 1): "weak_g1_32",   ("weak", 64, 2): "weak_g2_64",
+    ("weak", 128, 4): "weak_g4_128", ("weak", 256, 8): "weak_g8_256",
+    ("weak", 512, 16): "weak_g16_512", ("weak", 1024, 32): "weak_g32_1024",
+    ("weak", 2048, 64): "weak_g64_2048_z2", ("weak", 4096, 128): "weak_g128_4096_z2",
+    ("strong", 1024, 32): "weak_g32_1024",   ("strong", 1024, 64): "zsplit_g64_881",
+    ("strong", 1024, 128): "strong_g128_z2", ("strong", 1024, 256): "strong_g256_z2",
+}
+AMD_AK_DIR = {
+    ("weak", 32, 1): "ak_weak_g1_32",   ("weak", 64, 2): "ak_weak_g2_64",
+    ("weak", 128, 4): "ak_weak_g4_128", ("weak", 256, 8): "ak_weak_g8_256",
+    ("weak", 512, 16): "ak_weak_g16_512", ("weak", 1024, 32): "ak_weak_g32_1024",
+    ("weak", 2048, 64): "ak_weak_g64_2048", ("weak", 4096, 128): "ak_weak_g128_4096",
+    ("strong", 1024, 32): "ak_strong_g32",   ("strong", 1024, 64): "ak_strong_g64",
+    ("strong", 1024, 128): "ak_strong_g128", ("strong", 1024, 256): "ak_strong_g256",
+}
+
+
+# Portable fallback: when the live viper run-dirs are not reachable (e.g. running
+# on Raven), read the AMD points from the snapshot CSV instead.
+def _amd_csv():
+    out = {}
+    path = "figures/scaling_fp64_amd_data.csv"
+    if not os.path.exists(path):
+        return out
+    for ln in open(path):
+        p = ln.strip().split(",")
+        if len(p) != 7 or p[0] == "test":
+            continue
+        test, nx, gpu, lA, aA, _l1, _a1 = p
+        out[(test, int(nx), int(gpu))] = (
+            float(lA) if lA else None, float(aA) if aA else None)
+    return out
+
+
+_AMD_SNAP = _amd_csv()
+
+
+def amd_luna(test, nx, gpu):
+    lbl = AMD_LUNA_DIR.get((test, nx, gpu))
+    v = _luna_perf_median(_newest(f"{_LUNA_ROOT}/{lbl}/slurm.out.*")) if lbl else None
+    if v:
+        return v / 1e3    # Mcell/s -> Gcell/s
+    return _AMD_SNAP.get((test, nx, gpu), (None, None))[0]   # CSV fallback
+
+
+def amd_ak(test, nx, gpu):
+    lbl = AMD_AK_DIR.get((test, nx, gpu))
+    v = _ak_zonecyc(_newest(f"{_AK_ROOT}/{lbl}/slurm.out.*")) if lbl else None
+    if v:
+        return v / 1e9    # zone-cyc/s -> Gcell/s
+    return _AMD_SNAP.get((test, nx, gpu), (None, None))[1]   # CSV fallback
 
 
 def main():
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from utils.figstyle import apply_style, FIGSIZE
-    apply_style()
+    try:
+        from utils.figstyle import apply_style, FIGSIZE
+        apply_style()
+    except Exception:
+        FIGSIZE = (6, 4.5)
 
-    weak_all = _collect(WEAK)
-    strong_all = _collect(STRONG)
+    ref = a100_ref()
+
+    def collect(test, amd_cfgs, a100_cfgs):
+        rows = []
+        for nx, gpu in amd_cfgs:
+            lA, aA = amd_luna(test, nx, gpu), amd_ak(test, nx, gpu)
+            l1, a1 = ref.get((test, nx, gpu), (None, None))
+            rows.append((nx, gpu, lA, aA, l1, a1))
+        # A100 points at GPU counts not in the AMD ladder (e.g. weak 2048@128)
+        amd_gpus = {g for _, g in amd_cfgs}
+        for nx, gpu in a100_cfgs:
+            if gpu not in amd_gpus:
+                l1, a1 = ref.get((test, nx, gpu), (None, None))
+                rows.append((nx, gpu, None, None, l1, a1))
+        return sorted(rows, key=lambda r: r[1])
+
+    weak = collect("weak", AMD_WEAK, A100_WEAK)
+    strong = collect("strong", AMD_STRONG, A100_STRONG)
 
     os.makedirs("figures", exist_ok=True)
     os.makedirs("code_paper_figs", exist_ok=True)
-    with open("figures/scaling_fp64_data.csv", "w") as fh:
-        fh.write("test,Nx,GPUs,LUNA_Gcells_s,AthenaK_Gcells_s\n")
-        for tag, rows in (("weak", weak_all), ("strong", strong_all)):
-            for nx, gpu, l, a in rows:
-                fh.write(f"{tag},{nx},{gpu},{'' if l is None else f'{l:.3f}'},"
-                         f"{'' if a is None else f'{a:.3f}'}\n")
+    with open("figures/scaling_fp64_amd_data.csv", "w") as fh:
+        fh.write("test,Nx,GPUs,LUNA_MI300A,AthenaK_MI300A,LUNA_A100,AthenaK_A100\n")
+        for tag, rows in (("weak", weak), ("strong", strong)):
+            for nx, gpu, lA, aA, l1, a1 in rows:
+                f = lambda v: "" if v is None else f"{v:.3f}"
+                fh.write(f"{tag},{nx},{gpu},{f(lA)},{f(aA)},{f(l1)},{f(a1)}\n")
 
-    # Plot only configs with a measured LUNA point (skip crashed / not-yet-run),
-    # so the paper figure shows no dangling empty ticks or broken lines.
-    weak = [r for r in weak_all if r[2] is not None]
-    strong = [r for r in strong_all if r[2] is not None]
-
-    def _panel(rows, xs, xlabels, xlabel, out):
-        """One standalone scaling plot (LUNA vs AthenaK + ideal-linear guide)."""
-        fig, a_ = plt.subplots(figsize=FIGSIZE)
+    def _panel(rows, xlabels, xlabel, out, title):
+        fig, ax = plt.subplots(figsize=FIGSIZE)
+        ax.set_title(title, fontsize=10)
+        xs = [r[1] for r in rows]
+        # MI300A (AMD) — primary, solid, bold
+        ax.plot(xs, [r[2] for r in rows], "o-", color="#1f77b4", lw=2,
+                label="LUNA  · MI300A (AMD)")
+        ax.plot(xs, [r[3] for r in rows], "s-", color="#d62728", lw=2,
+                label="AthenaK · MI300A (AMD)")
+        # A100 — reference, faded, dashed
+        ax.plot(xs, [r[4] for r in rows], "o--", color="#1f77b4", lw=1.2,
+                alpha=0.45, mfc="none", label="LUNA  · A100 (NVIDIA, ref)")
+        ax.plot(xs, [r[5] for r in rows], "s--", color="#d62728", lw=1.2,
+                alpha=0.45, mfc="none", label="AthenaK · A100 (NVIDIA, ref)")
+        # ideal-linear guide anchored at the first measured MI300A LUNA point
         lL = [r[2] for r in rows]
-        lA = [r[3] for r in rows]
-        a_.plot(xs, lL, "o-", color="#1f77b4", label="LUNA (shard-map)")
-        a_.plot(xs, lA, "s--", color="#d62728", label="AthenaK (RK2)")
-        a_.set_xscale("log", base=2)
-        a_.set_yscale("log")
-        a_.set_xticks(xs)
-        a_.set_xticklabels(xlabels)
-        # ideal linear scaling anchored at the first measured LUNA point
-        g0i = next((i for i, v in enumerate(lL) if v is not None), None)
-        if g0i is not None:
-            base, gb = lL[g0i], xs[g0i]
-            a_.plot(xs, [base * gg / gb for gg in xs], ":", color="gray",
-                    label="ideal (linear)")
-        a_.set_xlabel(xlabel)
-        a_.set_ylabel("aggregate Gcell-updates / s")
-        a_.legend(fontsize=9, loc="lower right")
-        a_.grid(True, which="both", alpha=0.25)
+        g0 = next((i for i, v in enumerate(lL) if v is not None), None)
+        if g0 is not None:
+            base, gb = lL[g0], xs[g0]
+            ax.plot(xs, [base * g / gb for g in xs], ":", color="gray",
+                    lw=1, label="ideal (linear)")
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.set_xticks(xs)
+        ax.set_xticklabels(xlabels)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("aggregate Gcell-updates / s")
+        ax.legend(fontsize=8, loc="upper left")
+        ax.grid(True, which="both", alpha=0.25)
         fig.tight_layout()
         fig.savefig(out, dpi=140)
         plt.close(fig)
         print(f"wrote {out}")
 
-    gw = [r[1] for r in weak]
-    _panel(weak, gw, [f"{nx}$^3$\n{gpu}" for nx, gpu, *_ in weak],
-           "resolution / GPUs (A100)", "code_paper_figs/scaling_weak_fp64.png")
-    gs = [r[1] for r in strong]
-    _panel(strong, gs, [str(x) for x in gs],
-           "GPUs (A100)", "code_paper_figs/scaling_strong_fp64.png")
+    _panel(weak, [f"{nx}$^3$\n{gpu}" for nx, gpu, *_ in weak],
+           "resolution / GPUs", "code_paper_figs/scaling_weak_fp64.png",
+           "FP64 weak scaling — MI300A (AMD) vs A100 (NVIDIA)")
+    _panel(strong, [str(r[1]) for r in strong],
+           "GPUs (1024$^3$)", "code_paper_figs/scaling_strong_fp64.png",
+           "FP64 strong scaling (1024$^3$) — MI300A (AMD) vs A100 (NVIDIA)")
 
-    for tag, rows in (("weak", weak_all), ("strong", strong_all)):
-        for nx, gpu, l, a in rows:
-            print(f"  {tag:6s} {nx}^3/{gpu}gpu  LUNA={l}  AthenaK={a}")
+    print("\n  config            LUNA_MI300A  AthenaK_MI300A   LUNA_A100  AthenaK_A100")
+    for tag, rows in (("weak", weak), ("strong", strong)):
+        for nx, gpu, lA, aA, l1, a1 in rows:
+            fmt = lambda v: "   -   " if v is None else f"{v:7.3f}"
+            print(f"  {tag:6s} {nx:>4}^3/{gpu:<3}gpu "
+                  f"{fmt(lA)}     {fmt(aA)}      {fmt(l1)}   {fmt(a1)}")
 
 
 if __name__ == "__main__":

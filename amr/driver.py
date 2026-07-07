@@ -702,10 +702,12 @@ def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="
         if fill_fn is not None:
             return fill_fn(L, data, parent_gprim)
         lvl = levels[L]
-        gw = fill_ghost_same_level(cons_to_prim_blocks(data, gamma), lvl.neighbors, cfg)
+        W = cons_to_prim_blocks(data, gamma)
+        gw = fill_ghost_same_level(W, lvl.neighbors, cfg)
         if L > 0:
             gw = fill_ghost_from_coarse_sparse(gw, lvl.coords, lvl.parent_slots,
                                                parent_gprim, cfg)
+        gw = fill_ghost_physical(gw, W, cfg)   # domain-edge BC (no-op if periodic)
         return gw
 
     def step_level(L, datas, dt, t_sub, parent_gprim, parent_phig):

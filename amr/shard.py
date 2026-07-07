@@ -523,6 +523,7 @@ def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
         underlay, each level's ghosted array born SHARDED. Bit-identical to the
         replicated ghost_prim (no physical BC, interp='const' -- the subcycle's
         C/F fluxes telescope against restriction with PC ghosts)."""
+        from amr.halo import fill_ghost_physical
         lvl = hierarchy[L]
         W = cons_to_prim_blocks(data, gamma)
         stencil = _same_level_stencil(lvl.neighbors, cfg)
@@ -530,6 +531,7 @@ def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
         if L > 0:
             gw = _coarse_underlay_sharded(gw, lvl.coords, lvl.parent_slots,
                                           parent_gprim, mesh, cfg, interp="const")
+        gw = fill_ghost_physical(gw, W, cfg)   # domain-edge BC (no-op if periodic)
         return gw
 
     def reflux_repl(cd, fc, ff, cc, ps, nb, na, cnb, dt_l, L, _cfg):

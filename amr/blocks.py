@@ -170,6 +170,10 @@ def build_children(parent_coords, parent_data, flags, level, cfg, max_parents,
     for s in bs:
         if s % 2 != 0:
             raise ValueError(f"block_shape must be even per dim to refine; got {bs}")
+    # Always need >=1 parent slot for the NaN sentinel group; a 0 capacity
+    # (amr_capacities[L]=0 -> "don't refine this level") would otherwise make an
+    # empty child_data whose `.at[-1]` sentinel write is out of bounds.
+    max_parents = max(int(max_parents), 1)
 
     # At most max_parents - 1 parents may refine: the last slot group hosts the
     # NaN sentinel. Uncapped, _sized_parents allocates flagged+1 so this never
