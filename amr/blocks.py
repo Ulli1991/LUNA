@@ -24,7 +24,8 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from amr.geometry import _morton_params, morton_encode, prolong, prolong_linear_cons
+from amr.geometry import (_morton_params, morton_encode, prolong,
+                          prolong_centered_cons, prolong_linear_cons)
 
 
 def _offset_table(ndim):
@@ -140,12 +141,21 @@ def find_parent_slots(fine_coords, coarse_coords, coarse_n_active, cfg):
 # ---------------------------------------------------------------------------
 # Child-block generation (refine flagged parents -> 2**ndim children each)
 # ---------------------------------------------------------------------------
-def build_children(parent_coords, parent_data, flags, level, cfg, max_parents):
+def build_children(parent_coords, parent_data, flags, level, cfg, max_parents,
+                   parent_ghosted=None):
     """Refine flagged parent blocks into child blocks at ``level+1``.
 
     Each flagged parent emits ``2**ndim`` children; child ``o`` covers the
     parent's spatial half selected by offset ``o in {0,1}**ndim`` and is the
     conservative prolongation of that half.
+
+    ``parent_ghosted`` (optional, ``(n_slots, n_vars, *(bs + 2*g))`` with any halo
+    width ``g >= 1``, NaN-clamped at missing neighbours) makes the prolongation
+    GHOST-AWARE: the parent block's OUTER-face slopes are taken from the halo
+    (same-level neighbours) instead of clamping to one-sided/PC, so child
+    initialization is 2nd order at block boundaries too (bare-block prolongation
+    is 1st order there -- the residual after the centered-limiter fix). When
+    ``None`` the bare parent block is prolonged (backward-compatible).
 
     Returns
     -------
@@ -160,6 +170,10 @@ def build_children(parent_coords, parent_data, flags, level, cfg, max_parents):
     for s in bs:
         if s % 2 != 0:
             raise ValueError(f"block_shape must be even per dim to refine; got {bs}")
+    # Always need >=1 parent slot for the NaN sentinel group; a 0 capacity
+    # (amr_capacities[L]=0 -> "don't refine this level") would otherwise make an
+    # empty child_data whose `.at[-1]` sentinel write is out of bounds.
+    max_parents = max(int(max_parents), 1)
 
     # At most max_parents - 1 parents may refine: the last slot group hosts the
     # NaN sentinel. Uncapped, _sized_parents allocates flagged+1 so this never
@@ -173,17 +187,30 @@ def build_children(parent_coords, parent_data, flags, level, cfg, max_parents):
     valid = (pidx >= 0) & (jnp.arange(max_parents) < n_par)
     safe = jnp.where(valid, pidx, 0)
     pc = parent_coords[safe]                       # (P, ndim)
-    pd = parent_data[safe]                          # (P, n_vars, *bs)
+
+    # Prolong from the ghosted parent (2nd-order outer faces) when provided, else
+    # the bare block (1st-order outer faces). ``gsrc`` = halo width of the source.
+    src = parent_data if parent_ghosted is None else parent_ghosted
+    src_bs = tuple(src.shape[2:])                    # bs, or bs + 2*gsrc if ghosted
+    gsrc = (src_bs[0] - bs[0]) // 2
+    pd = src[safe]                                   # (P, n_vars, *src_bs)
     n_vars = pd.shape[1]
 
     offsets = _offset_table(ndim)                   # (C, ndim) static rows
 
+    _prolong = (prolong_centered_cons
+                if getattr(cfg, "prolong_limiter", "minmod") == "centered"
+                else prolong_linear_cons)
+    # after prolonging the (halo-padded) source, keep the central 2*bs fine cells
+    crop = (slice(None), slice(None)) + tuple(
+        slice(2 * gsrc, 2 * gsrc + 2 * bs[d]) for d in range(ndim))
+
     def _octants(block_data):
-        """Conservative minmod-limited prolongation of a batch of parents, sliced
-        into the C child octants and interleaved parent-major: (B, nv, *bs) ->
-        (B*C, nv, *bs). Slopes see the full block; only the parent's outer faces
-        limit to PC (avoids the O(dx_coarse) staircase on the refining feature)."""
-        big = prolong_linear_cons(block_data, ndim)  # (B, n_vars, *(2*bs))
+        """Conservative prolongation of a batch of parents, sliced into the C child
+        octants and interleaved parent-major: (B, nv, *src_bs) -> (B*C, nv, *bs).
+        Limiter per ``cfg.prolong_limiter``; ghost-aware if a halo was supplied."""
+        big = _prolong(block_data, ndim)             # (B, n_vars, *(2*src_bs))
+        big = big[crop]                              # (B, n_vars, *(2*bs))
         outs = []
         for o in itertools.product((0, 1), repeat=ndim):
             sl = [slice(None), slice(None)]
@@ -203,7 +230,7 @@ def build_children(parent_coords, parent_data, flags, level, cfg, max_parents):
         n_ch = max_parents // _CH
         _, cds = jax.lax.scan(
             lambda _c, blk: (None, _octants(blk)),
-            None, pd.reshape(n_ch, _CH, n_vars, *bs))
+            None, pd.reshape(n_ch, _CH, n_vars, *src_bs))
         child_data = cds.reshape(max_parents * C, n_vars, *bs)
     else:
         child_data = _octants(pd)

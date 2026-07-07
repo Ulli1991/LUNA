@@ -34,7 +34,7 @@ from functools import partial
 def _morton_params(ndim):
     if jax.config.jax_enable_x64:
         return jnp.uint64, 21
-    return jnp.uint32, (16 if ndim == 2 else 10)
+    return jnp.uint32, (31 if ndim == 1 else 16 if ndim == 2 else 10)
 
 
 def morton_capacity(ndim):
@@ -161,6 +161,37 @@ def prolong_linear_cons(data, ndim):
         slope = jnp.where(dl * dr > 0.0,
                           jnp.sign(dl) * jnp.minimum(jnp.abs(dl), jnp.abs(dr)),
                           0.0)
+        lo = out - 0.25 * slope
+        hi = out + 0.25 * slope
+        inter = jnp.stack([lo, hi], axis=-1)
+        inter = inter.reshape(out.shape[:-1] + (2 * out.shape[-1],))
+        out = jnp.moveaxis(inter, -1, ax)
+    return out
+
+
+@partial(jax.jit, static_argnums=(1,))
+def prolong_centered_cons(data, ndim):
+    """Coarse -> fine, CONSERVATIVE UNLIMITED centered-linear (ratio 2).
+
+    Children of a parent cell along each axis are ``parent -/+ slope/4`` with the
+    CENTERED slope ``slope = (c_{i+1} - c_{i-1}) / 2``. Like
+    :func:`prolong_linear_cons` the child pair mean equals the parent exactly
+    (conservative), but the centered slope is **2nd order even at smooth extrema**
+    -- where the minmod limiter (``dl*dr < 0``) collapses to zero slope =
+    piecewise-constant = 1st order. It is NOT monotone, so it can over/undershoot
+    at a genuine discontinuity (positivity risk); use it for SMOOTH-flow
+    refinement (turbulence, pre-shell-crossing cosmology, acoustic modes) where
+    the extremum clipping otherwise caps refined-region convergence at ~1st order.
+    Minmod (:func:`prolong_linear_cons`) stays the default for shock-dominated
+    runs. Edge cells fall back to a one-sided slope (clamped neighbour)."""
+    out = data
+    nd_total = data.ndim
+    for d in range(ndim):
+        ax = nd_total - ndim + d
+        out = jnp.moveaxis(out, ax, -1)
+        c_lo = jnp.concatenate([out[..., :1], out[..., :-1]], axis=-1)    # c_{i-1}
+        c_hi = jnp.concatenate([out[..., 1:], out[..., -1:]], axis=-1)    # c_{i+1}
+        slope = 0.5 * (c_hi - c_lo)                                        # centered, unlimited
         lo = out - 0.25 * slope
         hi = out + 0.25 * slope
         inter = jnp.stack([lo, hi], axis=-1)
