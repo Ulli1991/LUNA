@@ -114,6 +114,7 @@ def run_simulation_amr(cfg, is_main_process=True):
     shard_amr = bool(getattr(cfg, "amr_shard", False)) and n_dev > 1
     pad_to = n_dev if shard_amr else 1                  # block axis divisible by #devices
     mesh = None
+    _gather_host = lambda x: x   # host-I/O gather; overridden for multi-process
     if shard_amr:
         from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
         mesh = Mesh(np.asarray(jax.devices()), ("blocks",))
@@ -131,26 +132,43 @@ def run_simulation_amr(cfg, is_main_process=True):
 
         def _to_global(a, sharding, reshard=False):
             # reshard=True: input is already a GLOBAL on-device array (regrid
-            # output) -> device_put reshards it (cheap, no host round-trip).
-            # Single-process (1 node, N local GPUs -- the current target): all
-            # mesh devices are addressable, so a plain device_put shards/replicates
-            # correctly. Multi-process sharded construction (one local shard per
-            # process) is the follow-up; until then multi-process falls back to
-            # replicated storage (correct, just no per-device memory win).
-            if reshard or jax.process_count() == 1:
+            # output) -> reshard in place (no host round-trip). Single-process
+            # device_put handles that; multi-process needs the jit identity
+            # (device_put cannot target non-addressable devices).
+            if jax.process_count() == 1:
                 return jax.device_put(a, sharding)
-            local = jax.device_put(np.asarray(a), jax.local_devices()[0])
-            return jax.make_array_from_single_device_arrays(local.shape, repl, [local])
+            if reshard:
+                return jax.jit(lambda x: x, out_shardings=sharding)(a)
+            # Multi-process sharded construction: every process has built the
+            # IDENTICAL hierarchy on host (deterministic IC + build_hierarchy),
+            # so each contributes just its addressable shards of the global
+            # array -- the block-AMR analogue of the dense path's
+            # create_sharded_array_from_local. At-rest memory = total/n_dev;
+            # the full copy each process built is freed after this transfer.
+            a_np = np.asarray(a)
+            return jax.make_array_from_callback(
+                a_np.shape, sharding, lambda idx: a_np[idx])
+
+        if jax.process_count() > 1:
+            def _gather_host(x):
+                """Reshard a (possibly block-sharded) global array to replicated
+                so host I/O (np.asarray) sees a fully-addressable copy. Transient
+                (one array at a time, at snapshot/dump cadence only)."""
+                return jax.jit(lambda y: y, out_shardings=repl)(x)
 
         def _global_hierarchy(h, reshard=False):
-            multiproc = jax.process_count() > 1
-            # array fields sharded on the block axis (unless multi-proc fallback)
-            arr = repl if (multiproc or not _shard_storage) else blk
+            # Shard only DATA on the block axis (n_slots x n_vars x block_shape --
+            # ~99.9% of the bytes). Topology (coords/neighbors/parent_slots) stays
+            # REPLICATED: it is tiny (n_slots x ~6), and regrid_sharded's Morton
+            # set-diff / neighbour / parent-slot kernels operate on the GLOBAL
+            # block set -- sharding them deadlocks the cross-process gather they'd
+            # need (single-process GSPMD hides this; multi-process does not).
+            data_arr = blk if _shard_storage else repl
             return tuple(lvl._replace(
-                data=_to_global(lvl.data, arr, reshard),
-                coords=_to_global(lvl.coords, arr, reshard),
-                neighbors=_to_global(lvl.neighbors, arr, reshard),
-                parent_slots=_to_global(lvl.parent_slots, arr, reshard),
+                data=_to_global(lvl.data, data_arr, reshard),
+                coords=_to_global(lvl.coords, repl, reshard),
+                neighbors=_to_global(lvl.neighbors, repl, reshard),
+                parent_slots=_to_global(lvl.parent_slots, repl, reshard),
                 n_active=_to_global(lvl.n_active, repl, reshard)) for lvl in h)
 
     # --- base-grid conservative IC -> hierarchy ---
@@ -161,6 +179,13 @@ def run_simulation_amr(cfg, is_main_process=True):
     )
     if shard_amr:
         hierarchy = _global_hierarchy(hierarchy)
+        if os.environ.get("LUNA_AMR_SHARD_DBG"):
+            # per-process storage proof: addressable (local) vs global block data
+            loc = sum(sum(s.data.nbytes for s in lvl.data.addressable_shards)
+                      for lvl in hierarchy)
+            tot = sum(lvl.data.nbytes for lvl in hierarchy)
+            print(f"  [shard-dbg] proc {jax.process_index()}/{jax.process_count()}: "
+                  f"local block-data {loc / 1e6:.1f} MB of {tot / 1e6:.1f} MB global")
     if is_main_process:
         base_str = "x".join(str(g) for g in grid_full[:ndim])
         print(f"AMR: base {base_str}, block {block}, {levels} levels "
@@ -211,15 +236,21 @@ def run_simulation_amr(cfg, is_main_process=True):
     def write(idx, t):
         if dense_snaps:
             img = driver.composite_to_dense(hierarchy, acfg)    # (n_vars, finest, finest)
-            write_snapshot_distributed(jnp.asarray(img), scfg, t, idx)
-        if is_main_process:
-            # also dump per-level active block coords for plotting the mesh overlay
+            write_snapshot_distributed(jnp.asarray(_gather_host(img)), scfg, t, idx)
+        if is_main_process or jax.process_count() > 1:
+            # dump per-level active block coords for plotting the mesh overlay.
+            # Multi-process: _gather_host reshards to replicated (a collective --
+            # every process must participate) BEFORE the host slice; only rank 0
+            # writes below.
             import numpy as _np
-            blk = {f"L{L}_coords": _np.asarray(lvl.coords[: int(lvl.n_active)])
+            blk = {f"L{L}_coords":
+                   _np.asarray(_gather_host(lvl.coords))[: int(lvl.n_active)]
                    for L, lvl in enumerate(hierarchy)}
             if not dense_snaps:                          # block DATA too: the
                 for L, lvl in enumerate(hierarchy):      # snapshot IS the blocks
-                    blk[f"L{L}_data"] = _np.asarray(lvl.data[: int(lvl.n_active)])
+                    blk[f"L{L}_data"] = (
+                        _np.asarray(_gather_host(lvl.data))[: int(lvl.n_active)])
+        if is_main_process:
             blk["levels"] = _np.array(len(hierarchy))
             blk["block_shape"] = _np.array(acfg.block_shape)
             blk["t"] = _np.array(float(t))
@@ -433,10 +464,17 @@ def run_simulation_amr(cfg, is_main_process=True):
     # each step so a capped shock seam degrades gracefully instead of stalling.
     _rho_floor = float(getattr(cfg, "amr_rho_floor", 0.0) or 0.0)
     _p_floor = float(getattr(cfg, "amr_p_floor", 0.0) or 0.0)
+    # Relative floor: auto-scale from the base-level mean state when no absolute
+    # floor is given. Lets deep runs be robust without a hand-picked density scale.
+    _frac = float(getattr(cfg, "amr_rho_floor_frac", 0.0) or 0.0)
+    if _rho_floor == 0.0 and _frac > 0.0:
+        _rho_floor, _p_floor = driver.floor_from_fraction(hierarchy, acfg,
+                                                          gamma=gamma, frac=_frac)
     _floor_on = _rho_floor > 0.0
     if _floor_on and is_main_process:
-        print(f"  positivity floor ON: rho>={_rho_floor:.3e}, p>={_p_floor:.3e} "
-              "(quiescent reset)")
+        _how = f"frac={_frac:.1e} of base mean" if _frac > 0.0 else "absolute"
+        print(f"  positivity floor ON ({_how}): rho>={_rho_floor:.3e}, "
+              f"p>={_p_floor:.3e} (quiescent reset)")
 
     def _apply_floor(h):
         if _floor_on:
@@ -506,9 +544,15 @@ def run_simulation_amr(cfg, is_main_process=True):
     else:
         chunk_step = jax.jit(_chunk, donate_argnums=0)
 
+    _ldbg = os.environ.get("LUNA_AMR_LOOP_DBG")
+    _pi = jax.process_index()
+    _lit = 0
     last_print, t_prev = 0, t
     while t < cfg.t_end - 1e-12:
         target = min(cfg.t_end, snapshot_times[si] if si < num else cfg.t_end)
+        if _ldbg:
+            print(f"[loop] p{_pi} it{_lit}: --> chunk_step (t={t:.6f} tgt={target:.6f})",
+                  flush=True)
         if dm_state is not None:
             hierarchy, dm_pos, dm_p, dm_g, t_dev, taken_dev = chunk_step_dm(
                 hierarchy, dm_pos, dm_p, dm_g,
@@ -518,6 +562,17 @@ def run_simulation_amr(cfg, is_main_process=True):
                 hierarchy, jnp.asarray(t, jnp.float64), jnp.asarray(target, jnp.float64))
         taken = int(taken_dev)                           # one host sync per chunk
         t_prev, t = t, float(t_dev)
+        if shard_amr and jax.process_count() > 1:
+            # Multi-process: force the advance collectives to COMPLETE before the
+            # next collective op (write / regrid). int(taken_dev) only forces the
+            # scalar dt-count, leaving the advance all_gather lazily pending; it
+            # then interleaves with regrid's collectives across processes and
+            # deadlocks. Materializing the hierarchy here keeps the per-process
+            # collective streams in lockstep. (Found via loop instrumentation.)
+            hierarchy = jax.block_until_ready(hierarchy)
+        if _ldbg:
+            print(f"[loop] p{_pi} it{_lit}: chunk+sync OK (taken={taken} t={t:.6f})",
+                  flush=True)
         if taken == 0:
             break                                        # dt collapsed -- don't spin
         if (t - t_prev) / taken < 1e-14 * cfg.t_end:
@@ -532,12 +587,18 @@ def run_simulation_amr(cfg, is_main_process=True):
         nstep += taken
         cu_total += cu_step * taken
         if si < num and t >= snapshot_times[si] - 1e-12:
+            if _ldbg:
+                print(f"[loop] p{_pi} it{_lit}: --> write #{si}", flush=True)
             write(si, t)
             si += 1
+            if _ldbg:
+                print(f"[loop] p{_pi} it{_lit}: write OK", flush=True)
         # Adaptive re-check on the live solution. Capacities grow on a geometric
         # ladder and never shrink (_sized_parents), so `chunk_step` recompiles
         # only ~log2(peak/bucket) times across the whole run.
         if regrid_interval:
+            if _ldbg:
+                print(f"[loop] p{_pi} it{_lit}: --> regrid", flush=True)
             if shard_amr:
                 # shard-aware regrid: child DATA built sharded (no 70 GiB
                 # replicated peak that OOM'd at 6 levels), topology replicated;
@@ -550,6 +611,9 @@ def run_simulation_amr(cfg, is_main_process=True):
                 hierarchy = driver.regrid(hierarchy, acfg, thresholds=thresholds,
                                           periodic=periodic, bucket=bucket, pad_to=pad_to,
                                           criterion=criterion, max_blocks=max_blocks)
+            if _ldbg:
+                jax.block_until_ready(hierarchy[0].data)
+                print(f"[loop] p{_pi} it{_lit}: regrid OK", flush=True)
             cu_step = _cu_per_base_step(hierarchy)       # block counts changed
             if is_main_process:
                 counts = " ".join(
@@ -572,6 +636,7 @@ def run_simulation_amr(cfg, is_main_process=True):
             print(f"Step {nstep:5d}, t = {t:.5f}, dt = {dt_avg:.5e}, perf = {perf:.2f} Mcells/s "
                   f"(AMR active), {nstep / (now - t0):.1f} steps/s", flush=True)
             cu_last, perf_t = cu_total, now
+        _lit += 1
 
     # flush any remaining snapshot slots at t_end
     while si < num:

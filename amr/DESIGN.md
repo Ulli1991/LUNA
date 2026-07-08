@@ -131,5 +131,45 @@ block-AMR layer. We cherry-pick ideas from JAX-AMR (vendored read-only under
      time-subcycled multi-level integrator; replace reflux/restrict per-slot
      Python loops with a scatter on the hot path.
 4. Multigrid-on-blocks (level-by-level Dirichlet, LUNA Poisson per level).
+   **DONE (`amr/poisson.py`):** L0 = dense FMG on the assembled base grid
+   (validated `gravity.poisson_multigrid.solve_poisson_fmg`); L>0 = within-block
+   V-cycles solving the error equation with homogeneous-Dirichlet coarse ghosts
+   and linearly-prolonged real Dirichlet ghosts at depth 0 (red-black GS
+   smoother). Kick = −∇φ central-diff, fine-restricted into parent. Static shape
+   / fixed iterations → jit/scan-safe. Tests: L0==dense FMG (1e-12), 2-level φ
+   vs analytic sine (<2%), kick==dense, sync reflux conserves E.
 5. PM/DM on the finest covering block.
+   **DONE (`amr/particles.py`):** locate finest covering block (Morton), CIC
+   deposit with same-level fold + Enzo-style C/F fold-to-parent + fine-authoritative
+   restrict (mass conserved 1e-12), inverse-CIC force gather. Tests: gather==dense
+   PM (1e-11), deposit mass conservation across seams/C/F.
 6. `shard_map` blocks across devices; wire through `main.py`.
+   **DONE (`amr/shard.py`, `setup/runner_amr.py`):** blocks are the shard unit
+   over a 1-D `("blocks",)` mesh; per-device divergence with an `all_gather` of
+   only block-boundary face states; batched all-levels kernel (`divergence_batched_
+   shmap`) for one compile; GSPMD-safe replicated reflux/gravity. Tests: shard
+   step / full sync / subcycle+gravity+reflux all bit-match single device.
+   **LIMITATION — multi-process is a follow-up:** single process / N local
+   devices is the current target; `process_count() > 1` falls back to replicated
+   storage (correct, no per-device memory win) — `runner_amr.py:135`.
+
+Also DONE (a step-3 "follow-on"): the **Berger-Oliger time-subcycled** multi-level
+integrator (`driver.advance_subcycle`, r=2, `lax.scan` recursion, time-interpolated
+C/F ghosts, time-accumulated reflux). Dynamic regridding on the live solution
+(`driver.regrid`, eight refinement criteria). Coarse-fine reflux is **default-on**
+in both integrators.
+
+## Open work
+
+- **Multi-process sharded construction** (one local shard per process) — the
+  named follow-up; until then multi-node AMR is replicated (no memory win).
+- **Cosmology** (`amr/cosmo.py`): gas-only Phase 1 (super-comoving). DM not yet
+  wired into the cosmo path; **dual-energy raises `NotImplementedError`**; no
+  dedicated `test_amr_cosmo.py`.
+- **Deep-hierarchy stability**: 5-level Sedov-class runs can drive cells negative
+  and collapse dt (runner has STALLED / denormal-dt guards); `floor_positivity`
+  is opt-in. The `max_blocks` cap can drop a C/F seam mid-shock.
+- **Perf**: dense reflux/restrict variants (`reflux.apply_reflux_dense`) unroll
+  per-slot and won't compile at ~1e4 blocks — the scatter versions
+  (`apply_reflux_blocks`, `_restrict_into_parent`) are the hot path; remove/guard
+  the dense ones. int32 Morton truncates above ~1024 blocks/dim in 3D under fp32.

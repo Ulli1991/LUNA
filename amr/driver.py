@@ -1,20 +1,29 @@
-"""Multi-level AMR hydro driver (single device, first cut).
+"""Multi-level block-AMR hydro driver (dimension-generic 2D/3D).
 
-A hierarchy of block levels: level 0 fully tiles the domain (periodic); levels
->= 1 are sparse refined blocks. One synchronized step advances every level with
-the SAME dt (no subcycling yet):
+A hierarchy of block levels: level 0 fully tiles the domain; levels >= 1 are
+sparse refined blocks. Two integrators share the same per-level machinery:
 
-  1. fill ghosts coarse->fine: same-level seam halo per level, then coarse-fine
-     ghosts gathered from the parent level (sparse, :func:`amr.halo`);
-  2. advance each level with conservative same-level seam fluxes
-     (:func:`amr.hydro.conservative_block_divergence`);
-  3. restrict fine results into the covered coarse cells (fine is authoritative).
+  * :func:`advance` — synchronized: every level advances with the SAME dt.
+  * :func:`advance_subcycle` — Berger-Oliger subcycling (r=2): level L takes
+    ``dt_base / 2**L`` and each finer level sub-steps under ``lax.scan`` with
+    time-interpolated coarse-fine ghosts.
+
+Each step: (1) fill ghosts coarse->fine (same-level seam halo, then sparse
+coarse-fine ghosts from the parent, :mod:`amr.halo`); (2) advance each level
+with conservative same-level seam fluxes (:func:`amr.hydro.conservative_block_
+divergence`), capturing face fluxes; (3) **coarse-fine reflux** (Berger-Colella;
+default ``reflux=True`` — conserves mass at C/F seams to machine precision;
+time-accumulated in the subcycle path); (4) restrict fine results into the
+covered coarse cells (fine is authoritative).
 
 Topology (which blocks exist, neighbours, parent slots) is fixed between
-regrids, so the hierarchy is a static-shape pytree and :func:`advance` jits.
-This first cut uses **static refinement** (flag once at build time) and omits
-coarse-fine reflux; both are layered on next. Targeted at 2D (KH demo) but the
-block ops are dimension-generic.
+regrids, so the hierarchy is a static-shape pytree and both advances jit.
+Refinement is dynamic: :func:`regrid` re-flags on the live solution every
+``regrid_interval`` steps (eight criteria: density/pressure gradient,
+vorticity, overdensity, Truelove/Jeans, Löhner, static). The sharded
+multi-GPU driver lives in :mod:`amr.shard` (single process, N local devices;
+multi-process is a follow-up). Gravity (:mod:`amr.poisson`) and DM particles
+(:mod:`amr.particles`) plug in as per-level hooks.
 """
 
 from __future__ import annotations
@@ -642,7 +651,7 @@ def advance(levels, dt, cfg, *, gamma, limiter=1, riemann_solver="hllc",
 # Subcycled (Berger-Oliger) time stepping: the AMR time-win
 # ---------------------------------------------------------------------------
 def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="hllc",
-                     divergence_fn=None, gravity=None, reflux=False, t0=0.0,
+                     divergence_fn=None, gravity=None, reflux=True, t0=0.0,
                      reflux_fn=None, fill_fn=None):
     """Berger-Oliger subcycled step (ratio r=2): level L advances by
     ``dt_base / r**L``. The coarse level steps once; each finer level then takes
@@ -795,6 +804,27 @@ def floor_positivity(levels, cfg, *, gamma, rho_floor, p_floor):
         E_n = jnp.where(bad, p_floor / (gamma - 1.0), E)
         out.append(lvl._replace(data=jnp.concatenate([rho_n, mom_n, E_n], axis=1)))
     return tuple(out)
+
+
+def floor_from_fraction(levels, cfg, *, gamma, frac):
+    """Absolute ``(rho_floor, p_floor)`` scaled from the base-level mean state:
+    ``frac * mean(rho)`` and ``frac * mean(p)``. Auto-scales the positivity floor
+    to the problem so a deep-hierarchy run can be made robust without knowing the
+    absolute density scale (``frac`` ~ 1e-8..1e-6 sits far below resolved
+    structure). Inactive / sentinel slots are NaN by construction, so ``nanmean``
+    over level 0 is exactly the mean over live base cells. Meant to be called
+    once at setup (returns Python floats); feed the result to
+    :func:`floor_positivity`."""
+    ndim = cfg.ndim
+    d = levels[0].data
+    rho = d[:, 0]
+    mom = d[:, 1:1 + ndim]
+    E = d[:, ndim + 1]
+    eint = E - 0.5 * jnp.sum(mom * mom, axis=1) / rho
+    p = (gamma - 1.0) * eint
+    rho_mean = float(jnp.nanmean(rho))
+    p_mean = float(jnp.nanmean(p))
+    return frac * rho_mean, frac * max(p_mean, 0.0)
 
 
 def compute_dt_subcycle(levels, cfg, *, gamma, CFL):

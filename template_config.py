@@ -500,6 +500,11 @@ class Config:
     # p_floor) instead of spiraling. A validated shallow run never triggers it.
     amr_rho_floor: float = 0.0
     amr_p_floor: float = 0.0
+    # Relative (auto-scaling) alternative to the absolute floors above: a fraction
+    # of the base-level MEAN (rho, p). Lets deep runs be made robust without
+    # knowing the absolute density scale (frac ~ 1e-8..1e-6 sits far below any
+    # resolved structure). Used only when amr_rho_floor == 0; 0 = off.
+    amr_rho_floor_frac: float = 0.0
     # Dense-composite snapshots materialize the FULL finest-resolution cube
     # ((Nx*2^levels)^ndim * n_vars * 8 B = 40 GiB at 32^3+5 levels) regardless
     # of AMR sparsity. False -> write per-level block data into blocks_*.npz

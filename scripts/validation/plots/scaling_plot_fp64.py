@@ -31,10 +31,13 @@ import numpy as np
 #         so its rung is at 128 GPUs.
 #  MI300A (128GB): 2048^3 fits at 64 GPUs, and we push a 4096^3 rung at 128.
 A100_WEAK = [(32, 1), (64, 2), (128, 4), (256, 8), (512, 16), (1024, 32), (2048, 128)]
-AMD_WEAK  = [(32, 1), (64, 2), (128, 4), (256, 8), (512, 16), (1024, 32),
-             (2048, 64), (4096, 128)]
+# Original diagonal ladder — truncated at 2048^3 (4096^3 OOMs in FP64 at 128 GPU).
+AMD_WEAK  = [(32, 1), (64, 2), (128, 4), (256, 8), (512, 16), (1024, 32), (2048, 64)]
 A100_STRONG = [(1024, 32), (1024, 64), (1024, 128)]
 AMD_STRONG  = [(1024, 32), (1024, 64), (1024, 128), (1024, 256)]
+# Saturated weak ladder: bigger per-GPU tiles (~161^3 -> 645^3, all >=90% of the
+# single-GPU roofline), z=1 slab meshes (race-free). MI300A only (no A100 ref).
+SAT_WEAK = [(512, 32), (1024, 64), (2048, 128), (4096, 256)]
 
 
 def _newest(pattern):
@@ -104,9 +107,12 @@ AMD_LUNA_DIR = {
     ("weak", 32, 1): "weak_g1_32",   ("weak", 64, 2): "weak_g2_64",
     ("weak", 128, 4): "weak_g4_128", ("weak", 256, 8): "weak_g8_256",
     ("weak", 512, 16): "weak_g16_512", ("weak", 1024, 32): "weak_g32_1024",
-    ("weak", 2048, 64): "weak_g64_2048_z2", ("weak", 4096, 128): "weak_g128_4096_z2",
+    ("weak", 2048, 64): "weak_g64_2048_881", ("weak", 4096, 128): "weak_g128_4096_z2",
     ("strong", 1024, 32): "weak_g32_1024",   ("strong", 1024, 64): "zsplit_g64_881",
     ("strong", 1024, 128): "strong_g128_z2", ("strong", 1024, 256): "strong_g256_z2",
+    # saturated weak ladder (z=1 slabs)
+    ("weak_sat", 512, 32): "sat_g32_512",      ("weak_sat", 1024, 64): "zsplit_g64_881",
+    ("weak_sat", 2048, 128): "sat_g128_2048",  ("weak_sat", 4096, 256): "sat_g256_4096",
 }
 AMD_AK_DIR = {
     ("weak", 32, 1): "ak_weak_g1_32",   ("weak", 64, 2): "ak_weak_g2_64",
@@ -115,6 +121,9 @@ AMD_AK_DIR = {
     ("weak", 2048, 64): "ak_weak_g64_2048", ("weak", 4096, 128): "ak_weak_g128_4096",
     ("strong", 1024, 32): "ak_strong_g32",   ("strong", 1024, 64): "ak_strong_g64",
     ("strong", 1024, 128): "ak_strong_g128", ("strong", 1024, 256): "ak_strong_g256",
+    # saturated weak ladder (matched meshblocks)
+    ("weak_sat", 512, 32): "ak_sat_g32_512",     ("weak_sat", 1024, 64): "ak_strong_g64",
+    ("weak_sat", 2048, 128): "ak_sat_g128_2048", ("weak_sat", 4096, 256): "ak_sat_g256_4096",
 }
 
 
@@ -182,12 +191,13 @@ def main():
 
     weak = collect("weak", AMD_WEAK, A100_WEAK)
     strong = collect("strong", AMD_STRONG, A100_STRONG)
+    weak_sat = collect("weak_sat", SAT_WEAK, [])   # saturated ladder, MI300A only
 
     os.makedirs("figures", exist_ok=True)
     os.makedirs("code_paper_figs", exist_ok=True)
     with open("figures/scaling_fp64_amd_data.csv", "w") as fh:
         fh.write("test,Nx,GPUs,LUNA_MI300A,AthenaK_MI300A,LUNA_A100,AthenaK_A100\n")
-        for tag, rows in (("weak", weak), ("strong", strong)):
+        for tag, rows in (("weak", weak), ("strong", strong), ("weak_sat", weak_sat)):
             for nx, gpu, lA, aA, l1, a1 in rows:
                 f = lambda v: "" if v is None else f"{v:.3f}"
                 fh.write(f"{tag},{nx},{gpu},{f(lA)},{f(aA)},{f(l1)},{f(a1)}\n")
@@ -196,16 +206,20 @@ def main():
         fig, ax = plt.subplots(figsize=FIGSIZE)
         ax.set_title(title, fontsize=10)
         xs = [r[1] for r in rows]
+
+        def _plot(idx, style, lbl, **kw):
+            ys = [r[idx] for r in rows]
+            if any(v is not None for v in ys):   # skip series with no data
+                ax.plot(xs, ys, style, label=lbl, **kw)
+
         # MI300A (AMD) — primary, solid, bold
-        ax.plot(xs, [r[2] for r in rows], "o-", color="#1f77b4", lw=2,
-                label="LUNA  · MI300A (AMD)")
-        ax.plot(xs, [r[3] for r in rows], "s-", color="#d62728", lw=2,
-                label="AthenaK · MI300A (AMD)")
-        # A100 — reference, faded, dashed
-        ax.plot(xs, [r[4] for r in rows], "o--", color="#1f77b4", lw=1.2,
-                alpha=0.45, mfc="none", label="LUNA  · A100 (NVIDIA, ref)")
-        ax.plot(xs, [r[5] for r in rows], "s--", color="#d62728", lw=1.2,
-                alpha=0.45, mfc="none", label="AthenaK · A100 (NVIDIA, ref)")
+        _plot(2, "o-", "LUNA  · MI300A (AMD)", color="#1f77b4", lw=2)
+        _plot(3, "s-", "AthenaK · MI300A (AMD)", color="#d62728", lw=2)
+        # A100 — reference, faded, dashed (skipped automatically if absent)
+        _plot(4, "o--", "LUNA  · A100 (NVIDIA, ref)", color="#1f77b4", lw=1.2,
+              alpha=0.45, mfc="none")
+        _plot(5, "s--", "AthenaK · A100 (NVIDIA, ref)", color="#d62728", lw=1.2,
+              alpha=0.45, mfc="none")
         # ideal-linear guide anchored at the first measured MI300A LUNA point
         lL = [r[2] for r in rows]
         g0 = next((i for i, v in enumerate(lL) if v is not None), None)
@@ -232,9 +246,12 @@ def main():
     _panel(strong, [str(r[1]) for r in strong],
            "GPUs (1024$^3$)", "code_paper_figs/scaling_strong_fp64.png",
            "FP64 strong scaling (1024$^3$) — MI300A (AMD) vs A100 (NVIDIA)")
+    _panel(weak_sat, [f"{nx}$^3$\n{gpu}" for nx, gpu, *_ in weak_sat],
+           "resolution / GPUs", "code_paper_figs/scaling_weak_saturated_fp64.png",
+           "FP64 weak scaling, saturated regime (MI300A) — LUNA vs AthenaK")
 
     print("\n  config            LUNA_MI300A  AthenaK_MI300A   LUNA_A100  AthenaK_A100")
-    for tag, rows in (("weak", weak), ("strong", strong)):
+    for tag, rows in (("weak", weak), ("strong", strong), ("weak_sat", weak_sat)):
         for nx, gpu, lA, aA, l1, a1 in rows:
             fmt = lambda v: "   -   " if v is None else f"{v:7.3f}"
             print(f"  {tag:6s} {nx:>4}^3/{gpu:<3}gpu "

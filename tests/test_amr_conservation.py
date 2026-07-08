@@ -68,3 +68,58 @@ def test_two_level_reflux_conserves_coarse_mass_periodic():
     for _ in range(5):
         h = step(h)
     assert abs(_total_mass(h[0], dx0) - m0) / m0 < 1e-10
+
+
+def test_subcycle_default_conserves_mass_periodic():
+    """The subcycled advance called with DEFAULT args (exactly how the runner
+    drives a plain hydro run) must conserve mass — i.e. reflux must default ON.
+    Regression guard: with reflux=False the composite mass drifts ~3e-7 at the
+    coarse-fine seam; with reflux on it returns to machine precision."""
+    n = 32
+    cfg = AMRConfig(ndim=3, box=(1.,) * 3, base_grid=(n,) * 3, block_shape=(16,) * 3,
+                    max_levels=1, boundary=0, gamma=GAMMA,
+                    static_region=((0.25, 0.75), (0.25, 0.75), (0.25, 0.75)))
+    h = driver.build_hierarchy(_blob(n), cfg, thresholds=[0.0], criterion="static",
+                               periodic=True, pad_to=1)
+    dvf = (1.0 / (n * 2)) ** 3
+    def comp_mass(hh):
+        comp = driver.composite_to_dense(hh, cfg)
+        return float(jnp.nansum(comp[0]) * dvf)
+    m0 = comp_mass(h)
+    # NB: no reflux= kwarg -> exercises the default (must be True).
+    step = jax.jit(lambda hh: driver.advance_subcycle(hh, jnp.asarray(2e-3), cfg,
+                                                      gamma=GAMMA))
+    for _ in range(10):
+        h = step(h)
+    assert abs(comp_mass(h) - m0) / m0 < 1e-10
+
+
+def test_relative_floor_scales_and_resets():
+    """Auto-scaling positivity floor: floor_from_fraction derives absolute
+    (rho_floor, p_floor) = frac * base-level mean, and floor_positivity uses it to
+    quiescent-reset an injected unphysical cell while leaving good cells and the
+    NaN sentinel untouched. This is the deep-hierarchy robustness knob made usable
+    without a hand-picked absolute density scale."""
+    n = 32
+    cfg = AMRConfig(ndim=3, box=(1.,) * 3, base_grid=(n,) * 3, block_shape=(16,) * 3,
+                    max_levels=1, boundary=0, gamma=GAMMA,
+                    static_region=((0.25, 0.75), (0.25, 0.75), (0.25, 0.75)))
+    h = driver.build_hierarchy(_blob(n), cfg, thresholds=[0.0], criterion="static",
+                               periodic=True, pad_to=1)
+    assert int(h[1].n_active) > 0
+    frac = 1e-6
+    rho_f, p_f = driver.floor_from_fraction(h, cfg, gamma=GAMMA, frac=frac)
+    rho_mean = float(jnp.nanmean(h[0].data[:, 0]))
+    assert rho_f > 0.0 and p_f > 0.0
+    assert abs(rho_f - frac * rho_mean) / (frac * rho_mean) < 1e-10
+
+    # inject a negative-density cell into an active fine block, keep a good one
+    d1 = np.array(jax.device_get(h[1].data))   # writable copy
+    good_ref = float(d1[0, 0, 1, 1, 1])
+    d1[0, 0, 0, 0, 0] = -5.0
+    hi = h[:1] + (h[1]._replace(data=jnp.asarray(d1)),) + h[2:]
+    hf = driver.floor_positivity(hi, cfg, gamma=GAMMA, rho_floor=rho_f, p_floor=p_f)
+
+    assert float(hf[1].data[0, 0, 0, 0, 0]) == rho_f          # bad cell reset to floor
+    assert float(hf[1].data[0, 0, 1, 1, 1]) == good_ref       # good cell untouched
+    assert bool(jnp.all(jnp.isnan(hf[1].data[-1])))           # sentinel stays NaN

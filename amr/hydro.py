@@ -20,13 +20,22 @@ face ghosts (their transverse indices are ``1:-1``), never the corner cells that
 :func:`amr.halo.fill_ghost_same_level` leaves NaN, so the wider halo's unfilled
 corners are safe.
 
-Consequence (first cut): neighbouring blocks compute *different* fluxes at their
-shared face (each from its own reconstructed edge state vs. the ghost), so mass /
-momentum / energy are not conserved to machine precision across block seams —
-the same seam non-conservation LUNA already tolerates at shard boundaries, now
-at every block face. Coarse-fine **reflux** (and, later, exchange of
-reconstructed face states for same-level seams) restores conservation; that is
-the next sub-step and is intentionally not folded in here.
+The plain ghost-based path (:func:`block_divergence`) has each block compute its
+own flux at a shared face (from its reconstructed edge state vs. the ghost), so
+conserved quantities do *not* telescope across block seams — the same seam
+non-conservation LUNA tolerates at shard boundaries, now at every block face.
+This is resolved by two mechanisms, both implemented here / in :mod:`amr.reflux`:
+
+  * **same-level seams**: :func:`conservative_block_divergence` /
+    :func:`advance_blocks_conservative` share ONE Riemann flux per block-block
+    face (this block's ``R_d`` + the neighbour's ``L_d``, exchanged on the slot
+    axis), so mass and energy telescope to machine precision on a level.
+  * **coarse-fine seams**: Berger-Colella reflux (:mod:`amr.reflux`, default on
+    in the driver) corrects the coarse cell outside a fine patch by the
+    transverse-averaged fine subface flux.
+
+Faces with no same-level neighbour keep the ghost-based flux and rely on reflux
+(coarse-fine) or the physical BC (domain edge).
 """
 
 from __future__ import annotations

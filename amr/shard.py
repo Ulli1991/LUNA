@@ -481,7 +481,7 @@ def _reshard_blocks(datas, mesh):
 
 def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
                            gamma, limiter=1, riemann_solver="hllc",
-                           gravity=None, reflux=False, t0=0.0):
+                           gravity=None, reflux=True, t0=0.0):
     """Subcycled (Berger-Oliger) step with each per-level divergence sharded via
     :func:`divergence_shmap`. Reuses :func:`amr.driver.advance_subcycle`'s
     recursion + time-interpolated coarse ghosts, swapping the divergence kernel
@@ -692,25 +692,49 @@ def regrid_sharded(levels, cfg, mesh, *, thresholds, periodic=True, bucket=None,
                             _neighbors_j, _pad_blocks, _parent_slots_j, _preserve_j,
                             _sized_parents)
 
+    import os as _os
+    _dbg = _os.environ.get("LUNA_AMR_DBG_COLLECTIVE") or _os.environ.get("LUNA_AMR_LOOP_DBG")
+    _mp = jax.process_count() > 1
+    _pi = jax.process_index()
+    def _mark(L, msg, x=None):
+        # Multi-process lockstep: regrid chains several independently-jitted
+        # collective kernels (build_children_sharded -> match_blocks -> neighbors
+        # -> parent_slots). Their all_gathers are dispatched lazily; without a
+        # barrier between kernels the two processes' collective streams drift and
+        # deadlock. block_until_ready forces each kernel's collectives to complete
+        # before the next is dispatched, keeping every rank in lockstep. Fires in
+        # multi-process (correctness) or under a debug flag (tracing).
+        if x is not None and (_mp or _dbg):
+            jax.block_until_ready(x)
+        if _dbg:
+            print(f"[dbg-regrid] proc {_pi} L{L}: {msg}", flush=True)
+
     new = [levels[0]]
     rho0 = jnp.nanmean(levels[0].data[:, 0])
     for L in range(cfg.max_levels):
         parent = new[L]
         old_child = levels[L + 1]
         flags = _flag_blocks(parent, cfg, thresholds[L], L, criterion, rho_ref=rho0)
+        _mark(L, "flags OK", flags)
         prev_parents = old_child.data.shape[0] // cfg.children_per_block
         max_parents = _sized_parents(flags, cfg.children_per_block, bucket,
                                      floor=prev_parents,
                                      cap=max_blocks // cfg.children_per_block
                                      if max_blocks else 0)
+        _mark(L, f"max_parents={max_parents} (prev={prev_parents})")
         cc, cd, na = build_children_sharded(parent.coords, parent.data, flags, L,
                                             cfg, mesh, max_parents,
                                             parent_ghosted=_ghosted_parent(parent, cfg))
+        _mark(L, "build_children_sharded OK", cd)
         old_slot = _match_blocks_j(cc, na, old_child.coords, old_child.n_active, cfg.ndim)
+        _mark(L, "match_blocks OK", old_slot)
         cd = _preserve_j(cd, old_slot, old_child.data)
+        _mark(L, "preserve OK", cd)
         cd, cc = _pad_blocks(cd, cc, pad_to)
         nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=False)
+        _mark(L, "neighbors OK", nbrs)
         pslots = _parent_slots_j(cc, parent.coords, parent.n_active, cfg)
+        _mark(L, "parent_slots OK", pslots)
         new.append(Level(data=cd, coords=cc, neighbors=nbrs,
                          parent_slots=pslots, n_active=na))
     return tuple(new)
