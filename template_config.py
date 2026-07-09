@@ -287,6 +287,13 @@ class Config:
     autodiff_task: str = "xray_sensitivity"
     autodiff_n_iter: int = 100            # optimizer iterations for inversions
     autodiff_ic_field: str = "density"    # ic_inversion: perturb "density" or "energy"
+    # ic_inversion: spectral band-limit of the TRUE injected IC perturbation.
+    # 0 = broadband (power to Nyquist) -> the r(k) collapse is a genuine
+    # measurement of the solver's scale-resolved recovery limit, not an artifact
+    # of the input spectrum. >0 restricts injected power to k <= this (legacy).
+    autodiff_ic_kmax: int = 0
+    autodiff_ic_slope: float = 0.0        # power-law slope of broadband IC (|F|~k^slope); 0 = white
+    autodiff_ic_lr: float = 1.0e-2        # Adam lr for the IC-inversion recovery loop
     # luna_emergence task: optimize the IC field so the late-time field forms a
     # target image (the word "LUNA") purely from the dynamics (paper fig19).
     autodiff_emergence_driver: str = "blast"   # "blast" | "turbulence"

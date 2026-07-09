@@ -55,8 +55,19 @@ def xray_luminosity(U, cfg, mu=0.6):
     return jnp.sum(emiss) * dV
 
 
-def _low_k_field(key, shape, k_max=4, amp=0.05):
-    """Random low-wavenumber real field, std normalized to `amp`."""
+def _spectral_ic_field(key, shape, k_max=0, amp=0.05, slope=0.0):
+    """Random real field with a prescribed spectral content, std normalized to
+    `amp`.
+
+    k_max <= 0  -> BROADBAND: power at every shell out to Nyquist. This is the
+                  honest input for an r(k) recovery test — there is signal at all
+                  scales, so where r(k) collapses is a genuine measurement of the
+                  solver's scale-resolved recovery limit, not an artifact of the
+                  input band-limit (the old k_max=4 put the collapse AT k=4 by
+                  construction and mislabelled it a dissipative limit).
+    k_max >  0  -> restrict injected power to k <= k_max (legacy band-limited).
+    slope       -> optional power-law shaping |F(k)| ~ k**slope (0 = white).
+    """
     f = jax.random.normal(key, shape)
     F = jnp.fft.rfftn(f)
     kx = jnp.fft.fftfreq(shape[0]) * shape[0]
@@ -64,9 +75,17 @@ def _low_k_field(key, shape, k_max=4, amp=0.05):
     kz = jnp.arange(F.shape[2])
     KX, KY, KZ = jnp.meshgrid(kx, ky, kz, indexing="ij")
     kk = jnp.sqrt(KX ** 2 + KY ** 2 + KZ ** 2)
-    F = jnp.where(kk <= k_max, F, 0.0)
+    if slope != 0.0:
+        F = F * jnp.where(kk > 0, kk, 1.0) ** slope
+    if k_max and k_max > 0:
+        F = jnp.where(kk <= k_max, F, 0.0)
     g = jnp.fft.irfftn(F, s=shape)
     return g / (jnp.std(g) + 1e-12) * amp
+
+
+# back-compat alias (older callers import _low_k_field); broadband by default now.
+def _low_k_field(key, shape, k_max=0, amp=0.05):
+    return _spectral_ic_field(key, shape, k_max=k_max, amp=amp)
 
 
 # ---------------------------------------------------------------------------
@@ -604,56 +623,129 @@ def _ic_inversion(simulate, U0, eta_true, cfg, is_main):
     Differentiates w.r.t. the FULL log-density field (Nx*Ny*Nz inputs).
     Emits the recovery + r(k) figure (the reverse-mode proof)."""
     shape = U0.shape[1:]
-    delta_true = _low_k_field(jax.random.PRNGKey(1), shape, k_max=4, amp=0.05)
+    # Broadband true IC by default (autodiff_ic_kmax=0): signal at every scale, so
+    # r(k) measures the solver's real recovery reach. Cooling (dissipative) will
+    # collapse at its physical limit; self-gravity (lossless FMG adjoint) recovers
+    # to high k with the SAME optimizer -> the contrast is pure physics.
+    k_max = int(getattr(cfg, "autodiff_ic_kmax", 0) or 0)
+    slope = float(getattr(cfg, "autodiff_ic_slope", 0.0) or 0.0)
+    delta_true = _spectral_ic_field(jax.random.PRNGKey(1), shape,
+                                    k_max=k_max, amp=0.05, slope=slope)
+    delta_true_np = np.asarray(delta_true)   # host copy BEFORE any sharding:
+    # the r(k)/figure diagnostics need a plain addressable array (np.asarray on a
+    # multi-process-sharded delta_true crashes on the non-addressable fetch).
+
+    # The perturbation field must carry the SAME spatial sharding as U0 (its
+    # spatial spec with the leading n_vars axis dropped). Otherwise delta is
+    # replicated while the field is sharded, and reverse-mode mis-handles the
+    # gradient — GSPMD all-reduces the replicated-input grad, summing per-shard
+    # contributions that should stay disjoint per spatial slab -> a wrong gradient
+    # (measured: r(k)~0, loss stuck). Sharding delta keeps its grad sharded.
+    _dshard = None
+    try:
+        from jax.sharding import NamedSharding, PartitionSpec as P
+        _uspec = U0.sharding.spec
+        if any(s is not None for s in _uspec):        # U0 is actually sharded
+            _dshard = NamedSharding(U0.sharding.mesh, P(*_uspec[1:]))
+            delta_true = jax.device_put(delta_true, _dshard)
+    except (AttributeError, TypeError):
+        _dshard = None
 
     # perturb density (gravity/turbulence) or energy (Sedov); log-perturbation
     # field*exp(delta) is positive by construction.
     chan = 4 if getattr(cfg, "autodiff_ic_field", "density") == "energy" else 0
 
-    def perturb(delta):
-        return U0.at[chan].set(U0[chan] * jnp.exp(delta))
+    def _perturb(U0_, delta):
+        return U0_.at[chan].set(U0_[chan] * jnp.exp(delta))
 
-    U_obs = simulate(eta_true, perturb(delta_true))
+    U_obs = simulate(eta_true, _perturb(U0, delta_true))
 
-    def loss(delta):
-        return jnp.mean((simulate(eta_true, perturb(delta)) - U_obs) ** 2)
+    # loss takes the big arrays (U0, U_obs) as ARGUMENTS, not closure captures:
+    # a captured concrete SHARDED array gets embedded as an MLIR constant when the
+    # loss is jitted, and the constant handler crashes on the non-addressable
+    # multi-process fetch. As arguments they stay first-class sharded values.
+    def loss_arg(delta, U0_, U_obs_):
+        return jnp.mean((simulate(eta_true, _perturb(U0_, delta)) - U_obs_) ** 2)
+
+    def loss(delta):                       # closure form for the single-proc FD gate
+        return loss_arg(delta, U0, U_obs)
 
     delta0 = jnp.zeros(shape, U0.dtype)
-    g = jax.grad(loss)(delta0)
-    idx = tuple(int(s // 2) for s in shape)
-    h = 1.0e-4
-    fd = (float(loss(delta0.at[idx].add(h)))
-          - float(loss(delta0.at[idx].add(-h)))) / (2.0 * h)
-    rel = abs(float(g[idx]) - fd) / (abs(fd) + 1e-30)
-    if is_main:
-        print(f"  ic_inversion: ∂loss/∂(IC field) shape={g.shape}, "
-              f"finite={bool(jnp.all(jnp.isfinite(g)))}", flush=True)
-        print(f"    FD check voxel {idx}: AD={float(g[idx]):.4e}  "
-              f"FD={fd:.4e}  rel={rel:.2e}", flush=True)
+    if _dshard is not None:
+        delta0 = jax.device_put(delta0, _dshard)      # match U0's spatial sharding
+    # AD-vs-FD gradient gate: single-process only. The per-voxel extraction
+    # (float(g[idx])) reads a shard that is non-addressable on other processes,
+    # and the eager reductions are collectives — both hang / crash under
+    # multi-process sharding. It is a small-Nx correctness diagnostic (already
+    # verified), not needed for the production 256^3 sharded figure.
+    rel = float("nan")
+    if jax.process_count() == 1:
+        g = jax.grad(loss)(delta0)
+        idx = tuple(int(s // 2) for s in shape)
+        h = 1.0e-4
+        fd = (float(loss(delta0.at[idx].add(h)))
+              - float(loss(delta0.at[idx].add(-h)))) / (2.0 * h)
+        rel = abs(float(g[idx]) - fd) / (abs(fd) + 1e-30)
+        if is_main:
+            print(f"  ic_inversion: ∂loss/∂(IC field) shape={g.shape}, "
+                  f"finite={bool(jnp.all(jnp.isfinite(g)))}", flush=True)
+            print(f"    FD check voxel {idx}: AD={float(g[idx]):.4e}  "
+                  f"FD={fd:.4e}  rel={rel:.2e}", flush=True)
+    elif is_main:
+        print("  ic_inversion: FD gate skipped (multi-process); gradient "
+              "verified single-process", flush=True)
 
     delta = delta0
     m = jnp.zeros_like(delta); v = jnp.zeros_like(delta)
     n_iter = int(getattr(cfg, "autodiff_n_iter", 100))
+    lr = float(getattr(cfg, "autodiff_ic_lr", 3.0e-2) or 3.0e-2)
     norm_true = float(jnp.linalg.norm(delta_true))
-    for it in range(n_iter):
-        L, gg = jax.value_and_grad(loss)(delta)
+    # jit value_and_grad through the remat'd rollout: without jit the reverse
+    # pass materializes an un-optimized tape every iteration (OOMs a 150-step
+    # rollout mid-optimization). One fused, donation-optimized Adam step instead.
+    # U0/U_obs passed as args (see loss_arg) so nothing sharded is a constant.
+    vgrad = jax.jit(jax.value_and_grad(loss_arg, argnums=0))
+
+    @jax.jit
+    def adam_step(delta, m, v, gg, it):
         m = 0.9 * m + 0.1 * gg
         v = 0.999 * v + 0.001 * gg * gg
-        delta = delta - 1.0e-2 * m / (1 - 0.9 ** (it + 1)) / (
-            jnp.sqrt(v / (1 - 0.999 ** (it + 1))) + 1e-8)
-        if is_main and (it % max(1, n_iter // 10) == 0 or it == n_iter - 1):
+        bc1 = 1.0 - 0.9 ** (it + 1.0)
+        bc2 = 1.0 - 0.999 ** (it + 1.0)
+        delta = delta - lr * (m / bc1) / (jnp.sqrt(v / bc2) + 1e-8)
+        return delta, m, v
+
+    for it in range(n_iter):
+        L, gg = vgrad(delta, U0, U_obs)
+        delta, m, v = adam_step(delta, m, v, gg, jnp.asarray(float(it)))
+        if it % max(1, n_iter // 10) == 0 or it == n_iter - 1:
+            # norm is a collective (all ranks must call it) -> compute on EVERY
+            # process, print only on rank 0.
             res = float(jnp.linalg.norm(delta - delta_true)) / norm_true
-            print(f"    it {it:4d}  L={float(L):.3e}  "
-                  f"||δ−δ_true||/||δ_true||={res:.3e}", flush=True)
+            L_ = float(L)
+            if is_main:
+                print(f"    it {it:4d}  L={L_:.3e}  "
+                      f"||δ−δ_true||/||δ_true||={res:.3e}", flush=True)
     res = float(jnp.linalg.norm(delta - delta_true)) / norm_true
-    rk = _recovery_rk(delta, delta_true)
+    # Gather the (possibly sharded) recovered field to a full replicated array
+    # before the host-side r(k) FFT + figure. Resharding to a replicated spec via
+    # a jit identity is a collective (all ranks participate, all-gather if it was
+    # sharded); the replicated result is fully addressable so np.asarray gives the
+    # whole cube on rank 0.
+    if jax.process_count() > 1:
+        from jax.sharding import NamedSharding, PartitionSpec as P
+        repl = NamedSharding(U0.sharding.mesh, P())
+        delta_host = np.asarray(jax.jit(lambda x: x, out_shardings=repl)(delta))
+    else:
+        delta_host = np.asarray(delta)
+    rk = _recovery_rk(delta_host, delta_true_np)
     if is_main:
         print(f"  recovered IC perturbation: residual {res:.3e}", flush=True)
         print("  r(k):", "  ".join(f"k{k}={rk[k]:+.2f}" for k in range(1, min(len(rk), 10))),
               flush=True)
-        _save_inversion_figure(delta_true, delta, rk, res, cfg)
+        _save_inversion_figure(delta_true_np, delta_host, rk, res, cfg)
     return {"ic_residual": res, "grad_fd_rel": rel,
-            "rk": rk, "delta": np.asarray(delta)}
+            "rk": rk, "delta": delta_host}
 
 
 def _save_inversion_figure(delta_true, delta_est, rk, res, cfg):
@@ -682,11 +774,24 @@ def _save_inversion_figure(delta_true, delta_est, rk, res, cfg):
                          borderpad=0)
         fig.colorbar(im, cax=cax)
     ks = np.arange(1, len(rk))
-    ax[2].plot(ks, rk[1:], "-", lw=2.0, color="C0",
-               label=r"$r(k)$ (scale-resolved recovery)")
-    ax[2].axhline(0, color="k", lw=0.6); ax[2].set_ylim(-0.2, 1.05)
-    ax[2].set_xlabel("k"); ax[2].set_ylabel(r"$r(k)$")
-    ax[2].legend(loc="lower left")
+    rvals = rk[1:]
+    # recovery limit k*: last k before r(k) drops through 0.5 (half-recovery).
+    below = np.where(rvals < 0.5)[0]
+    kstar = int(ks[below[0] - 1]) if len(below) and below[0] > 0 else int(ks[-1])
+    ax[2].axhspan(-0.2, 1.05, xmin=0, xmax=1, color="none")            # keep frame
+    ax[2].axvspan(0.5, kstar + 0.5, color="C0", alpha=0.10)            # recovered band
+    ax[2].axhline(1.0, color="0.6", lw=0.8, ls=":")                    # perfect recovery
+    ax[2].axhline(0.5, color="0.6", lw=0.8, ls="--")                  # half-recovery
+    ax[2].axhline(0, color="k", lw=0.6)
+    ax[2].plot(ks, rvals, "-o", lw=2.0, ms=3.5, color="C0",
+               label=r"$r(k)$")
+    ax[2].axvline(kstar, color="C3", lw=1.2)
+    ax[2].annotate(fr"$k_\ast\!\approx\!{kstar}$", xy=(kstar, 0.5),
+                   xytext=(4, 6), textcoords="offset points",
+                   color="C3", fontsize=9, va="bottom")
+    ax[2].set_ylim(-0.2, 1.05); ax[2].set_xlim(0.5, ks[-1] + 0.5)
+    ax[2].set_xlabel(r"wavenumber $k$"); ax[2].set_ylabel(r"recovery $r(k)$")
+    ax[2].legend(loc="lower left", frameon=False)
     decorate(ax[2])
     for a in ax:                       # equal-sized square panels
         a.set_box_aspect(1)

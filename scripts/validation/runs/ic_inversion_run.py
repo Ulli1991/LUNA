@@ -19,6 +19,7 @@ from dataclasses import replace
 
 from units import UnitSystem
 from template_config import Config
+from hydro.turbulence import OUDriverConfig
 from setup.distributed_setup import initialize_jax_distributed
 from main import run
 
@@ -55,29 +56,57 @@ def main():
             jeans_rho0=1.0, jeans_P0=1.0, jeans_amp=0.0,
             jeans_kx=1, jeans_ky=0, jeans_kz=0,
             SELF_GRAVITY=True, GRAVITATIONAL_G=1.0, POISSON_BOUNDARY=0,
+            # FIXED dt (like turbgrav/cooling): "diff"-mode adaptive dt
+            # differentiates through a min-over-cells whose argmin kinks scale
+            # with resolution — at 64^3 the dt-gradient path corrupts the whole
+            # gradient (FD check fails, optimization diverges). cs=1.29, v<<cs.
+            autodiff_fixed_dt=0.3 * (L / Nx) / 2.0,
             autodiff_ic_field="density",
             output_dir=f"snapshots/jeans_autodiff_Nx{Nx}",
         )
     elif problem == "cooling":
-        # Reverse-mode IC reconstruction through the RADIATIVE COOLING solver
-        # (covers the diffhydro "radiatively cooling flows" autodiff context).
-        # Uniform box (no gravity) at n_H~0.05 cm^-3, T~2e5 K — cooling-active
-        # (above the 1e4 K floor, near the SD93 peak). The orchestrator perturbs
-        # the energy IC; cooling (Λ(T) ∝ n² and strongly T-dependent) imprints it
-        # on the evolved state, and reverse-mode recovers it.
+        # Reverse-mode IC reconstruction through a TURBULENT, RADIATIVELY-COOLING
+        # FLOW — diffhydro §7.5 ("Turbulent field with Cooling"). The physically
+        # correct setup: a broadband density IC is ADVECTED by an OU-driven
+        # turbulent flow while radiative cooling acts (Λ(T) ∝ n²). Advection
+        # transports large-scale structure (recoverable) while cooling + turbulent
+        # mixing erase small-scale information — so r(k) stays ~1 to a genuine k*
+        # then collapses at the dissipative/mixing limit.
+        #
+        # (The old setup — perturbing energy in a STATIC uniform box then cooling —
+        # is ill-posed: with no flow, cooling is a pointwise contraction toward the
+        # 10^4 K floor, a many-to-one map with no recoverable inverse. Measured
+        # residual 1.18 > 1.0 null, non-monotonic r(k). Fixed by adding the flow.)
         units = UnitSystem(UnitLength_in_cm=KPC, UnitMass_in_g=1.0e10 * MSUN,
                            UnitVelocity_in_cm_per_s=1.0e5)
-        MYR = 1.0e6 * 3.15576e7
-        L = float(os.environ.get("LUNA_AD_L_KPC", "0.05"))      # 50 pc box
-        t_Myr = float(os.environ.get("LUNA_AD_TEND_MYR", "0.1"))  # ~half a t_cool
+        # PHYSICALLY-CONSISTENT turbulent cooling flow. The regime is the old
+        # cooling box's (forward-stable, cooling-active: n_H~0.05 cm^-3, T~2e5 K,
+        # near the SD93 peak, above the 1e4 K floor) — but now DRIVEN turbulent so
+        # a broadband density IC is advected through it. NO isothermal thermostat
+        # (that fought the cooling and NaN'd); gamma=5/3 adiabatic + radiative
+        # cooling set the thermodynamics.
+        gamma = 5.0 / 3.0
+        rho0, p0 = 1.76e-4, 0.485                  # code units -> n_H~0.05, T~2e5 K
+        cs = (gamma * p0 / rho0) ** 0.5            # ~68 km/s (code velocity)
+        L = 0.05                                   # 50 pc box (kpc)
+        mach = float(os.environ.get("LUNA_AD_MACH", "0.3"))    # subsonic: clean grads
+        v_rms = mach * cs
+        t_turnover = L / v_rms                     # code time
+        t_ac = 0.5 * t_turnover
+        n_turn = float(os.environ.get("LUNA_AD_NTURN", "1.0"))  # evolve ~1 turnover
+        ou_cfg = OUDriverConfig(
+            k_min=1.0, k_max=2.0, solenoidal_weight=1.0,
+            autocorrelation_time=t_ac, rms_acceleration=v_rms / t_ac,
+            seed=7, spectrum="parabolic", Lx=L, Ly=L, Lz=L,
+        )
         ov = dict(
-            test_problem="Jeans-Instability-3D", BOUNDARY=0, units=units,
-            Lx=L, Ly=L, Lz=L, t_end=t_Myr * MYR / units.UnitTime_in_s,
-            jeans_rho0=1.76e-4, jeans_P0=0.485, jeans_amp=0.0,
-            jeans_kx=1, jeans_ky=0, jeans_kz=0, jeans_eigenmode=False,
+            test_problem="Driven-Turbulence-3D", BOUNDARY=0, units=units,
+            Lx=L, Ly=L, Lz=L, gamma=gamma,
+            ou_config=ou_cfg, ou_seed=7,               # NO isothermal_cs2: cooling rules
+            autodiff_fixed_dt=0.3 * (L / Nx) / (cs * (1.0 + mach)),  # CFL-safe fixed dt
             SELF_GRAVITY=False,
             cooling_enabled=True, cooling_table="sd93_solar",
-            autodiff_ic_field="energy",
+            autodiff_ic_field="density",              # recover the advected IC
             output_dir=f"snapshots/cooling_autodiff_Nx{Nx}",
         )
     else:  # sedov
@@ -92,7 +121,10 @@ def main():
         )
 
     initialize_jax_distributed(enable_x64=True)
-    cfg = replace(Config(), **common, **ov)
+    # merge first (ov overrides common) so a per-problem key that also appears in
+    # common — e.g. gamma / autodiff_fixed_dt for the turbulent-cooling setup —
+    # doesn't trip replace()'s "multiple values for keyword" error.
+    cfg = replace(Config(), **{**common, **ov})
     result = run(cfg)
     if isinstance(result, dict) and "ic_residual" in result:
         print(f"RESULT {problem} ic_residual={result['ic_residual']:.3e}",
