@@ -200,6 +200,34 @@ class ExplicitCoolingSolver:
 # ---------------------------------------------------------------------------
 # High-level interface
 # ---------------------------------------------------------------------------
+@jax.custom_vjp
+def _cooling_lambda(T, logT, logL):
+    """Lambda(T) = 10**interp(log10 T; logT, logL). Custom VJP: the backward uses
+    a central difference of the FORWARD interp instead of jnp.interp's native VJP.
+    The native VJP (searchsorted + gather) takes a GPU memory-access fault on the
+    ROCm backend at >=64^3 inside the nested reverse-mode cooling scan (a bare
+    HSA AsyncEventsLoop segfault). This is gradient-equivalent (dLam/dT is the
+    piecewise-constant interp slope) but calls only the crash-free forward op.
+    The cooling table (logT, logL) is constant -> zero cotangent."""
+    return 10.0 ** jnp.interp(jnp.log10(T), logT, logL)
+
+
+def _cooling_lambda_fwd(T, logT, logL):
+    return _cooling_lambda(T, logT, logL), (T, logT, logL)
+
+
+def _cooling_lambda_bwd(res, g):
+    T, logT, logL = res
+    h = jnp.maximum(1.0e-4 * T, 1.0e-30)
+    lp = 10.0 ** jnp.interp(jnp.log10(T + h), logT, logL)
+    lm = 10.0 ** jnp.interp(jnp.log10(T - h), logT, logL)
+    dT = g * (lp - lm) / (2.0 * h)
+    return dT, jnp.zeros_like(logT), jnp.zeros_like(logL)
+
+
+_cooling_lambda.defvjp(_cooling_lambda_fwd, _cooling_lambda_bwd)
+
+
 def apply_cooling(U, dt_code, cfg, solver: ExplicitCoolingSolver):
     """Apply explicit sub-cycled radiative cooling (+ optional heating) to U
     for one hydro step (Schneider+2018 / Cholla style).
@@ -233,8 +261,7 @@ def apply_cooling(U, dt_code, cfg, solver: ExplicitCoolingSolver):
     dt_sub = (dt_code * cfg.units.UnitTime_in_s) / n_sub
 
     def Lam(T):
-        # smooth log-log interpolant, clamped at table edges; differentiable
-        return 10.0 ** jnp.interp(jnp.log10(T), logT, logL)
+        return _cooling_lambda(T, logT, logL)
 
     def sub(T, _):
         # dT/dt = (gamma-1)/(n_tot k_B) * (n_H Gamma - n_e n_H Lambda(T))

@@ -699,7 +699,11 @@ def _ic_inversion(simulate, U0, eta_true, cfg, is_main):
     m = jnp.zeros_like(delta); v = jnp.zeros_like(delta)
     n_iter = int(getattr(cfg, "autodiff_n_iter", 100))
     lr = float(getattr(cfg, "autodiff_ic_lr", 3.0e-2) or 3.0e-2)
-    norm_true = float(jnp.linalg.norm(delta_true))
+    # jit the norm so its reduction all-reduces to a REPLICATED scalar; eager
+    # jnp.linalg.norm leaves the result sharded (non-addressable -> float() crash
+    # under multi-process).
+    _jnorm = jax.jit(lambda x: jnp.linalg.norm(x))
+    norm_true = float(_jnorm(delta_true))
     # jit value_and_grad through the remat'd rollout: without jit the reverse
     # pass materializes an un-optimized tape every iteration (OOMs a 150-step
     # rollout mid-optimization). One fused, donation-optimized Adam step instead.
@@ -715,18 +719,27 @@ def _ic_inversion(simulate, U0, eta_true, cfg, is_main):
         delta = delta - lr * (m / bc1) / (jnp.sqrt(v / bc2) + 1e-8)
         return delta, m, v
 
+    _t_loop0 = time.time()
+    _t_iter1 = None
     for it in range(n_iter):
         L, gg = vgrad(delta, U0, U_obs)
         delta, m, v = adam_step(delta, m, v, gg, jnp.asarray(float(it)))
+        if it == 0:
+            jax.block_until_ready(delta)          # force compile+first step
+            _t_iter1 = time.time()
+            if is_main:
+                print(f"    [timing] compile+it0 = {_t_iter1 - _t_loop0:.1f}s",
+                      flush=True)
         if it % max(1, n_iter // 10) == 0 or it == n_iter - 1:
             # norm is a collective (all ranks must call it) -> compute on EVERY
             # process, print only on rank 0.
-            res = float(jnp.linalg.norm(delta - delta_true)) / norm_true
+            res = float(_jnorm(delta - delta_true)) / norm_true
             L_ = float(L)
             if is_main:
+                per = ((time.time() - _t_iter1) / max(it, 1)) if _t_iter1 and it else 0.0
                 print(f"    it {it:4d}  L={L_:.3e}  "
-                      f"||δ−δ_true||/||δ_true||={res:.3e}", flush=True)
-    res = float(jnp.linalg.norm(delta - delta_true)) / norm_true
+                      f"||δ−δ_true||/||δ_true||={res:.3e}  ({per:.2f}s/it)", flush=True)
+    res = float(_jnorm(delta - delta_true)) / norm_true
     # Gather the (possibly sharded) recovered field to a full replicated array
     # before the host-side r(k) FFT + figure. Resharding to a replicated spec via
     # a jit identity is a collective (all ranks participate, all-gather if it was

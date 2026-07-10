@@ -18,6 +18,7 @@ same-level seam exchange. Coarse-fine (parent gather) extends the same pattern.
 from __future__ import annotations
 
 import itertools
+import os
 
 import jax
 import jax.numpy as jnp
@@ -117,37 +118,79 @@ def _fill_same_level_diag(W, stencil_idx, mesh, cfg):
     (sharded) unghosted primitive data; ``stencil_idx`` (:func:`_same_level_stencil`,
     sharded rows) gives each local block's global source slot per ghost region.
     Returns the local blocks' ghosted array, sharded -- bit-identical to
-    ``halo.fill_ghost_same_level`` on the active blocks."""
+    ``halo.fill_ghost_same_level`` on the active blocks.
+
+    Two exchange strategies (bit-identical; each of the 3**ndim ghost regions is
+    written by exactly ONE source block, so order is irrelevant):
+      * all_gather (default): gather the FULL global block array on every device,
+        then index. Simple, one pass, O(total) MEMORY per device -- the sharding
+        win evaporates during the fill (was ~half the 6-level OOM).
+      * ring (LUNA_AMR_HALO_RING=1): ppermute the block segments around the device
+        ring; at each of the D steps a device holds ONE segment (total/D) and
+        extracts the bands whose global source lands in that segment. Peak memory
+        total/D (the win). Trades memory for ~D x the (cheap) band-copy compute.
+    """
     g, ndim, bs = cfg.n_ghost, cfg.ndim, cfg.block_shape
     offsets = _same_level_offsets(ndim)
     W_spec = P("blocks", *([None] * (W.ndim - 1)))
     idx_spec = P("blocks", None)
     out_spec = P("blocks", *([None] * (ndim + 1)))
+    n_dev = int(mesh.shape["blocks"])
+    ring = os.environ.get("LUNA_AMR_HALO_RING", "0") == "1" and n_dev > 1
 
-    def local(W_loc, idx_loc):
+    def _place(out, off, src, valid):
+        """Copy source block ``src``'s band for ghost-region ``off`` into ``out``,
+        masked by ``valid`` (None = unconditional)."""
+        ssl = [slice(None), slice(None)]
+        dsl = [slice(None), slice(None)]
+        for d in range(ndim):
+            if off[d] == -1:                              # -face: src last g -> dst first g
+                ssl.append(slice(bs[d] - g, bs[d])); dsl.append(slice(0, g))
+            elif off[d] == 0:                             # interior
+                ssl.append(slice(0, bs[d]));         dsl.append(slice(g, g + bs[d]))
+            else:                                         # +face: src first g -> dst last g
+                ssl.append(slice(0, g));             dsl.append(slice(g + bs[d], g + bs[d] + g))
+        band = src[tuple(ssl)]
+        if valid is None:
+            return out.at[tuple(dsl)].set(band)
+        cur = out[tuple(dsl)]
+        vv = valid.reshape((valid.shape[0],) + (1,) * (cur.ndim - 1))
+        return out.at[tuple(dsl)].set(jnp.where(vv, band, cur))
+
+    def local_gather(W_loc, idx_loc):
         Wg = jax.lax.all_gather(W_loc, "blocks", axis=0, tiled=True)   # global unghosted
         Nloc, n_vars = W_loc.shape[0], W_loc.shape[1]
         out = jnp.full((Nloc, n_vars) + tuple(s + 2 * g for s in bs),
                        jnp.nan, W_loc.dtype)
         for o, off in enumerate(offsets):
-            src = Wg[idx_loc[:, o]]                       # (Nloc, n_vars, *bs)
-            ssl = [slice(None), slice(None)]
-            dsl = [slice(None), slice(None)]
-            for d in range(ndim):
-                if off[d] == -1:                          # -face: src last g -> dst first g
-                    ssl.append(slice(bs[d] - g, bs[d])); dsl.append(slice(0, g))
-                elif off[d] == 0:                         # interior
-                    ssl.append(slice(0, bs[d]));         dsl.append(slice(g, g + bs[d]))
-                else:                                     # +face: src first g -> dst last g
-                    ssl.append(slice(0, g));             dsl.append(slice(g + bs[d], g + bs[d] + g))
-            out = out.at[tuple(dsl)].set(src[tuple(ssl)])
+            out = _place(out, off, Wg[idx_loc[:, o]], None)
         return out
 
+    def local_ring(W_loc, idx_loc):
+        bpd = W_loc.shape[0]                              # blocks per device (== Nloc)
+        Nloc, n_vars = W_loc.shape[0], W_loc.shape[1]
+        dev = jax.lax.axis_index("blocks")
+        out = jnp.full((Nloc, n_vars) + tuple(s + 2 * g for s in bs),
+                       jnp.nan, W_loc.dtype)
+        cur = W_loc                                       # segment currently held
+        perm = [(i, (i + 1) % n_dev) for i in range(n_dev)]   # shift ring by 1
+        for k in range(n_dev):
+            seg_lo = ((dev - k) % n_dev) * bpd            # global range of the held segment
+            for o, off in enumerate(offsets):
+                li = idx_loc[:, o] - seg_lo               # local index into cur
+                valid = (li >= 0) & (li < bpd)            # neighbour is in THIS segment
+                src = cur[jnp.clip(li, 0, bpd - 1)]
+                out = _place(out, off, src, valid)
+            if k < n_dev - 1:
+                cur = jax.lax.ppermute(cur, "blocks", perm)
+        return out
+
+    fn = local_ring if ring else local_gather
     try:
-        return _shard_map(local, mesh=mesh, in_specs=(W_spec, idx_spec),
+        return _shard_map(fn, mesh=mesh, in_specs=(W_spec, idx_spec),
                           out_specs=out_spec, check_vma=False)(W, stencil_idx)
     except TypeError:                                     # older jax: check_rep
-        return _shard_map(local, mesh=mesh, in_specs=(W_spec, idx_spec),
+        return _shard_map(fn, mesh=mesh, in_specs=(W_spec, idx_spec),
                           out_specs=out_spec, check_rep=False)(W, stencil_idx)
 
 
@@ -162,18 +205,43 @@ def _coarse_underlay_sharded(fine_ghosted, fine_coords, parent_slots,
     coord_spec = P("blocks", None)
     ps_spec = P("blocks")
     cg_spec = P("blocks", *([None] * (coarse_ghosted.ndim - 1)))
+    n_dev = int(mesh.shape["blocks"])
+    ring = os.environ.get("LUNA_AMR_HALO_RING", "0") == "1" and n_dev > 1
 
-    def local(fg_loc, coord_loc, ps_loc, cg_loc):
+    def local_gather(fg_loc, coord_loc, ps_loc, cg_loc):
         cg = jax.lax.all_gather(cg_loc, "blocks", axis=0, tiled=True)  # global parent ghosted
         return fill_ghost_from_coarse_sparse(fg_loc, coord_loc, ps_loc, cg,
                                              cfg, interp=interp)
 
+    def local_ring(fg_loc, coord_loc, ps_loc, cg_loc):
+        # Ring the coarse (parent) segments; at each step fill only the fine
+        # blocks whose parent slot lands in the held segment. Peak = one coarse
+        # segment (total_coarse/D) + local fine. Bit-identical: each fine block is
+        # filled exactly once, at its parent's segment step (outer where guards).
+        bpd_c = cg_loc.shape[0]
+        dev = jax.lax.axis_index("blocks")
+        out = fg_loc
+        cur = cg_loc
+        perm = [(i, (i + 1) % n_dev) for i in range(n_dev)]
+        for k in range(n_dev):
+            seg_lo = ((dev - k) % n_dev) * bpd_c
+            ps_local = ps_loc - seg_lo
+            valid = (ps_local >= 0) & (ps_local < bpd_c)
+            filled = fill_ghost_from_coarse_sparse(
+                out, coord_loc, jnp.clip(ps_local, 0, bpd_c - 1), cur, cfg, interp=interp)
+            vv = valid.reshape((valid.shape[0],) + (1,) * (out.ndim - 1))
+            out = jnp.where(vv, filled, out)
+            if k < n_dev - 1:
+                cur = jax.lax.ppermute(cur, "blocks", perm)
+        return out
+
+    fn = local_ring if ring else local_gather
     ins = (fg_spec, coord_spec, ps_spec, cg_spec)
     try:
-        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=fg_spec,
+        return _shard_map(fn, mesh=mesh, in_specs=ins, out_specs=fg_spec,
                           check_vma=False)(fine_ghosted, fine_coords, parent_slots, coarse_ghosted)
     except TypeError:
-        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=fg_spec,
+        return _shard_map(fn, mesh=mesh, in_specs=ins, out_specs=fg_spec,
                           check_rep=False)(fine_ghosted, fine_coords, parent_slots, coarse_ghosted)
 
 
