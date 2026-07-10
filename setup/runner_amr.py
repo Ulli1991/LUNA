@@ -194,20 +194,49 @@ def run_simulation_amr(cfg, is_main_process=True):
             print(f"  L{L}: {int(lvl.n_active):6d} active blocks  dx={acfg.level_dx(L)[0]:.3e}")
 
     subcycle = bool(getattr(cfg, "amr_subcycle", False))
+
+    # --- Stage-2 sparse halo exchange (LUNA_AMR_HALO_MODE=sparse): build the
+    # per-level all_to_all plans on HOST from the (replicated, static-between-
+    # regrids) neighbour tables. Threaded through the jitted chunk as ARGUMENTS
+    # (a closure-captured plan would be baked as a jit constant and go stale
+    # after a same-shape regrid). v1 scope: synchronized sharded advance only.
+    _sparse_halo = (os.environ.get("LUNA_AMR_HALO_MODE", "") == "sparse"
+                    and shard_amr and not subcycle)
+
+    def _build_halo_plans(h):
+        if not _sparse_halo:
+            return None
+        from amr.shard import _same_level_stencil, build_same_level_plan
+        plans = []
+        for lvl in h:
+            if lvl.data.shape[0] % n_dev:
+                plans.append(None)
+                continue
+            st = np.asarray(_same_level_stencil(lvl.neighbors, acfg))
+            si, rp, _K = build_same_level_plan(st, n_dev)
+            plans.append((_to_global(jnp.asarray(si), repl),
+                          _to_global(jnp.asarray(rp), repl)))
+        return tuple(plans)
+
     if shard_amr:
         from amr import shard
         if subcycle:
-            step = jax.jit(lambda lv, dt: shard.advance_subcycle_shmap(
+            step = jax.jit(lambda lv, dt, hp=None: shard.advance_subcycle_shmap(
                 lv, dt, acfg, mesh, gamma=gamma, limiter=limiter, riemann_solver=riemann))
         else:
-            step = jax.jit(lambda lv, dt: shard.advance_shmap(
-                lv, dt, acfg, mesh, gamma=gamma, limiter=limiter, riemann_solver=riemann))
+            step = jax.jit(lambda lv, dt, hp=None: shard.advance_shmap(
+                lv, dt, acfg, mesh, gamma=gamma, limiter=limiter, riemann_solver=riemann,
+                halo_plans=hp))
     elif subcycle:
-        step = jax.jit(lambda lv, dt: driver.advance_subcycle(
+        step = jax.jit(lambda lv, dt, hp=None: driver.advance_subcycle(
             lv, dt, acfg, gamma=gamma, limiter=limiter, riemann_solver=riemann))
     else:
-        step = jax.jit(lambda lv, dt: driver.advance(
+        step = jax.jit(lambda lv, dt, hp=None: driver.advance(
             lv, dt, acfg, gamma=gamma, limiter=limiter, riemann_solver=riemann))
+    halo_plans = _build_halo_plans(hierarchy)
+    if _sparse_halo and is_main_process:
+        print("  halo exchange: SPARSE all_to_all plans "
+              f"({sum(p is not None for p in halo_plans)} levels)", flush=True)
     # jitted: the eager version dispatched ~10 tiny ops per level on the host
     # every single step (a real per-step tax at thousands of blocks).
     dt_fn = jax.jit((lambda lv: driver.compute_dt_subcycle(lv, acfg, gamma=gamma, CFL=CFL)) if subcycle
@@ -482,7 +511,7 @@ def run_simulation_amr(cfg, is_main_process=True):
                                            rho_floor=_rho_floor, p_floor=_p_floor)
         return h
 
-    def _chunk(hier, tt, target):
+    def _chunk(hier, hp, tt, target):
         def body(carry, _):
             h, tc, taken = carry
             dt = dt_fn(h)
@@ -493,7 +522,7 @@ def run_simulation_amr(cfg, is_main_process=True):
             if sub_advance is not None:                  # Berger-Oliger: fused
                 h = sub_advance(h, dt, tc)               # hydro+gravity+reflux, subcycled
             else:
-                h = step(h, dt)
+                h = step(h, dt, hp)
                 if cosmo_kit is not None:
                     h = grav_cosmo(h, dt, aa)
                 elif grav_apply is not None:
@@ -559,7 +588,8 @@ def run_simulation_amr(cfg, is_main_process=True):
                 jnp.asarray(t, jnp.float64), jnp.asarray(target, jnp.float64))
         else:
             hierarchy, t_dev, taken_dev = chunk_step(
-                hierarchy, jnp.asarray(t, jnp.float64), jnp.asarray(target, jnp.float64))
+                hierarchy, halo_plans,
+                jnp.asarray(t, jnp.float64), jnp.asarray(target, jnp.float64))
         taken = int(taken_dev)                           # one host sync per chunk
         t_prev, t = t, float(t_dev)
         if shard_amr and jax.process_count() > 1:
@@ -614,6 +644,7 @@ def run_simulation_amr(cfg, is_main_process=True):
             if _ldbg:
                 jax.block_until_ready(hierarchy[0].data)
                 print(f"[loop] p{_pi} it{_lit}: regrid OK", flush=True)
+            halo_plans = _build_halo_plans(hierarchy)    # topology changed
             cu_step = _cu_per_base_step(hierarchy)       # block counts changed
             if is_main_process:
                 counts = " ".join(

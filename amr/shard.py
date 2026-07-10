@@ -44,6 +44,24 @@ if _shard_map is None:  # older jax
     from jax.experimental.shard_map import shard_map as _shard_map
 
 
+def _use_ring(n_dev, gathered_bytes):
+    """Pick the halo exchange strategy. LUNA_AMR_HALO_RING = "1" (force ring) /
+    "0" (force all_gather) / "auto" (default): use the memory-lean ring ONLY when
+    the all_gather peak (the full block array on every device) would exceed
+    LUNA_AMR_HALO_RING_GB (default 16 GB). So shallow hierarchies keep the fast
+    single-pass all_gather; deep ones that would otherwise OOM get the total/D
+    ring automatically."""
+    if n_dev <= 1:
+        return False
+    mode = os.environ.get("LUNA_AMR_HALO_RING", "auto")
+    if mode == "1":
+        return True
+    if mode == "0":
+        return False
+    thresh_gb = float(os.environ.get("LUNA_AMR_HALO_RING_GB", "16"))
+    return gathered_bytes > thresh_gb * 1e9
+
+
 def _fill_same_level_2src(local_data, global_data, neighbors, cfg):
     """``fill_ghost_same_level`` with two sources: interior from this device's
     ``local_data`` blocks, neighbour ghost bands gathered from the all-gathered
@@ -136,7 +154,7 @@ def _fill_same_level_diag(W, stencil_idx, mesh, cfg):
     idx_spec = P("blocks", None)
     out_spec = P("blocks", *([None] * (ndim + 1)))
     n_dev = int(mesh.shape["blocks"])
-    ring = os.environ.get("LUNA_AMR_HALO_RING", "0") == "1" and n_dev > 1
+    ring = _use_ring(n_dev, W.size * W.itemsize)         # all_gather peak = full W
 
     def _place(out, off, src, valid):
         """Copy source block ``src``'s band for ghost-region ``off`` into ``out``,
@@ -194,6 +212,116 @@ def _fill_same_level_diag(W, stencil_idx, mesh, cfg):
                           out_specs=out_spec, check_rep=False)(W, stencil_idx)
 
 
+def build_same_level_plan(stencil_np, n_dev):
+    """Host-side sparse exchange plan for the same-level ghost fill (Stage 2:
+    O(surface) communication). Topology is static between regrids, so we
+    precompute, for every ordered device pair (s -> r), the sorted unique list of
+    REMOTE source blocks r's ghost regions need from s. Local sources (most of
+    them, under the Morton-contiguous block partition) are read directly from
+    W_loc and never touch the wire -- that is what makes the traffic O(surface)
+    instead of the all_gather/ring's O(total).
+
+    Returns (send_idx, recv_pos, K):
+      send_idx (n_dev, n_dev, K) int32 -- sender-LOCAL slot indices; row [s, r]
+          is what s packs for r, padded with 0 (padded entries are never
+          referenced by any recv_pos).
+      recv_pos (n_slots, 3**ndim) int32 -- for each block row and ghost region,
+          the flat position (s*K + j) of its source in the receiver's all_to_all
+          buffer, or -1 if the source is LOCAL to the owner.
+      K -- per-pair slot budget, padded to a pow2 bucket (bounds recompiles
+          across regrids the same way the capacity ladder does).
+    """
+    import numpy as _np
+    n_slots, R = stencil_np.shape
+    bpd = n_slots // n_dev
+    row_dev = _np.arange(n_slots) // bpd
+    owner = stencil_np // bpd
+    uniq = {}                                        # (s, r) -> sorted unique globals
+    kmax = 1
+    for r in range(n_dev):
+        st = stencil_np[row_dev == r]                # (bpd, R)
+        ow = owner[row_dev == r]
+        for s in range(n_dev):
+            if s == r:
+                continue
+            u = _np.unique(st[ow == s])
+            uniq[(s, r)] = u
+            kmax = max(kmax, len(u))
+    K = 1 << (kmax - 1).bit_length()                 # pow2 bucket
+    send_idx = _np.zeros((n_dev, n_dev, K), _np.int32)
+    recv_pos = _np.full((n_slots, R), -1, _np.int32)
+    for r in range(n_dev):
+        rows = slice(r * bpd, (r + 1) * bpd)
+        st = stencil_np[rows]
+        ow = owner[rows]
+        for s in range(n_dev):
+            if s == r:
+                continue
+            u = uniq[(s, r)]
+            if len(u) == 0:
+                continue
+            send_idx[s, r, : len(u)] = u - s * bpd   # sender-local indices
+            m = ow == s
+            j = _np.searchsorted(u, st[m])
+            block = recv_pos[rows]
+            block[m] = s * K + j
+            recv_pos[rows] = block
+    return send_idx, recv_pos, K
+
+
+def _fill_same_level_sparse(W, stencil_idx, send_idx, recv_pos, mesh, cfg):
+    """Same-level ghost fill with the SPARSE all_to_all exchange (Stage 2).
+    Each device packs only the blocks its peers actually need
+    (``send_idx[dev]``), one ``all_to_all`` delivers them, and each ghost band
+    fills from a two-source select: local block (direct read) vs received
+    remote block (``recv_pos``). Communication and remote-buffer memory are
+    O(surface blocks) instead of O(total). Bit-identical to the gather/ring
+    fills: same source block per region, same band copy."""
+    g, ndim, bs = cfg.n_ghost, cfg.ndim, cfg.block_shape
+    offsets = _same_level_offsets(ndim)
+    n_dev = int(mesh.shape["blocks"])
+    K = send_idx.shape[-1]
+    W_spec = P("blocks", *([None] * (W.ndim - 1)))
+    idx_spec = P("blocks", None)
+    out_spec = P("blocks", *([None] * (ndim + 1)))
+
+    def local(W_loc, idx_loc, rp_loc, send_tab):
+        bpd = W_loc.shape[0]
+        dev = jax.lax.axis_index("blocks")
+        # pack: (n_dev*K, n_vars, *bs) -- chunk r = what this device sends to r
+        buf = W_loc[send_tab[dev].reshape(-1)]
+        got = jax.lax.all_to_all(buf, "blocks", 0, 0, tiled=True)
+        Nloc, n_vars = W_loc.shape[0], W_loc.shape[1]
+        out = jnp.full((Nloc, n_vars) + tuple(s + 2 * g for s in bs),
+                       jnp.nan, W_loc.dtype)
+        for o, off in enumerate(offsets):
+            li = idx_loc[:, o] - dev * bpd
+            is_loc = (li >= 0) & (li < bpd)
+            src_l = W_loc[jnp.clip(li, 0, bpd - 1)]
+            src_r = got[jnp.clip(rp_loc[:, o], 0, n_dev * K - 1)]
+            vv = is_loc.reshape((is_loc.shape[0],) + (1,) * (src_l.ndim - 1))
+            src = jnp.where(vv, src_l, src_r)
+            ssl = [slice(None), slice(None)]
+            dsl = [slice(None), slice(None)]
+            for d in range(ndim):
+                if off[d] == -1:
+                    ssl.append(slice(bs[d] - g, bs[d])); dsl.append(slice(0, g))
+                elif off[d] == 0:
+                    ssl.append(slice(0, bs[d]));         dsl.append(slice(g, g + bs[d]))
+                else:
+                    ssl.append(slice(0, g));             dsl.append(slice(g + bs[d], g + bs[d] + g))
+            out = out.at[tuple(dsl)].set(src[tuple(ssl)])
+        return out
+
+    ins = (W_spec, idx_spec, idx_spec, P())          # send table replicated
+    try:
+        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=out_spec,
+                          check_vma=False)(W, stencil_idx, recv_pos, send_idx)
+    except TypeError:
+        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=out_spec,
+                          check_rep=False)(W, stencil_idx, recv_pos, send_idx)
+
+
 def _coarse_underlay_sharded(fine_ghosted, fine_coords, parent_slots,
                              coarse_ghosted, mesh, cfg, interp="linear"):
     """Sparse coarse-fine ghost fill (``halo.fill_ghost_from_coarse_sparse``) with
@@ -206,7 +334,7 @@ def _coarse_underlay_sharded(fine_ghosted, fine_coords, parent_slots,
     ps_spec = P("blocks")
     cg_spec = P("blocks", *([None] * (coarse_ghosted.ndim - 1)))
     n_dev = int(mesh.shape["blocks"])
-    ring = os.environ.get("LUNA_AMR_HALO_RING", "0") == "1" and n_dev > 1
+    ring = _use_ring(n_dev, coarse_ghosted.size * coarse_ghosted.itemsize)
 
     def local_gather(fg_loc, coord_loc, ps_loc, cg_loc):
         cg = jax.lax.all_gather(cg_loc, "blocks", axis=0, tiled=True)  # global parent ghosted
@@ -245,13 +373,19 @@ def _coarse_underlay_sharded(fine_ghosted, fine_coords, parent_slots,
                           check_rep=False)(fine_ghosted, fine_coords, parent_slots, coarse_ghosted)
 
 
-def _fill_ghosts_sharded(levels, cfg, mesh, gamma):
+def _fill_ghosts_sharded(levels, cfg, mesh, gamma, plans=None):
     """Sharded twin of ``driver._fill_ghosts``: per-level ghost-filled PRIMITIVE
     blocks, each level's ghosted array born SHARDED on the block axis (the big
     array), with only the smaller unghosted / parent gathers transient. Same-level
     fill is corner-exact (:func:`_fill_same_level_diag`); finer levels add the
     sparse coarse underlay; a physical BC (per-block, sharding-preserving) fills
-    domain-edge NaNs. Bit-identical to the replicated ``_fill_ghosts``."""
+    domain-edge NaNs. Bit-identical to the replicated ``_fill_ghosts``.
+
+    ``plans`` (optional, per level: ``(send_idx, recv_pos)`` or None) switches the
+    same-level fill to the SPARSE all_to_all exchange (Stage 2, O(surface) comm) —
+    built at (re)grid time by :func:`build_same_level_plan` and threaded through
+    the jitted step as arguments (never closure-captured: the plan VALUES change
+    at every regrid even when shapes don't, so a captured constant would go stale)."""
     from amr.halo import fill_ghost_physical
     D = mesh.devices.size
     ghosted = []
@@ -267,7 +401,11 @@ def _fill_ghosts_sharded(levels, cfg, mesh, gamma):
             ghosted.append(gw)
             continue
         stencil = _same_level_stencil(lvl.neighbors, cfg)
-        gw = _fill_same_level_diag(W, stencil, mesh, cfg)
+        if plans is not None and plans[L] is not None:
+            gw = _fill_same_level_sparse(W, stencil, plans[L][0], plans[L][1],
+                                         mesh, cfg)
+        else:
+            gw = _fill_same_level_diag(W, stencil, mesh, cfg)
         if L > 0:
             gw = _coarse_underlay_sharded(gw, lvl.coords, lvl.parent_slots,
                                           ghosted[L - 1], mesh, cfg, interp="linear")
@@ -319,6 +457,74 @@ def _block_bstates_vec(W_ghosted, dt, inv, cfg, *, gamma, limiter):
     return jax.vmap(one_block)(W_pad, inv)
 
 
+def _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev, ring, seam):
+    """Replace each block-block face flux with the SHARED seam Riemann flux built
+    from this block's reconstruction and its (possibly remote) neighbour's.
+
+    ring=False: all_gather the per-axis boundary states (O(total) memory/device).
+    ring=True : ppermute the state segments around the device ring; at each of
+    the n_dev steps couple only the faces whose neighbour slot lands in the held
+    segment. Peak = one segment (total/D). Bit-identical: each face's neighbour
+    lives in exactly one segment, so it is coupled exactly once (masked set);
+    faces with no real neighbour (mask False) keep the ghost-based flux, as in
+    the gather path."""
+    if not ring:
+        for d in range(ndim):
+            Ld, Rd = states[d]
+            Ld_g = jax.lax.all_gather(Ld, "blocks", axis=0, tiled=True)
+            Rd_g = jax.lax.all_gather(Rd, "blocks", axis=0, tiled=True)
+            npl, nmi = nbr_loc[:, 2 * d], nbr_loc[:, 2 * d + 1]
+            mpl, mmi = mask_loc[:, 2 * d], mask_loc[:, 2 * d + 1]
+            F = fluxes[d]
+            F = _set_boundary_face(F, d, -1, seam(Rd, Ld_g[npl], d), mpl, ndim)
+            F = _set_boundary_face(F, d, 0, seam(Rd_g[nmi], Ld, d), mmi, ndim)
+            fluxes[d] = F
+        return fluxes
+
+    bpd = states[0][0].shape[0]                      # blocks per device
+    dev = jax.lax.axis_index("blocks")
+    perm = [(i, (i + 1) % n_dev) for i in range(n_dev)]
+    cur = [states[d] for d in range(ndim)]           # held (Ld, Rd) segments
+    for k in range(n_dev):
+        seg_lo = ((dev - k) % n_dev) * bpd
+        for d in range(ndim):
+            Ld, Rd = states[d]                       # LOCAL blocks' own states
+            Ld_seg, Rd_seg = cur[d]                  # held remote segment
+            npl, nmi = nbr_loc[:, 2 * d], nbr_loc[:, 2 * d + 1]
+            mpl, mmi = mask_loc[:, 2 * d], mask_loc[:, 2 * d + 1]
+            lp = npl - seg_lo
+            lm = nmi - seg_lo
+            vp = mpl & (lp >= 0) & (lp < bpd)
+            vm = mmi & (lm >= 0) & (lm < bpd)
+            F = fluxes[d]
+            F = _set_boundary_face(F, d, -1,
+                                   seam(Rd, Ld_seg[jnp.clip(lp, 0, bpd - 1)], d),
+                                   vp, ndim)
+            F = _set_boundary_face(F, d, 0,
+                                   seam(Rd_seg[jnp.clip(lm, 0, bpd - 1)], Ld, d),
+                                   vm, ndim)
+            fluxes[d] = F
+        if k < n_dev - 1:
+            cur = [(jax.lax.ppermute(l, "blocks", perm),
+                    jax.lax.ppermute(r, "blocks", perm)) for (l, r) in cur]
+    return fluxes
+
+
+def _states_bytes(W_all, cfg):
+    """Rough aggregate size of the 2*ndim boundary-state planes (the seam
+    all_gather payload) for the ring-vs-gather decision."""
+    ndim, bs = cfg.ndim, cfg.block_shape
+    N, n_vars = W_all.shape[0], W_all.shape[1]
+    tot = 0
+    for d in range(ndim):
+        face = 1
+        for dd in range(ndim):
+            if dd != d:
+                face *= bs[dd]
+        tot += 2 * N * n_vars * face                  # Ld + Rd
+    return tot * W_all.dtype.itemsize
+
+
 def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *,
                              gamma, limiter=1, riemann_solver="hllc"):
     """Single sharded divergence over the concatenated all-levels block axis.
@@ -331,6 +537,8 @@ def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *
     blk = P("blocks", *([None] * (W_all.ndim - 1)))
     vec = P("blocks", None)
     out_specs = (blk, tuple(blk for _ in range(ndim)))
+    n_dev = int(mesh.shape["blocks"])
+    ring = _use_ring(n_dev, _states_bytes(W_all, cfg))
 
     def local(W_loc, inv_loc, nbr_loc, mask_loc):
         fluxes = list(_block_fluxes_vec(W_loc, dt, inv_loc, cfg, gamma=gamma,
@@ -341,16 +549,8 @@ def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *
             return jax.vmap(lambda x, y: riemann_face_flux(
                 x, y, axis=d, gamma=gamma, riemann_solver=riemann_solver))(a, b)
 
-        for d in range(ndim):
-            Ld, Rd = states[d]
-            Ld_g = jax.lax.all_gather(Ld, "blocks", axis=0, tiled=True)
-            Rd_g = jax.lax.all_gather(Rd, "blocks", axis=0, tiled=True)
-            npl, nmi = nbr_loc[:, 2 * d], nbr_loc[:, 2 * d + 1]
-            mpl, mmi = mask_loc[:, 2 * d], mask_loc[:, 2 * d + 1]
-            F = fluxes[d]
-            F = _set_boundary_face(F, d, -1, seam(Rd, Ld_g[npl], d), mpl, ndim)
-            F = _set_boundary_face(F, d, 0, seam(Rd_g[nmi], Ld, d), mmi, ndim)
-            fluxes[d] = F
+        fluxes = _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev,
+                              ring, seam)
 
         def dv(iv, *fs):
             return divergence_from_face_fluxes(fs, spatial_dim=ndim, **_inv_kw(iv, ndim))
@@ -412,6 +612,10 @@ def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
     inv = dict(inv_dx=1.0 / dx[0], inv_dy=1.0 / dx[1],
                inv_dz=1.0 / dx[2] if ndim == 3 else 1.0)
 
+    n_dev = int(mesh.shape["blocks"])
+    ring = _use_ring(n_dev, _states_bytes(W_ghosted, cfg))
+    sentinel = W_ghosted.shape[0] - 1                     # global NaN sentinel slot
+
     def local(W_loc, nbr_loc):
         fluxes = list(block_face_fluxes(W_loc, dt, level, cfg, gamma=gamma,
                                         limiter=limiter, riemann_solver=riemann_solver))
@@ -421,16 +625,8 @@ def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
             return jax.vmap(lambda x, y: riemann_face_flux(
                 x, y, axis=d, gamma=gamma, riemann_solver=riemann_solver))(a, b)
 
-        for d in range(ndim):
-            Ld, Rd = states[d]
-            Ld_g = jax.lax.all_gather(Ld, "blocks", axis=0, tiled=True)
-            Rd_g = jax.lax.all_gather(Rd, "blocks", axis=0, tiled=True)
-            sentinel = Ld_g.shape[0] - 1
-            npl, nmi = nbr_loc[:, 2 * d], nbr_loc[:, 2 * d + 1]
-            F = fluxes[d]
-            F = _set_boundary_face(F, d, -1, seam(Rd, Ld_g[npl], d), npl != sentinel, ndim)
-            F = _set_boundary_face(F, d, 0, seam(Rd_g[nmi], Ld, d), nmi != sentinel, ndim)
-            fluxes[d] = F
+        fluxes = _seam_couple(fluxes, states, nbr_loc, nbr_loc != sentinel,
+                              ndim, n_dev, ring, seam)
 
         dU = jax.vmap(lambda *fs: divergence_from_face_fluxes(fs, spatial_dim=ndim, **inv))(*fluxes)
         # Step 2: return the LOCAL (per-device) divergence + seam-corrected
@@ -455,7 +651,7 @@ def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
 
 
 def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
-                  riemann_solver="hllc", use_batched=True):
+                  riemann_solver="hllc", use_batched=True, halo_plans=None):
     """Synchronized multi-level step with the per-level divergence sharded across
     devices. Ghost fill is sharded (:func:`_fill_ghosts_sharded`); the divergence
     is a SINGLE batched kernel over all levels (:func:`divergence_batched_shmap`,
@@ -473,7 +669,7 @@ def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
     # Sharded ghost fill: each level's (big) ghosted array is born sharded on the
     # block axis instead of replicated -- this was ~half of the 6-level advance's
     # ~90 GB peak. Bit-identical to driver._fill_ghosts (validated 4xA100).
-    ghosted = _fill_ghosts_sharded(hierarchy, cfg, mesh, gamma)
+    ghosted = _fill_ghosts_sharded(hierarchy, cfg, mesh, gamma, plans=halo_plans)
     new_data = []
     fluxes = []
     if use_batched:
@@ -635,6 +831,9 @@ def advance_level_shmap(data, neighbors, mesh, dt, level, cfg, *,
     inv = dict(inv_dx=1.0 / dx[0], inv_dy=1.0 / dx[1],
                inv_dz=1.0 / dx[2] if ndim == 3 else 1.0)
 
+    # NOTE: test-only legacy kernel (test_amr_shard level-step); the production
+    # paths are advance_shmap/advance_subcycle_shmap, whose gathers are all
+    # ring-capable (_use_ring). This one keeps the simple O(total) all_gather.
     def local(data_loc, nbr_loc):
         data_g = jax.lax.all_gather(data_loc, "blocks", axis=0, tiled=True)   # global blocks
         Wg = cons_to_prim_blocks(data_g, gamma)
@@ -664,6 +863,58 @@ def advance_level_shmap(data, neighbors, mesh, dt, level, cfg, *,
 
     return _shard_map(local, mesh=mesh, in_specs=(data_spec, nbr_spec),
                       out_specs=data_spec)(data, neighbors)
+
+
+def _preserve_sharded(new_data, old_slot, old_data, mesh):
+    """Sharded twin of :func:`amr.blocks.preserve_unaltered`: copy matched OLD
+    block data (``old_slot >= 0``) into the new level, with both data arrays
+    sharded on the block axis. gather mode replicates ``old_data`` transiently
+    (the regrid's last big transient); ring mode ppermutes the old segments so
+    the peak is one segment (old/D). Bit-identical: each new slot's source lives
+    in exactly one segment (masked copy); unmatched slots keep ``new_data``."""
+    n_dev = int(mesh.shape["blocks"])
+    ring = _use_ring(n_dev, old_data.size * old_data.itemsize)
+    nd_spec = P("blocks", *([None] * (new_data.ndim - 1)))
+    os_spec = P("blocks")
+    od_spec = P("blocks", *([None] * (old_data.ndim - 1)))
+
+    if (new_data.shape[0] % n_dev) or (old_data.shape[0] % n_dev):
+        # capacity not divisible by the device count (pre-_pad_blocks bucket):
+        # keep the existing replicated-gather path.
+        from amr.blocks import preserve_unaltered
+        return jax.jit(preserve_unaltered)(new_data, old_slot, old_data)
+
+    def local_gather(nd_loc, os_loc, od_loc):
+        og = jax.lax.all_gather(od_loc, "blocks", axis=0, tiled=True)
+        keep = os_loc >= 0
+        got = og[jnp.where(keep, os_loc, 0)]
+        bc = keep.reshape((-1,) + (1,) * (nd_loc.ndim - 1))
+        return jnp.where(bc, got, nd_loc)
+
+    def local_ring(nd_loc, os_loc, od_loc):
+        bpd = od_loc.shape[0]
+        dev = jax.lax.axis_index("blocks")
+        perm = [(i, (i + 1) % n_dev) for i in range(n_dev)]
+        out, cur = nd_loc, od_loc
+        for k in range(n_dev):
+            seg_lo = ((dev - k) % n_dev) * bpd
+            li = os_loc - seg_lo
+            valid = (os_loc >= 0) & (li >= 0) & (li < bpd)
+            got = cur[jnp.clip(li, 0, bpd - 1)]
+            bc = valid.reshape((-1,) + (1,) * (out.ndim - 1))
+            out = jnp.where(bc, got, out)
+            if k < n_dev - 1:
+                cur = jax.lax.ppermute(cur, "blocks", perm)
+        return out
+
+    fn = local_ring if ring else local_gather
+    ins = (nd_spec, os_spec, od_spec)
+    try:
+        return _shard_map(fn, mesh=mesh, in_specs=ins, out_specs=nd_spec,
+                          check_vma=False)(new_data, old_slot, old_data)
+    except TypeError:
+        return _shard_map(fn, mesh=mesh, in_specs=ins, out_specs=nd_spec,
+                          check_rep=False)(new_data, old_slot, old_data)
 
 
 # ---------------------------------------------------------------------------
@@ -796,7 +1047,7 @@ def regrid_sharded(levels, cfg, mesh, *, thresholds, periodic=True, bucket=None,
         _mark(L, "build_children_sharded OK", cd)
         old_slot = _match_blocks_j(cc, na, old_child.coords, old_child.n_active, cfg.ndim)
         _mark(L, "match_blocks OK", old_slot)
-        cd = _preserve_j(cd, old_slot, old_child.data)
+        cd = _preserve_sharded(cd, old_slot, old_child.data, mesh)
         _mark(L, "preserve OK", cd)
         cd, cc = _pad_blocks(cd, cc, pad_to)
         nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=False)
