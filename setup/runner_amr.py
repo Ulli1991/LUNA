@@ -195,34 +195,66 @@ def run_simulation_amr(cfg, is_main_process=True):
 
     subcycle = bool(getattr(cfg, "amr_subcycle", False))
 
-    # --- Stage-2 sparse halo exchange (LUNA_AMR_HALO_MODE=sparse): build the
-    # per-level all_to_all plans on HOST from the (replicated, static-between-
-    # regrids) neighbour tables. Threaded through the jitted chunk as ARGUMENTS
-    # (a closure-captured plan would be baked as a jit constant and go stale
-    # after a same-shape regrid). v1 scope: synchronized sharded advance only.
-    _sparse_halo = (os.environ.get("LUNA_AMR_HALO_MODE", "") == "sparse"
-                    and shard_amr and not subcycle)
+    # --- Stage-2 sparse halo exchange: build the per-level + global-seam
+    # all_to_all plans on HOST from the (replicated, static-between-regrids)
+    # neighbour tables. Threaded through the jitted chunk as ARGUMENTS (a
+    # closure-captured plan would be baked as a jit constant and go stale after a
+    # same-shape regrid). All three exchanges (same-level, coarse-fine, seam) are
+    # bit-exact vs all_gather and the bench shows sparse strictly dominates, so it
+    # is the DEFAULT when sharded. LUNA_AMR_HALO_MODE = sparse(default)/gather/ring
+    # forces the choice; "gather"/"ring" fall back to the _use_ring path.
+    _halo_mode = os.environ.get("LUNA_AMR_HALO_MODE", "sparse")
+    _sparse_halo = (_halo_mode == "sparse" and shard_amr)
 
     def _build_halo_plans(h):
         if not _sparse_halo:
             return None
-        from amr.shard import _same_level_stencil, build_same_level_plan
-        plans = []
-        for lvl in h:
+        from amr.shard import (_same_level_stencil, build_same_level_plan,
+                               build_exchange_plan)
+        # per-level fill plans (same-level + coarse-fine)
+        level_plans = []
+        for L, lvl in enumerate(h):
             if lvl.data.shape[0] % n_dev:
-                plans.append(None)
+                level_plans.append(None)
                 continue
             st = np.asarray(_same_level_stencil(lvl.neighbors, acfg))
             si, rp, _K = build_same_level_plan(st, n_dev)
-            plans.append((_to_global(jnp.asarray(si), repl),
-                          _to_global(jnp.asarray(rp), repl)))
-        return tuple(plans)
+            # recv_pos passed REPLICATED; the fill's shard_map in_spec slices it
+            # per device (validated pattern -- do not reshard here).
+            same_plan = (_to_global(jnp.asarray(si), repl),
+                         _to_global(jnp.asarray(rp), repl))
+            cf_plan = None
+            if L > 0 and h[L - 1].data.shape[0] % n_dev == 0:
+                ps = np.asarray(lvl.parent_slots)[:, None]           # (n_fine, 1)
+                csi, crp, _cK = build_exchange_plan(ps, h[L - 1].data.shape[0], n_dev)
+                cf_plan = (_to_global(jnp.asarray(csi), repl),
+                           _to_global(jnp.asarray(crp[:, 0]), repl))
+            level_plans.append((same_plan, cf_plan))
+
+        # global batched-seam plan: replicate _batch_levels' neighbour
+        # concatenation on host (nbr + level-offset), then one exchange plan over
+        # the concatenated block axis. Cubic blocks only (stacked Ld/Rd payload) --
+        # acfg.block_shape is (block,)*ndim, always cubic.
+        seam_plan = None
+        all_shardable = all(lvl.data.shape[0] % n_dev == 0 for lvl in h)
+        cubic = len(set(acfg.block_shape)) == 1
+        if all_shardable and cubic:
+            parts, acc = [], 0
+            for lvl in h:
+                parts.append(np.asarray(lvl.neighbors) + acc)
+                acc += lvl.data.shape[0]
+            nbr_all = np.concatenate(parts, axis=0)                  # (N, 2ndim)
+            ssi, srp, _sK = build_exchange_plan(nbr_all, acc, n_dev)
+            seam_plan = (_to_global(jnp.asarray(ssi), repl),
+                         _to_global(jnp.asarray(srp), repl))
+        return (tuple(level_plans), seam_plan)
 
     if shard_amr:
         from amr import shard
         if subcycle:
             step = jax.jit(lambda lv, dt, hp=None: shard.advance_subcycle_shmap(
-                lv, dt, acfg, mesh, gamma=gamma, limiter=limiter, riemann_solver=riemann))
+                lv, dt, acfg, mesh, gamma=gamma, limiter=limiter, riemann_solver=riemann,
+                halo_plans=hp))
         else:
             step = jax.jit(lambda lv, dt, hp=None: shard.advance_shmap(
                 lv, dt, acfg, mesh, gamma=gamma, limiter=limiter, riemann_solver=riemann,
@@ -235,8 +267,10 @@ def run_simulation_amr(cfg, is_main_process=True):
             lv, dt, acfg, gamma=gamma, limiter=limiter, riemann_solver=riemann))
     halo_plans = _build_halo_plans(hierarchy)
     if _sparse_halo and is_main_process:
-        print("  halo exchange: SPARSE all_to_all plans "
-              f"({sum(p is not None for p in halo_plans)} levels)", flush=True)
+        _lp, _sp = halo_plans
+        print("  halo exchange: SPARSE all_to_all "
+              f"({sum(p is not None for p in _lp)} level-fill plans, "
+              f"seam={'on' if _sp is not None else 'gather'})", flush=True)
     # jitted: the eager version dispatched ~10 tiny ops per level on the host
     # every single step (a real per-step tax at thousands of blocks).
     dt_fn = jax.jit((lambda lv: driver.compute_dt_subcycle(lv, acfg, gamma=gamma, CFL=CFL)) if subcycle

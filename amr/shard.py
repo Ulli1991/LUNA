@@ -212,34 +212,39 @@ def _fill_same_level_diag(W, stencil_idx, mesh, cfg):
                           out_specs=out_spec, check_rep=False)(W, stencil_idx)
 
 
-def build_same_level_plan(stencil_np, n_dev):
-    """Host-side sparse exchange plan for the same-level ghost fill (Stage 2:
-    O(surface) communication). Topology is static between regrids, so we
-    precompute, for every ordered device pair (s -> r), the sorted unique list of
-    REMOTE source blocks r's ghost regions need from s. Local sources (most of
-    them, under the Morton-contiguous block partition) are read directly from
-    W_loc and never touch the wire -- that is what makes the traffic O(surface)
-    instead of the all_gather/ring's O(total).
+def build_exchange_plan(src_slots_np, n_src, n_dev):
+    """Host-side sparse exchange plan (Stage 2: O(surface) communication) for a
+    general block gather ``dst_row <- src_slots[dst_row, :]``. Topology is static
+    between regrids, so we precompute, for every ordered device pair (s -> r), the
+    sorted unique list of REMOTE source blocks r's rows need from s. Local sources
+    (most of them, under the Morton-contiguous partition) are read directly and
+    never touch the wire -- that is what makes the traffic O(surface) instead of
+    the all_gather/ring's O(total).
+
+    ``src_slots_np`` (n_rows, R) int -- global source slot per destination row and
+    stencil column. ``n_src`` -- size of the SOURCE block array (may differ from
+    n_rows, e.g. coarse-fine: rows = fine blocks, sources = coarse blocks). Both
+    n_rows and n_src must be divisible by n_dev (guaranteed by pad_to).
 
     Returns (send_idx, recv_pos, K):
-      send_idx (n_dev, n_dev, K) int32 -- sender-LOCAL slot indices; row [s, r]
+      send_idx (n_dev, n_dev, K) int32 -- sender-LOCAL source indices; row [s, r]
           is what s packs for r, padded with 0 (padded entries are never
           referenced by any recv_pos).
-      recv_pos (n_slots, 3**ndim) int32 -- for each block row and ghost region,
-          the flat position (s*K + j) of its source in the receiver's all_to_all
-          buffer, or -1 if the source is LOCAL to the owner.
-      K -- per-pair slot budget, padded to a pow2 bucket (bounds recompiles
-          across regrids the same way the capacity ladder does).
+      recv_pos (n_rows, R) int32 -- for each row and column, the flat position
+          (s*K + j) of its source in the receiver's all_to_all buffer, or -1 if
+          the source is LOCAL to the row's owner (read directly).
+      K -- per-pair slot budget, pow2 bucket (bounds recompiles across regrids).
     """
     import numpy as _np
-    n_slots, R = stencil_np.shape
-    bpd = n_slots // n_dev
-    row_dev = _np.arange(n_slots) // bpd
-    owner = stencil_np // bpd
+    n_rows, R = src_slots_np.shape
+    bpd_row = n_rows // n_dev
+    bpd_src = n_src // n_dev
+    row_dev = _np.arange(n_rows) // bpd_row
+    owner = src_slots_np // bpd_src
     uniq = {}                                        # (s, r) -> sorted unique globals
     kmax = 1
     for r in range(n_dev):
-        st = stencil_np[row_dev == r]                # (bpd, R)
+        st = src_slots_np[row_dev == r]              # (bpd_row, R)
         ow = owner[row_dev == r]
         for s in range(n_dev):
             if s == r:
@@ -249,10 +254,10 @@ def build_same_level_plan(stencil_np, n_dev):
             kmax = max(kmax, len(u))
     K = 1 << (kmax - 1).bit_length()                 # pow2 bucket
     send_idx = _np.zeros((n_dev, n_dev, K), _np.int32)
-    recv_pos = _np.full((n_slots, R), -1, _np.int32)
+    recv_pos = _np.full((n_rows, R), -1, _np.int32)
     for r in range(n_dev):
-        rows = slice(r * bpd, (r + 1) * bpd)
-        st = stencil_np[rows]
+        rows = slice(r * bpd_row, (r + 1) * bpd_row)
+        st = src_slots_np[rows]
         ow = owner[rows]
         for s in range(n_dev):
             if s == r:
@@ -260,13 +265,18 @@ def build_same_level_plan(stencil_np, n_dev):
             u = uniq[(s, r)]
             if len(u) == 0:
                 continue
-            send_idx[s, r, : len(u)] = u - s * bpd   # sender-local indices
+            send_idx[s, r, : len(u)] = u - s * bpd_src   # sender-local indices
             m = ow == s
             j = _np.searchsorted(u, st[m])
             block = recv_pos[rows]
             block[m] = s * K + j
             recv_pos[rows] = block
     return send_idx, recv_pos, K
+
+
+def build_same_level_plan(stencil_np, n_dev):
+    """Same-level ghost-fill plan: rows and sources are the SAME block array."""
+    return build_exchange_plan(stencil_np, stencil_np.shape[0], n_dev)
 
 
 def _fill_same_level_sparse(W, stencil_idx, send_idx, recv_pos, mesh, cfg):
@@ -323,11 +333,17 @@ def _fill_same_level_sparse(W, stencil_idx, send_idx, recv_pos, mesh, cfg):
 
 
 def _coarse_underlay_sharded(fine_ghosted, fine_coords, parent_slots,
-                             coarse_ghosted, mesh, cfg, interp="linear"):
+                             coarse_ghosted, mesh, cfg, interp="linear",
+                             plan=None):
     """Sparse coarse-fine ghost fill (``halo.fill_ghost_from_coarse_sparse``) with
     the fine blocks sharded. Each device all-gathers the (smaller) parent ghosted
     level, then runs the identical per-block gather+prolong for its local fine
-    blocks. Output sharded on the fine block axis."""
+    blocks. Output sharded on the fine block axis.
+
+    ``plan`` (``(send_idx, recv_pos)`` from :func:`build_exchange_plan` on
+    ``parent_slots[:, None]``): switches to the SPARSE all_to_all exchange -- pack
+    only the coarse parents peers need, one all_to_all, then each fine block reads
+    its single parent (local coarse or received) and prolongs. O(surface) comm."""
     from amr.halo import fill_ghost_from_coarse_sparse
     fg_spec = P("blocks", *([None] * (fine_ghosted.ndim - 1)))
     coord_spec = P("blocks", None)
@@ -335,6 +351,38 @@ def _coarse_underlay_sharded(fine_ghosted, fine_coords, parent_slots,
     cg_spec = P("blocks", *([None] * (coarse_ghosted.ndim - 1)))
     n_dev = int(mesh.shape["blocks"])
     ring = _use_ring(n_dev, coarse_ghosted.size * coarse_ghosted.itemsize)
+
+    if plan is not None:
+        send_idx, recv_pos = plan
+        K = send_idx.shape[-1]
+        rp_spec = P("blocks")                        # recv_pos is (n_fine,)
+
+        def local_sparse(fg_loc, coord_loc, ps_loc, cg_loc, rp_loc, send_tab):
+            bpd_c = cg_loc.shape[0]                   # coarse blocks per device
+            dev = jax.lax.axis_index("blocks")
+            buf = cg_loc[send_tab[dev].reshape(-1)]
+            got = jax.lax.all_to_all(buf, "blocks", 0, 0, tiled=True)
+            li = ps_loc - dev * bpd_c
+            is_loc = (li >= 0) & (li < bpd_c)
+            parent_local = cg_loc[jnp.clip(li, 0, bpd_c - 1)]
+            parent_remote = got[jnp.clip(rp_loc, 0, n_dev * K - 1)]
+            vv = is_loc.reshape((is_loc.shape[0],) + (1,) * (parent_local.ndim - 1))
+            parent_per_fine = jnp.where(vv, parent_local, parent_remote)
+            # reuse the exact prolong: parent_slots = arange -> each fine block's
+            # source is parent_per_fine[i], bit-identical to the gather path.
+            idx = jnp.arange(fg_loc.shape[0], dtype=jnp.int32)
+            return fill_ghost_from_coarse_sparse(fg_loc, coord_loc, idx,
+                                                 parent_per_fine, cfg, interp=interp)
+
+        ins = (fg_spec, coord_spec, ps_spec, cg_spec, rp_spec, P())
+        try:
+            return _shard_map(local_sparse, mesh=mesh, in_specs=ins, out_specs=fg_spec,
+                              check_vma=False)(fine_ghosted, fine_coords, parent_slots,
+                                               coarse_ghosted, recv_pos, send_idx)
+        except TypeError:
+            return _shard_map(local_sparse, mesh=mesh, in_specs=ins, out_specs=fg_spec,
+                              check_rep=False)(fine_ghosted, fine_coords, parent_slots,
+                                               coarse_ghosted, recv_pos, send_idx)
 
     def local_gather(fg_loc, coord_loc, ps_loc, cg_loc):
         cg = jax.lax.all_gather(cg_loc, "blocks", axis=0, tiled=True)  # global parent ghosted
@@ -381,11 +429,12 @@ def _fill_ghosts_sharded(levels, cfg, mesh, gamma, plans=None):
     sparse coarse underlay; a physical BC (per-block, sharding-preserving) fills
     domain-edge NaNs. Bit-identical to the replicated ``_fill_ghosts``.
 
-    ``plans`` (optional, per level: ``(send_idx, recv_pos)`` or None) switches the
-    same-level fill to the SPARSE all_to_all exchange (Stage 2, O(surface) comm) —
-    built at (re)grid time by :func:`build_same_level_plan` and threaded through
-    the jitted step as arguments (never closure-captured: the plan VALUES change
-    at every regrid even when shapes don't, so a captured constant would go stale)."""
+    ``plans`` (optional, per level ``(same_plan, cf_plan)`` or None; each sub-plan
+    ``(send_idx, recv_pos)`` or None) switches the same-level and/or coarse-fine
+    fill to the SPARSE all_to_all exchange (Stage 2, O(surface) comm) — built at
+    (re)grid time by :func:`build_exchange_plan` and threaded through the jitted
+    step as arguments (never closure-captured: the plan VALUES change at every
+    regrid even when shapes don't, so a captured constant would go stale)."""
     from amr.halo import fill_ghost_physical
     D = mesh.devices.size
     ghosted = []
@@ -400,15 +449,18 @@ def _fill_ghosts_sharded(levels, cfg, mesh, gamma, plans=None):
             gw = fill_ghost_physical(gw, W, cfg)
             ghosted.append(gw)
             continue
+        same_plan, cf_plan = (plans[L] if (plans is not None and plans[L] is not None)
+                              else (None, None))
         stencil = _same_level_stencil(lvl.neighbors, cfg)
-        if plans is not None and plans[L] is not None:
-            gw = _fill_same_level_sparse(W, stencil, plans[L][0], plans[L][1],
+        if same_plan is not None:
+            gw = _fill_same_level_sparse(W, stencil, same_plan[0], same_plan[1],
                                          mesh, cfg)
         else:
             gw = _fill_same_level_diag(W, stencil, mesh, cfg)
         if L > 0:
             gw = _coarse_underlay_sharded(gw, lvl.coords, lvl.parent_slots,
-                                          ghosted[L - 1], mesh, cfg, interp="linear")
+                                          ghosted[L - 1], mesh, cfg, interp="linear",
+                                          plan=cf_plan)
         gw = fill_ghost_physical(gw, W, cfg)
         ghosted.append(gw)
     return ghosted
@@ -457,9 +509,18 @@ def _block_bstates_vec(W_ghosted, dt, inv, cfg, *, gamma, limiter):
     return jax.vmap(one_block)(W_pad, inv)
 
 
-def _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev, ring, seam):
+def _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev, ring, seam,
+                 seam_send=None, seam_recv=None):
     """Replace each block-block face flux with the SHARED seam Riemann flux built
     from this block's reconstruction and its (possibly remote) neighbour's.
+
+    sparse (seam_send/seam_recv given): O(surface) all_to_all. Each block's
+    payload stacks its per-axis boundary states in neighbour-column order
+    (slot 2d = Ld_d wanted by a -side neighbour via col 2d, slot 2d+1 = Rd_d
+    wanted by a +side neighbour via col 2d+1); one all_to_all delivers the
+    remote payloads, and each face reads its neighbour's plane local-or-received.
+    Requires cubic blocks (equal per-axis face shape to stack) -- the runner only
+    builds the plan then. Bit-identical to the gather path.
 
     ring=False: all_gather the per-axis boundary states (O(total) memory/device).
     ring=True : ppermute the state segments around the device ring; at each of
@@ -468,6 +529,36 @@ def _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev, ring, seam):
     lives in exactly one segment, so it is coupled exactly once (masked set);
     faces with no real neighbour (mask False) keep the ghost-based flux, as in
     the gather path."""
+    if seam_send is not None:
+        bpd = states[0][0].shape[0]
+        dev = jax.lax.axis_index("blocks")
+        K = seam_send.shape[-1]
+        planes = []
+        for d in range(ndim):                        # slot 2d=Ld_d, 2d+1=Rd_d
+            Ld, Rd = states[d]
+            planes.append(Ld)
+            planes.append(Rd)
+        payload = jnp.stack(planes, axis=1)          # (bpd, 2ndim, n_vars, *face)
+        buf = payload[seam_send[dev].reshape(-1)]
+        got = jax.lax.all_to_all(buf, "blocks", 0, 0, tiled=True)
+
+        def nbr_state(c):                            # neighbour's plane for column c
+            li = nbr_loc[:, c] - dev * bpd
+            is_loc = (li >= 0) & (li < bpd)
+            loc = payload[jnp.clip(li, 0, bpd - 1)][:, c]
+            rem = got[jnp.clip(seam_recv[:, c], 0, n_dev * K - 1)][:, c]
+            vv = is_loc.reshape((is_loc.shape[0],) + (1,) * (loc.ndim - 1))
+            return jnp.where(vv, loc, rem)
+
+        for d in range(ndim):
+            Ld, Rd = states[d]
+            mpl, mmi = mask_loc[:, 2 * d], mask_loc[:, 2 * d + 1]
+            F = fluxes[d]
+            F = _set_boundary_face(F, d, -1, seam(Rd, nbr_state(2 * d), d), mpl, ndim)
+            F = _set_boundary_face(F, d, 0, seam(nbr_state(2 * d + 1), Ld, d), mmi, ndim)
+            fluxes[d] = F
+        return fluxes
+
     if not ring:
         for d in range(ndim):
             Ld, Rd = states[d]
@@ -526,21 +617,27 @@ def _states_bytes(W_all, cfg):
 
 
 def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *,
-                             gamma, limiter=1, riemann_solver="hllc"):
+                             gamma, limiter=1, riemann_solver="hllc", seam_plan=None):
     """Single sharded divergence over the concatenated all-levels block axis.
     ``W_all`` (N, n_vars, *ghosted) is every level's ghosted blocks stacked;
     ``inv_all`` (N, ndim) the per-block 1/dx; ``nbr_all`` (N, 2*ndim) GLOBAL
     same-level neighbour slots (invalid -> that level's NaN sentinel slot);
     ``mask_all`` (N, 2*ndim) bool marks real neighbours. Returns (dU_all, fluxes)
-    sharded on the block axis. Bit-matches the per-level ``divergence_shmap``."""
+    sharded on the block axis. Bit-matches the per-level ``divergence_shmap``.
+
+    ``seam_plan`` (``(send_idx, recv_pos)`` from :func:`build_exchange_plan` on
+    ``nbr_all``): the seam boundary-state coupling uses the SPARSE all_to_all
+    (O(surface) comm) instead of the all_gather/ring."""
     ndim = cfg.ndim
     blk = P("blocks", *([None] * (W_all.ndim - 1)))
     vec = P("blocks", None)
     out_specs = (blk, tuple(blk for _ in range(ndim)))
     n_dev = int(mesh.shape["blocks"])
     ring = _use_ring(n_dev, _states_bytes(W_all, cfg))
+    sparse = seam_plan is not None
+    seam_send = seam_plan[0] if sparse else None
 
-    def local(W_loc, inv_loc, nbr_loc, mask_loc):
+    def local(W_loc, inv_loc, nbr_loc, mask_loc, seam_recv, seam_send_tab):
         fluxes = list(_block_fluxes_vec(W_loc, dt, inv_loc, cfg, gamma=gamma,
                                         limiter=limiter, riemann_solver=riemann_solver))
         states = _block_bstates_vec(W_loc, dt, inv_loc, cfg, gamma=gamma, limiter=limiter)
@@ -550,7 +647,9 @@ def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *
                 x, y, axis=d, gamma=gamma, riemann_solver=riemann_solver))(a, b)
 
         fluxes = _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev,
-                              ring, seam)
+                              ring, seam,
+                              seam_send=(seam_send_tab if sparse else None),
+                              seam_recv=(seam_recv if sparse else None))
 
         def dv(iv, *fs):
             return divergence_from_face_fluxes(fs, spatial_dim=ndim, **_inv_kw(iv, ndim))
@@ -558,13 +657,18 @@ def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *
         dU = jax.vmap(dv)(inv_loc, *fluxes)
         return dU, tuple(fluxes)
 
-    ins = (blk, vec, vec, vec)
+    # seam_recv sharded like nbr_all; seam_send replicated. Dummies when dense so
+    # the shard_map signature is uniform (never read unless sparse).
+    seam_recv_in = nbr_all if not sparse else seam_plan[1]
+    seam_send_in = jnp.zeros((1,), jnp.int32) if not sparse else seam_send
+    ins = (blk, vec, vec, vec, vec, P())
+    args = (W_all, inv_all, nbr_all, mask_all, seam_recv_in, seam_send_in)
     try:
         return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=out_specs,
-                          check_vma=False)(W_all, inv_all, nbr_all, mask_all)
+                          check_vma=False)(*args)
     except TypeError:
         return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=out_specs,
-                          check_rep=False)(W_all, inv_all, nbr_all, mask_all)
+                          check_rep=False)(*args)
 
 
 def _batch_levels(ghosted, hierarchy, cfg):
@@ -666,10 +770,14 @@ def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
 
     repl = NamedSharding(mesh, P())
 
+    # halo_plans = (level_plans, seam_plan): per-level fill plans + the global
+    # batched-seam plan. None -> gather/ring path everywhere.
+    level_plans, seam_plan = (halo_plans if halo_plans is not None else (None, None))
+
     # Sharded ghost fill: each level's (big) ghosted array is born sharded on the
     # block axis instead of replicated -- this was ~half of the 6-level advance's
     # ~90 GB peak. Bit-identical to driver._fill_ghosts (validated 4xA100).
-    ghosted = _fill_ghosts_sharded(hierarchy, cfg, mesh, gamma, plans=halo_plans)
+    ghosted = _fill_ghosts_sharded(hierarchy, cfg, mesh, gamma, plans=level_plans)
     new_data = []
     fluxes = []
     if use_batched:
@@ -678,7 +786,8 @@ def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
         W_all, inv_all, nbr_all, mask_all, offsets = _batch_levels(ghosted, hierarchy, cfg)
         dU_all, fl_all = divergence_batched_shmap(
             W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg,
-            gamma=gamma, limiter=limiter, riemann_solver=riemann_solver)
+            gamma=gamma, limiter=limiter, riemann_solver=riemann_solver,
+            seam_plan=seam_plan)
         for L, lvl in enumerate(hierarchy):
             nL = ghosted[L].shape[0]
             s = offsets[L]
@@ -745,7 +854,7 @@ def _reshard_blocks(datas, mesh):
 
 def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
                            gamma, limiter=1, riemann_solver="hllc",
-                           gravity=None, reflux=True, t0=0.0):
+                           gravity=None, reflux=True, t0=0.0, halo_plans=None):
     """Subcycled (Berger-Oliger) step with each per-level divergence sharded via
     :func:`divergence_shmap`. Reuses :func:`amr.driver.advance_subcycle`'s
     recursion + time-interpolated coarse ghosts, swapping the divergence kernel
@@ -765,6 +874,9 @@ def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
     from amr.reflux import apply_reflux_blocks
 
     repl = NamedSharding(mesh, P())
+    # halo_plans = (level_plans, seam_plan); the subcycle uses the per-level
+    # divergence (its seam still gathers), so only level_plans is consumed here.
+    level_plans = (halo_plans[0] if halo_plans is not None else None)
 
     def div(gw, neighbors, level, dt_l, want_flux=False):
         out = divergence_shmap(gw, neighbors, mesh, dt_l, level, cfg,
@@ -790,11 +902,18 @@ def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
         from amr.halo import fill_ghost_physical
         lvl = hierarchy[L]
         W = cons_to_prim_blocks(data, gamma)
+        same_plan, cf_plan = (level_plans[L] if (level_plans is not None
+                              and level_plans[L] is not None) else (None, None))
         stencil = _same_level_stencil(lvl.neighbors, cfg)
-        gw = _fill_same_level_diag(W, stencil, mesh, cfg)
+        if same_plan is not None:
+            gw = _fill_same_level_sparse(W, stencil, same_plan[0], same_plan[1],
+                                         mesh, cfg)
+        else:
+            gw = _fill_same_level_diag(W, stencil, mesh, cfg)
         if L > 0:
             gw = _coarse_underlay_sharded(gw, lvl.coords, lvl.parent_slots,
-                                          parent_gprim, mesh, cfg, interp="const")
+                                          parent_gprim, mesh, cfg, interp="const",
+                                          plan=cf_plan)
         gw = fill_ghost_physical(gw, W, cfg)   # domain-edge BC (no-op if periodic)
         return gw
 
