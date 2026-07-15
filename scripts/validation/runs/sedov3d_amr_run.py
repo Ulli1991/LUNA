@@ -31,7 +31,7 @@ cfg = replace(
     amr_block_shape=16,
     amr_levels=LEVELS,
     amr_criterion=os.environ.get("AMR_CRITERION", "pressure"),
-    amr_subcycle=False,
+    amr_subcycle=os.environ.get("AMR_SUBCYCLE", "0") == "1",
     amr_regrid_interval=int(os.environ.get("AMR_REGRID", "2")),
     amr_max_blocks=int(os.environ.get("AMR_MAX_BLOCKS", "0")),
     amr_dense_snapshots=os.environ.get("AMR_DENSE_SNAP", "1") == "1",

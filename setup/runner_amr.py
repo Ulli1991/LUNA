@@ -281,12 +281,15 @@ def run_simulation_amr(cfg, is_main_process=True):
 
     # snapshot output config: write the COMPOSITE at the finest resolution, so
     # the writer's dx / dims metadata describe the finest uniform grid.
-    finest = cfg.Nx * acfg.refinement_ratio ** levels
+    # PER-AXIS: composite_to_dense scales each base_grid axis by r**levels --
+    # using the x-based value for Ny/Nz silently pads non-cubic domains with
+    # garbage (caught by the Sod AMR benchmark, base 64x16x16).
+    _rl = acfg.refinement_ratio ** levels
     scfg = copy.copy(cfg)
-    scfg.Nx = finest
-    scfg.Ny = finest
+    scfg.Nx = cfg.Nx * _rl
+    scfg.Ny = cfg.Ny * _rl
     if ndim == 3:
-        scfg.Nz = finest
+        scfg.Nz = cfg.Nz * _rl
 
     # Dense-composite snapshots materialize the FULL finest-resolution cube:
     # (Nx * 2**levels)**ndim * n_vars * 8 B -- 40 GiB at 32^3 + 5 levels,

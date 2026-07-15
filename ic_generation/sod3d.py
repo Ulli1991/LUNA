@@ -116,3 +116,25 @@ def sod_shock_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     # Conservative vars [rho, rho*vx, rho*vy, rho*vz, E]
     U = jnp.stack([rho, rho * vx, rho * vy, rho * vz, E], axis=0)
     return U
+
+
+def sod_shock_3d_amr(cfg, x_slice=None, y_slice=None, z_slice=None):
+    """Planar Sod shock tube on the grid AS CONFIGURED (no Ny/Nz mutation) --
+    the AMR benchmark variant: cfg.Ny/Nz must be block-shape multiples, so the
+    auto-cubic resizing of :func:`sod_shock_3d` is skipped. Discontinuity at
+    x = 0.5*Lx; classic states L=(1,0,1), R=(0.125,0,0.1)."""
+    import jax.numpy as jnp
+    Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
+    Lx, gamma = cfg.Lx, cfg.gamma
+    xs, xe = x_slice if x_slice is not None else (0, Nx)
+    ys, ye = y_slice if y_slice is not None else (0, Ny)
+    zs, ze = z_slice if z_slice is not None else (0, Nz)
+    x = (jnp.arange(xs, xe) + 0.5) * (Lx / Nx)
+    left = (x < 0.5 * Lx)[:, None, None]
+    ny, nz = ye - ys, ze - zs
+    rho = jnp.where(left, 1.0, 0.125) * jnp.ones((xe - xs, ny, nz))
+    p = jnp.where(left, 1.0, 0.1) * jnp.ones((xe - xs, ny, nz))
+    U = jnp.zeros((5, xe - xs, ny, nz))
+    U = U.at[0].set(rho)
+    U = U.at[4].set(p / (gamma - 1.0))
+    return U

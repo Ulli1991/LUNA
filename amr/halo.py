@@ -91,26 +91,69 @@ def fill_ghost_same_level(blk_data, neighbors, cfg):
 _PAD_MODE = {0: "wrap", 1: "edge", 2: "edge"}
 
 
-def fill_ghost_physical(ghosted, blk_data, cfg):
+def fill_ghost_physical(ghosted, blk_data, cfg, coords=None, level=0):
     """Fill remaining NaN ghosts at the domain edge with a physical BC.
 
     After the same-level and coarse-parent fills, the only ghosts still NaN are
     domain-boundary faces/edges/corners of non-periodic runs (no same-level
     neighbour, no coarse parent). LUNA's UNSPLIT MUSCL-Hancock reads these, so
     leaving them NaN corrupts the boundary blocks (and, via NaN-through-limiter,
-    the interior). We fill them by extending each block's own interior
-    (zero-gradient / outflow / Neumann) — exact for ``boundary==1`` and used as a
-    Neumann approximation for reflective (``boundary==2``; proper velocity sign
-    flips are layered later). Periodic runs (``boundary==0``) never reach a NaN
-    domain ghost — their same-level halo wraps — so this is a no-op there.
+    the interior). We fill them by zero-gradient extension of the ALREADY-FILLED
+    ghosted array, axis by axis (face ghosts extend the interior; edge/corner
+    ghosts then extend the neighbour-filled face ghosts) — exact outflow for
+    ``boundary==1`` and used as a Neumann approximation for reflective
+    (``boundary==2``; proper velocity sign flips are layered later). Periodic
+    runs (``boundary==0``) never reach a NaN domain ghost — their same-level
+    halo wraps — so this is a no-op there.
     """
     if cfg.boundary == 0:
         return ghosted
     g = cfg.n_ghost
     ndim = cfg.ndim
-    pad = [(0, 0), (0, 0)] + [(g, g)] * ndim
-    edge = jnp.pad(blk_data, pad, mode=_PAD_MODE.get(cfg.boundary, "edge"))
-    return jnp.where(jnp.isnan(ghosted), edge, ghosted)
+    # Sequential per-axis zero-gradient extension of the GHOSTED array (not an
+    # edge-pad of the block's own interior): each axis pass replaces NaN ghost
+    # layers with the nearest already-filled layer along that axis, so edge and
+    # corner ghosts inherit from the same-level-neighbour-filled face ghosts.
+    # The old blk_data edge-pad gave corner ghosts the block's OWN corner cell
+    # even when a face neighbour exists there -- the wrong upstream position --
+    # which broke planar symmetry at boundary-block corners and CREATED mass
+    # (caught by the Sod AMR benchmark: outflow grew drho/rho ~ 5e-3 while
+    # periodic stayed exact; max_y_std 3.6e-3 vs 4e-16).
+    #
+    # ``coords``/``level`` (optional): fill ONLY true DOMAIN-edge bands (block at
+    # the level's domain boundary on that side). This lets the caller run the
+    # physical fill BEFORE the coarse-fine underlay: domain-wall ghosts of fine
+    # blocks must be the zero-gradient extension of the FINE data -- the underlay
+    # otherwise fills them with coarse-prolonged values whose interpolation error
+    # near steep features injects a fake wall-normal gradient (v_perp kick ->
+    # boundary layer -> the levels>=2 Sod mass leak, seeded at ULP scale at the
+    # C/F-edge x wall corner and amplified by the flow).
+    out = ghosted
+    dom = None
+    if coords is not None:
+        r = cfg.refinement_ratio
+        dom = []
+        for d in range(ndim):
+            nb_d = (cfg.base_grid[d] // cfg.block_shape[d]) * (r ** level)
+            dom.append((coords[:, d] == 0, coords[:, d] == nb_d - 1))
+    for d in range(ndim):
+        ax = 2 + d
+        n = out.shape[ax]
+        lo = jax.lax.slice_in_dim(out, g, g + 1, axis=ax)
+        hi = jax.lax.slice_in_dim(out, n - g - 1, n - g, axis=ax)
+        lo_band = jax.lax.slice_in_dim(out, 0, g, axis=ax)
+        hi_band = jax.lax.slice_in_dim(out, n - g, n, axis=ax)
+        mid = jax.lax.slice_in_dim(out, g, n - g, axis=ax)
+        lo_m = jnp.isnan(lo_band)
+        hi_m = jnp.isnan(hi_band)
+        if dom is not None:
+            sh_lo = (lo_band.shape[0],) + (1,) * (lo_band.ndim - 1)
+            lo_m = lo_m & dom[d][0].reshape(sh_lo)
+            hi_m = hi_m & dom[d][1].reshape(sh_lo)
+        lo_fill = jnp.where(lo_m, jnp.broadcast_to(lo, lo_band.shape), lo_band)
+        hi_fill = jnp.where(hi_m, jnp.broadcast_to(hi, hi_band.shape), hi_band)
+        out = jnp.concatenate([lo_fill, mid, hi_fill], axis=ax)
+    return out
 
 
 def fill_ghost_from_coarse(fine_ghosted, fine_coords, parent_field, level, cfg,

@@ -21,7 +21,7 @@ from .rotation_slotted_disk import rotation_slotted_disk
 from .sedov3d import sedov_blast_3d
 from .shu_osher import shu_osher
 from .sod import sod_shock
-from .sod3d import sod_shock_3d
+from .sod3d import sod_shock_3d, sod_shock_3d_amr
 from .solar_convection_2d import (
     solar_convection_2d,
     solar_convection_2d_equilibrium,
@@ -65,6 +65,7 @@ _IC_REGISTRY = {
     "Disc-Planet-2D": (disc_planet_2d, 2),
     # 3D
     "Sod-Shock-3D": (sod_shock_3d, 3),
+    "Sod-Shock-3D-AMR": (sod_shock_3d_amr, 3),
     "Sedov-Blast-3D": (sedov_blast_3d, 3),
     "Kelvin-Helmholtz-3D": (kelvin_helmholtz_3d, 3),
     "Soundwave-3D": (soundwave_3d, 3),

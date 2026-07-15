@@ -380,28 +380,60 @@ def flag_static(parent, cfg, level):
     return inside & active
 
 
+def _nested_flags(flags, parent, cfg, level):
+    """Enforce PROPER 2:1 NESTING: a level-``level`` block on the INTERIOR edge
+    of its level's patch (a missing same-level face neighbour that is NOT a
+    physical domain face) may not host children. Otherwise the child patch edge
+    coincides with the parent patch edge — a level-skip C/F face whose
+    Berger-Colella reflux target (the parent's same-level neighbour) does not
+    exist, so the flux correction is silently dropped and mass leaks (Sod AMR
+    benchmark: exponential dM once the shock approached the flush edge at
+    x=0.75). Level 0 tiles the domain, so every L0 block is interior."""
+    if level == 0:
+        return flags
+    sentinel = parent.neighbors.shape[0] - 1
+    ok = jnp.ones_like(flags)
+    for d in range(cfg.ndim):
+        hi_ok = parent.neighbors[:, 2 * d] != sentinel
+        lo_ok = parent.neighbors[:, 2 * d + 1] != sentinel
+        if cfg.boundary != 0:
+            # non-periodic: a physical domain edge is exempt (no reflux exists
+            # across it, flush is legal there). In PERIODIC runs coords 0/max
+            # WRAP -- they are interior C/F faces, and exempting them re-creates
+            # the level-skip face at the wrap (bug: periodic L2 Sod collapse).
+            nb_d = ((cfg.base_grid[d] // cfg.block_shape[d])
+                    * (cfg.refinement_ratio ** level))
+            hi_ok = hi_ok | (parent.coords[:, d] == nb_d - 1)
+            lo_ok = lo_ok | (parent.coords[:, d] == 0)
+        ok = ok & hi_ok & lo_ok
+    return flags & ok
+
+
 def _flag_blocks(parent, cfg, threshold, level, criterion, rho_ref=None):
     """Dispatch to the chosen refinement criterion (used by build_hierarchy/regrid).
     ``rho_ref`` (level-0 domain mean density) feeds the overdensity gate of the
     combined pressure+density criterion and the quasi-Lagrangian overdensity
-    criterion."""
+    criterion. Flags are post-filtered by :func:`_nested_flags` (proper 2:1
+    nesting -- no child patch flush against an interior parent-patch edge)."""
     if criterion == "overdensity":
-        return flag_overdensity(parent.data, parent.neighbors, parent.n_active,
-                                cfg, threshold, rho_ref=rho_ref)
-    if criterion == "vorticity":
-        return flag_vorticity(parent.data, parent.neighbors, parent.n_active, cfg, threshold, level)
-    if criterion == "pressure":
-        return flag_pressure_gradient(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
-    if criterion in ("pressure_density", "prho"):
-        return flag_pressure_density(parent.data, parent.neighbors, parent.n_active, cfg, threshold,
-                                     rho_ref=rho_ref)
-    if criterion == "jeans":
-        return flag_jeans(parent.data, parent.neighbors, parent.n_active, cfg, threshold, level)
-    if criterion == "lohner":
-        return flag_lohner(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
-    if criterion == "static":
-        return flag_static(parent, cfg, level)
-    return flag_density_gradient(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
+        flags = flag_overdensity(parent.data, parent.neighbors, parent.n_active,
+                                 cfg, threshold, rho_ref=rho_ref)
+    elif criterion == "vorticity":
+        flags = flag_vorticity(parent.data, parent.neighbors, parent.n_active, cfg, threshold, level)
+    elif criterion == "pressure":
+        flags = flag_pressure_gradient(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
+    elif criterion in ("pressure_density", "prho"):
+        flags = flag_pressure_density(parent.data, parent.neighbors, parent.n_active, cfg, threshold,
+                                      rho_ref=rho_ref)
+    elif criterion == "jeans":
+        flags = flag_jeans(parent.data, parent.neighbors, parent.n_active, cfg, threshold, level)
+    elif criterion == "lohner":
+        flags = flag_lohner(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
+    elif criterion == "static":
+        flags = flag_static(parent, cfg, level)
+    else:
+        flags = flag_density_gradient(parent.data, parent.neighbors, parent.n_active, cfg, threshold)
+    return _nested_flags(flags, parent, cfg, level)
 
 
 # jitted flag dispatch (eager: ~250 ms/regrid of tiny-op dispatch); threshold and
@@ -572,6 +604,11 @@ def _fill_ghosts(levels, cfg, gamma):
     for L, lvl in enumerate(levels):
         W = cons_to_prim_blocks(lvl.data, gamma)
         gw = fill_ghost_same_level(W, lvl.neighbors, cfg)
+        # physical DOMAIN bands first (zero-gradient of the FINE data, coords-
+        # gated): the coarse underlay must never fill wall ghosts -- its
+        # interpolation error near steep features injects a fake wall-normal
+        # gradient (the levels>=2 conservation leak).
+        gw = fill_ghost_physical(gw, W, cfg, coords=lvl.coords, level=L)
         if L > 0:
             gw = fill_ghost_from_coarse_sparse(gw, lvl.coords, lvl.parent_slots, ghosted[L - 1], cfg,
                                                interp="linear")
@@ -626,7 +663,7 @@ def advance(levels, dt, cfg, *, gamma, limiter=1, riemann_solver="hllc",
         dU, fl = conservative_block_divergence(
             ghosted[L], dt, L, cfg, lvl.neighbors,
             gamma=gamma, limiter=limiter, riemann_solver=riemann_solver,
-            return_face_fluxes=True,
+            return_face_fluxes=True, coords=lvl.coords,
         )
         new_data.append(lvl.data + dt * dU)
         fluxes.append(fl)
@@ -696,7 +733,8 @@ def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="
             return conservative_block_divergence(
                 gw, dt_l, level, cfg, neighbors,
                 gamma=gamma, limiter=limiter, riemann_solver=riemann_solver,
-                return_face_fluxes=want_flux)
+                return_face_fluxes=want_flux,
+                coords=levels[level].coords)
 
     def ghost_prim(L, data, parent_gprim):
         """Level-L fully-ghosted primitives: same-level halo + (L>0) the

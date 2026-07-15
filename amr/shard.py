@@ -457,6 +457,8 @@ def _fill_ghosts_sharded(levels, cfg, mesh, gamma, plans=None):
                                          mesh, cfg)
         else:
             gw = _fill_same_level_diag(W, stencil, mesh, cfg)
+        # physical DOMAIN bands BEFORE the coarse underlay (see driver._fill_ghosts)
+        gw = fill_ghost_physical(gw, W, cfg, coords=lvl.coords, level=L)
         if L > 0:
             gw = _coarse_underlay_sharded(gw, lvl.coords, lvl.parent_slots,
                                           ghosted[L - 1], mesh, cfg, interp="linear",
@@ -510,7 +512,7 @@ def _block_bstates_vec(W_ghosted, dt, inv, cfg, *, gamma, limiter):
 
 
 def _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev, ring, seam,
-                 seam_send=None, seam_recv=None):
+                 seam_send=None, seam_recv=None, dom_loc=None):
     """Replace each block-block face flux with the SHARED seam Riemann flux built
     from this block's reconstruction and its (possibly remote) neighbour's.
 
@@ -528,7 +530,24 @@ def _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev, ring, seam,
     segment. Peak = one segment (total/D). Bit-identical: each face's neighbour
     lives in exactly one segment, so it is coupled exactly once (masked set);
     faces with no real neighbour (mask False) keep the ghost-based flux, as in
-    the gather path."""
+    the gather path.
+
+    ``dom_loc`` (Nloc, 2*ndim) marks PHYSICAL (outflow) domain faces: their flux
+    is replaced by the consistent zero-gradient flux f(pred) = seam(own, own)
+    (see conservative_block_divergence -- the raw ghost-based flux pairs a
+    predicted interior state with an un-predicted ghost copy and pumps mass
+    through the wall). Applied AFTER the seam coupling, before returning."""
+
+    def _domain_faces(fluxes):
+        if dom_loc is None:
+            return fluxes
+        for d in range(ndim):
+            Ld, Rd = states[d]
+            F = fluxes[d]
+            F = _set_boundary_face(F, d, -1, seam(Rd, Rd, d), dom_loc[:, 2 * d], ndim)
+            F = _set_boundary_face(F, d, 0, seam(Ld, Ld, d), dom_loc[:, 2 * d + 1], ndim)
+            fluxes[d] = F
+        return fluxes
     if seam_send is not None:
         bpd = states[0][0].shape[0]
         dev = jax.lax.axis_index("blocks")
@@ -557,7 +576,7 @@ def _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev, ring, seam,
             F = _set_boundary_face(F, d, -1, seam(Rd, nbr_state(2 * d), d), mpl, ndim)
             F = _set_boundary_face(F, d, 0, seam(nbr_state(2 * d + 1), Ld, d), mmi, ndim)
             fluxes[d] = F
-        return fluxes
+        return _domain_faces(fluxes)
 
     if not ring:
         for d in range(ndim):
@@ -570,7 +589,7 @@ def _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev, ring, seam,
             F = _set_boundary_face(F, d, -1, seam(Rd, Ld_g[npl], d), mpl, ndim)
             F = _set_boundary_face(F, d, 0, seam(Rd_g[nmi], Ld, d), mmi, ndim)
             fluxes[d] = F
-        return fluxes
+        return _domain_faces(fluxes)
 
     bpd = states[0][0].shape[0]                      # blocks per device
     dev = jax.lax.axis_index("blocks")
@@ -598,7 +617,7 @@ def _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev, ring, seam,
         if k < n_dev - 1:
             cur = [(jax.lax.ppermute(l, "blocks", perm),
                     jax.lax.ppermute(r, "blocks", perm)) for (l, r) in cur]
-    return fluxes
+    return _domain_faces(fluxes)
 
 
 def _states_bytes(W_all, cfg):
@@ -617,7 +636,8 @@ def _states_bytes(W_all, cfg):
 
 
 def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *,
-                             gamma, limiter=1, riemann_solver="hllc", seam_plan=None):
+                             gamma, limiter=1, riemann_solver="hllc", seam_plan=None,
+                             dom_all=None):
     """Single sharded divergence over the concatenated all-levels block axis.
     ``W_all`` (N, n_vars, *ghosted) is every level's ghosted blocks stacked;
     ``inv_all`` (N, ndim) the per-block 1/dx; ``nbr_all`` (N, 2*ndim) GLOBAL
@@ -637,7 +657,7 @@ def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *
     sparse = seam_plan is not None
     seam_send = seam_plan[0] if sparse else None
 
-    def local(W_loc, inv_loc, nbr_loc, mask_loc, seam_recv, seam_send_tab):
+    def local(W_loc, inv_loc, nbr_loc, mask_loc, dom_loc, seam_recv, seam_send_tab):
         fluxes = list(_block_fluxes_vec(W_loc, dt, inv_loc, cfg, gamma=gamma,
                                         limiter=limiter, riemann_solver=riemann_solver))
         states = _block_bstates_vec(W_loc, dt, inv_loc, cfg, gamma=gamma, limiter=limiter)
@@ -649,7 +669,8 @@ def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *
         fluxes = _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev,
                               ring, seam,
                               seam_send=(seam_send_tab if sparse else None),
-                              seam_recv=(seam_recv if sparse else None))
+                              seam_recv=(seam_recv if sparse else None),
+                              dom_loc=dom_loc)
 
         def dv(iv, *fs):
             return divergence_from_face_fluxes(fs, spatial_dim=ndim, **_inv_kw(iv, ndim))
@@ -661,8 +682,9 @@ def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *
     # the shard_map signature is uniform (never read unless sparse).
     seam_recv_in = nbr_all if not sparse else seam_plan[1]
     seam_send_in = jnp.zeros((1,), jnp.int32) if not sparse else seam_send
-    ins = (blk, vec, vec, vec, vec, P())
-    args = (W_all, inv_all, nbr_all, mask_all, seam_recv_in, seam_send_in)
+    dom_in = dom_all if dom_all is not None else jnp.zeros_like(mask_all)
+    ins = (blk, vec, vec, vec, vec, vec, P())
+    args = (W_all, inv_all, nbr_all, mask_all, dom_in, seam_recv_in, seam_send_in)
     try:
         return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=out_specs,
                           check_vma=False)(*args)
@@ -676,7 +698,9 @@ def _batch_levels(ghosted, hierarchy, cfg):
     arrays for :func:`divergence_batched_shmap`. Returns (W_all, inv_all, nbr_all,
     mask_all, offsets) where offsets[L] is level L's start in the stacked axis."""
     ndim = cfg.ndim
-    W_list, inv_list, nbr_list, mask_list, offsets = [], [], [], [], []
+    bs = cfg.block_shape
+    r = cfg.refinement_ratio
+    W_list, inv_list, nbr_list, mask_list, dom_list, offsets = [], [], [], [], [], []
     acc = 0
     for L, lvl in enumerate(hierarchy):
         gL = ghosted[L]
@@ -686,22 +710,35 @@ def _batch_levels(ghosted, hierarchy, cfg):
             jnp.asarray([1.0 / dxL[d] for d in range(ndim)], gL.dtype), (nL, ndim))
         nbrL = lvl.neighbors                              # (nL, 2ndim) local, sentinel = nL-1
         maskL = nbrL != (nL - 1)
+        # physical (outflow) domain faces: block at the level's domain edge AND
+        # no same-level neighbour there (consistent-BC flux, see _seam_couple).
+        if cfg.boundary == 1:
+            cols = []
+            for d in range(ndim):
+                nb_d = (cfg.base_grid[d] // bs[d]) * (r ** L)
+                cols.append((lvl.coords[:, d] == nb_d - 1) & ~maskL[:, 2 * d])
+                cols.append((lvl.coords[:, d] == 0) & ~maskL[:, 2 * d + 1])
+            domL = jnp.stack(cols, axis=1)
+        else:
+            domL = jnp.zeros_like(maskL)
         offsets.append(acc)
         W_list.append(gL)
         inv_list.append(invL)
         nbr_list.append((nbrL + acc).astype(jnp.int32))   # invalid -> level's NaN sentinel slot
         mask_list.append(maskL)
+        dom_list.append(domL)
         acc += nL
     return (jnp.concatenate(W_list, axis=0),
             jnp.concatenate(inv_list, axis=0),
             jnp.concatenate(nbr_list, axis=0),
             jnp.concatenate(mask_list, axis=0),
+            jnp.concatenate(dom_list, axis=0),
             offsets)
 
 
 def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
                      gamma, limiter=1, riemann_solver="hllc",
-                     return_face_fluxes=False):
+                     return_face_fluxes=False, coords=None):
     """Conservative seam-flux divergence for one level, with the per-block flux
     compute (the bottleneck) **sharded over devices** and the same-level seam
     coupling done by an ``all_gather`` of the boundary states. ``W_ghosted`` /
@@ -719,8 +756,18 @@ def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
     n_dev = int(mesh.shape["blocks"])
     ring = _use_ring(n_dev, _states_bytes(W_ghosted, cfg))
     sentinel = W_ghosted.shape[0] - 1                     # global NaN sentinel slot
+    if coords is not None and cfg.boundary == 1:
+        bs_, r_ = cfg.block_shape, cfg.refinement_ratio
+        cols = []
+        for d in range(ndim):
+            nb_d = (cfg.base_grid[d] // bs_[d]) * (r_ ** level)
+            cols.append((coords[:, d] == nb_d - 1) & (neighbors[:, 2 * d] == sentinel))
+            cols.append((coords[:, d] == 0) & (neighbors[:, 2 * d + 1] == sentinel))
+        dom = jnp.stack(cols, axis=1)
+    else:
+        dom = jnp.zeros((W_ghosted.shape[0], 2 * ndim), bool)
 
-    def local(W_loc, nbr_loc):
+    def local(W_loc, nbr_loc, dom_loc):
         fluxes = list(block_face_fluxes(W_loc, dt, level, cfg, gamma=gamma,
                                         limiter=limiter, riemann_solver=riemann_solver))
         states = block_boundary_states(W_loc, dt, level, cfg, gamma=gamma, limiter=limiter)
@@ -730,7 +777,7 @@ def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
                 x, y, axis=d, gamma=gamma, riemann_solver=riemann_solver))(a, b)
 
         fluxes = _seam_couple(fluxes, states, nbr_loc, nbr_loc != sentinel,
-                              ndim, n_dev, ring, seam)
+                              ndim, n_dev, ring, seam, dom_loc=dom_loc)
 
         dU = jax.vmap(lambda *fs: divergence_from_face_fluxes(fs, spatial_dim=ndim, **inv))(*fluxes)
         # Step 2: return the LOCAL (per-device) divergence + seam-corrected
@@ -747,11 +794,11 @@ def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
     out_specs = ((blk_spec, tuple(blk_spec for _ in range(ndim)))
                  if return_face_fluxes else blk_spec)
     try:
-        return _shard_map(local, mesh=mesh, in_specs=(W_spec, nbr_spec),
-                          out_specs=out_specs, check_vma=False)(W_ghosted, neighbors)
+        return _shard_map(local, mesh=mesh, in_specs=(W_spec, nbr_spec, nbr_spec),
+                          out_specs=out_specs, check_vma=False)(W_ghosted, neighbors, dom)
     except TypeError:                                    # older jax: check_rep
-        return _shard_map(local, mesh=mesh, in_specs=(W_spec, nbr_spec),
-                          out_specs=out_specs, check_rep=False)(W_ghosted, neighbors)
+        return _shard_map(local, mesh=mesh, in_specs=(W_spec, nbr_spec, nbr_spec),
+                          out_specs=out_specs, check_rep=False)(W_ghosted, neighbors, dom)
 
 
 def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
@@ -783,11 +830,11 @@ def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
     if use_batched:
         # ONE divergence launch across all levels (per-block inv_dx, global
         # neighbour offsets) -> one XLA compile instead of one per level.
-        W_all, inv_all, nbr_all, mask_all, offsets = _batch_levels(ghosted, hierarchy, cfg)
+        W_all, inv_all, nbr_all, mask_all, dom_all, offsets = _batch_levels(ghosted, hierarchy, cfg)
         dU_all, fl_all = divergence_batched_shmap(
             W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg,
             gamma=gamma, limiter=limiter, riemann_solver=riemann_solver,
-            seam_plan=seam_plan)
+            seam_plan=seam_plan, dom_all=dom_all)
         for L, lvl in enumerate(hierarchy):
             nL = ghosted[L].shape[0]
             s = offsets[L]
@@ -798,18 +845,32 @@ def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
             dU, fl = divergence_shmap(ghosted[L], lvl.neighbors, mesh, dt, L, cfg,
                                       gamma=gamma, limiter=limiter,
                                       riemann_solver=riemann_solver,
-                                      return_face_fluxes=True)
+                                      return_face_fluxes=True, coords=lvl.coords)
             # dU / fl come back SHARDED on the block axis (no output all_gather);
             # new_data stays sharded so the divergence peak is total/n_dev.
             new_data.append(lvl.data + dt * dU)
             fluxes.append(fl)
-    # Berger-Colella reflux on the replicated fluxes (cheap, O(face area)),
-    # executed INSIDE a shard_map with fully-replicated specs: every device
-    # redundantly computes the identical correction, so the SPMD partitioner
-    # has zero freedom to shard the segment-sums/gathers over the block axis
-    # (which it silently did under an outer jit, dropping shard-remote
-    # contributions -- even with an explicit sharding constraint upstream).
+    # Berger-Colella reflux. Two modes:
+    #  * replicated (default): the whole correction runs INSIDE a shard_map with
+    #    fully-replicated specs -- every device redundantly computes the identical
+    #    correction, so the SPMD partitioner has zero freedom to shard the
+    #    segment-sums over the block axis (which it silently did under an outer
+    #    jit, dropping shard-remote contributions).
+    #  * sharded (LUNA_AMR_REFLUX=sharded): apply_reflux_sharded -- fine fluxes
+    #    stay sharded, partial corrections psum'd EXPLICITLY (root-cause fix for
+    #    the GSPMD landmine; the compute distributes too).
+    n_dev_ = int(mesh.shape["blocks"])
+    _refl_sharded = os.environ.get("LUNA_AMR_REFLUX", "repl") == "sharded"
     for L in range(len(hierarchy) - 1, 0, -1):
+        if (_refl_sharded
+                and new_data[L - 1].shape[0] % n_dev_ == 0
+                and hierarchy[L].neighbors.shape[0] % n_dev_ == 0):
+            new_data[L - 1] = apply_reflux_sharded(
+                new_data[L - 1], fluxes[L - 1], fluxes[L],
+                hierarchy[L].coords, hierarchy[L].parent_slots,
+                hierarchy[L].neighbors, hierarchy[L].n_active,
+                hierarchy[L - 1].neighbors, dt, L - 1, cfg, mesh)
+            continue
         args = (new_data[L - 1], fluxes[L - 1], fluxes[L],
                 hierarchy[L].coords, hierarchy[L].parent_slots,
                 hierarchy[L].neighbors, hierarchy[L].n_active,
@@ -882,7 +943,8 @@ def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
         out = divergence_shmap(gw, neighbors, mesh, dt_l, level, cfg,
                                gamma=gamma, limiter=limiter,
                                riemann_solver=riemann_solver,
-                               return_face_fluxes=want_flux)
+                               return_face_fluxes=want_flux,
+                               coords=hierarchy[level].coords)
         if not want_flux:
             return out
         dU, fl = out
@@ -910,6 +972,8 @@ def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
                                          mesh, cfg)
         else:
             gw = _fill_same_level_diag(W, stencil, mesh, cfg)
+        # physical DOMAIN bands BEFORE the coarse underlay (see driver._fill_ghosts)
+        gw = fill_ghost_physical(gw, W, cfg, coords=lvl.coords, level=L)
         if L > 0:
             gw = _coarse_underlay_sharded(gw, lvl.coords, lvl.parent_slots,
                                           parent_gprim, mesh, cfg, interp="const",
@@ -982,6 +1046,109 @@ def advance_level_shmap(data, neighbors, mesh, dt, level, cfg, *,
 
     return _shard_map(local, mesh=mesh, in_specs=(data_spec, nbr_spec),
                       out_specs=data_spec)(data, neighbors)
+
+
+def apply_reflux_sharded(coarse_data, coarse_fluxes, fine_fluxes, fine_coords,
+                         fine_parent_slots, fine_neighbors, fine_n_active,
+                         coarse_neighbors, dt, coarse_level, cfg, mesh):
+    """Distributed Berger-Colella reflux: robust-by-construction replacement for
+    the fully-replicated shard_map wrapper around ``apply_reflux_blocks``.
+
+    Why: the replicated wrapper exists because a raw ``segment_sum`` under an
+    outer jit lets GSPMD re-partition the scatter over the block axis and
+    silently drop shard-remote flux contributions (mass loss). Here the
+    cross-device reduction is an EXPLICIT ``psum`` inside the shard_map, so the
+    partitioner has no freedom to break it -- and the work distributes: each
+    device builds correction patches only for its LOCAL fine blocks (fine
+    fluxes stay sharded; no fine-level-size gather), partial-segment-sums them
+    into a coarse-level-size buffer, psums (coarse is ~1/2**ndim the fine
+    level), and applies the summed correction to its local coarse rows.
+    Bit-comparable to ``apply_reflux_blocks`` up to floating-point summation
+    order in the psum (identical masked patches, same targets).
+
+    Coarse fluxes and the small topology tables are replicated (the correction
+    reads the coarse flux at arbitrary remote targets); fine per-block arrays
+    are sharded on the fine block axis; ``coarse_data`` is sharded on the
+    coarse block axis and returned sharded."""
+    from amr.reflux import (_fine_boundary_face,
+                            _restrict_transverse, _coarse_face_patch, _i32)
+    ndim = cfg.ndim
+    bs = cfg.block_shape
+    hs = tuple(s // 2 for s in bs)
+    n_vars = coarse_data.shape[1]
+    Nc = coarse_data.shape[0]
+    Nf = fine_neighbors.shape[0]
+    dxc = cfg.level_dx(coarse_level)
+    n_dev = int(mesh.shape["blocks"])
+    bpd_c = Nc // n_dev
+    bpd_f = Nf // n_dev
+    c_sent = Nc - 1
+    f_sent = Nf - 1                                          # GLOBAL fine sentinel
+
+    cd_spec = P("blocks", *([None] * (coarse_data.ndim - 1)))
+    ffl_spec = tuple(P("blocks", *([None] * (f.ndim - 1))) for f in fine_fluxes)
+    fine_vec = P("blocks", None)
+    fine_scalar = P("blocks")
+
+    def local(cd_loc, cfx, ffx_loc, coord_loc, ps_loc, nbr_loc, na, cnb):
+        dev = jax.lax.axis_index("blocks")
+        # coarse_fine_face_mask with GLOBAL row indices/sentinel (its replicated
+        # form uses arange(n_slots)/n_slots-1, both wrong on a local shard).
+        gidx = dev * bpd_f + jnp.arange(bpd_f)
+        cf = (nbr_loc == f_sent) & (gidx < na)[:, None]       # (Nf_loc, 2*ndim)
+        q = jnp.maximum(coord_loc, 0) % 2
+        parent = ps_loc
+        parent_safe = jnp.maximum(parent, 0)
+
+        out = cd_loc
+        for d in range(ndim):
+            for s, col, f_idx in ((+1, 2 * d, -1), (-1, 2 * d + 1, 0)):
+                face = jax.vmap(lambda F: _fine_boundary_face(F, d, f_idx, ndim))(
+                    ffx_loc[d])
+                ff = jax.vmap(lambda f: _restrict_transverse(f, ndim))(face)
+                qd = q[:, d]
+                if s > 0:
+                    target = jnp.where(qd == 0, parent_safe,
+                                       cnb[parent_safe, 2 * d])
+                    cell_d = jnp.where(qd == 0, hs[d], 0)
+                    face_d = cell_d
+                else:
+                    target = jnp.where(qd == 1, parent_safe,
+                                       cnb[parent_safe, 2 * d + 1])
+                    cell_d = jnp.where(qd == 1, hs[d] - 1, bs[d] - 1)
+                    face_d = cell_d + 1
+                valid = cf[:, col] & (parent >= 0) & (target >= 0) & (target != c_sent)
+                tsafe = jnp.where(valid, target, c_sent)
+
+                def one(tslot, qq, cell, facei, ffp):
+                    Fc_d = cfx[d][tslot]                       # replicated coarse flux
+                    o = [qq[t] * hs[t] for t in range(ndim)]
+                    Fcp = _coarse_face_patch(Fc_d, d, facei, o, hs, ndim)
+                    corr = (dt / dxc[d]) * float(s) * (ffp - Fcp)
+                    shape = [n_vars] + [1 if t == d else hs[t] for t in range(ndim)]
+                    start = [_i32(0)] + [_i32(cell) if t == d else _i32(o[t])
+                                         for t in range(ndim)]
+                    zero = jnp.zeros((n_vars,) + tuple(bs), cd_loc.dtype)
+                    return jax.lax.dynamic_update_slice(zero, corr.reshape(shape), start)
+
+                patches = jax.vmap(one)(tsafe, q, cell_d, face_d, ff)
+                patches = jnp.where(valid.reshape((-1,) + (1,) * (1 + ndim)),
+                                    patches, 0.0)
+                seg = jax.ops.segment_sum(patches, tsafe, num_segments=Nc)
+                seg = seg.at[c_sent].set(0.0)                  # keep sentinel NaN
+                seg = jax.lax.psum(seg, "blocks")              # EXPLICIT reduction
+                out = out + jax.lax.dynamic_slice_in_dim(seg, dev * bpd_c, bpd_c, 0)
+        return out
+
+    ins = (cd_spec, P(), ffl_spec, fine_vec, fine_scalar, fine_vec, P(), P())
+    args = (coarse_data, coarse_fluxes, fine_fluxes, fine_coords,
+            fine_parent_slots, fine_neighbors, fine_n_active, coarse_neighbors)
+    try:
+        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=cd_spec,
+                          check_vma=False)(*args)
+    except TypeError:
+        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=cd_spec,
+                          check_rep=False)(*args)
 
 
 def _preserve_sharded(new_data, old_slot, old_data, mesh):

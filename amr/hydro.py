@@ -217,6 +217,7 @@ def conservative_block_divergence(
     limiter=1,
     riemann_solver="hllc",
     return_face_fluxes=False,
+    coords=None,
 ):
     """Per-block flux divergence with **consistent same-level seam fluxes**.
 
@@ -225,10 +226,19 @@ def conservative_block_divergence(
     so the flux that leaves one block equals the flux that enters its neighbour
     and the conserved variables telescope across the seam (machine-precision
     conservation on a single multi-block level). Faces with no same-level
-    neighbour (coarse-fine interfaces, physical boundaries) keep the ghost-based
-    boundary flux from :func:`block_face_fluxes` — coarse-fine conservation is
-    restored separately by :mod:`amr.reflux`.
-    """
+    neighbour (coarse-fine interfaces) keep the ghost-based boundary flux from
+    :func:`block_face_fluxes` — coarse-fine conservation is restored separately
+    by :mod:`amr.reflux`.
+
+    PHYSICAL (outflow) domain faces are special-cased when ``coords`` is given
+    and ``cfg.boundary == 1``: the ghost-based flux there pairs the interior's
+    half-step PREDICTED state against the ghost's UN-predicted copy (with 2
+    ghost layers the predictor cannot be evaluated on the outermost ghost), an
+    O(dt) inconsistency that pumps mass through the wall (Sod AMR benchmark:
+    F_y[rho] = 2.3e-3 through a v=0 boundary; drho/rho ~ 5e-3 by t=0.2). The
+    consistent zero-gradient flux applies the BC at the predicted-state level:
+    flux = HLLC(pred, pred) = f(pred) — exactly zero mass flux when the
+    predicted normal velocity vanishes."""
     ndim = cfg.ndim
     n_slots = neighbors.shape[0]
     sentinel = n_slots - 1
@@ -243,6 +253,8 @@ def conservative_block_divergence(
             lambda x, y: riemann_face_flux(x, y, axis=d, gamma=gamma, riemann_solver=riemann_solver)
         )(a, b)
 
+    bs = cfg.block_shape
+    r = cfg.refinement_ratio
     for d in range(ndim):
         Ld, Rd = states[d]                          # (n_slots, n_vars, *transverse)
         nbr_plus = neighbors[:, 2 * d]
@@ -256,6 +268,13 @@ def conservative_block_divergence(
         F_d = fluxes[d]
         F_d = _set_boundary_face(F_d, d, -1, seam_plus, nbr_plus != sentinel, ndim)
         F_d = _set_boundary_face(F_d, d, 0, seam_minus, nbr_minus != sentinel, ndim)
+
+        if coords is not None and cfg.boundary == 1:
+            nb_d = (cfg.base_grid[d] // bs[d]) * (r ** level)   # blocks along d
+            at_hi = (coords[:, d] == nb_d - 1) & (nbr_plus == sentinel)
+            at_lo = (coords[:, d] == 0) & (nbr_minus == sentinel)
+            F_d = _set_boundary_face(F_d, d, -1, _seam(Rd, Rd, d), at_hi, ndim)
+            F_d = _set_boundary_face(F_d, d, 0, _seam(Ld, Ld, d), at_lo, ndim)
         fluxes[d] = F_d
 
     dx = cfg.level_dx(level)
