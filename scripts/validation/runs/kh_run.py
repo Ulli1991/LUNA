@@ -6,7 +6,7 @@ Driven by env vars so one submit script can dispatch different Nx values:
 
 Domain: Lx=Ly=2 to fit LUNA's double-tanh IC (shear layers at y=0.5 and 1.5).
 Snapshots written every 0.5 simulation time → 11 snapshots over t∈[0,5].
-The kh_grid_plot.py script then picks out t ∈ {0, 1, 2.5, 4, 5} from these.
+The kh_grid.py script then picks out t ∈ {0, 1, 2.5, 4, 5} from these.
 """
 import os
 from dataclasses import replace

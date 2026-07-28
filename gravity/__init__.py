@@ -1,10 +1,11 @@
-"""Self-gravity Poisson solver via multigrid V-cycle.
+"""Self-gravity Poisson solvers.
 
-Phase 1 (single-process): core V-cycle, restriction, prolongation,
-Jacobi smoother, periodic + Neumann halo helpers. Validated on Jeans
-instability + uniform sphere.
-
-Multi-process shard_map integration in Phase 2.
+Multigrid V-cycle / FMG on the uniform grid (single-device and
+shard_map-sharded), red-black Gauss-Seidel smoother, boundaries:
+periodic, Neumann/reflective, and isolated (Guillet & Teyssier 2011
+multipole-Dirichlet faces). Particle-mesh CIC gravity for DM lives in
+particle_mesh.py / particle_mesh_shardmap.py; differentiable FMG
+wrappers in poisson_diff.py.
 """
 
 from gravity.poisson_multigrid import solve_poisson, vcycle

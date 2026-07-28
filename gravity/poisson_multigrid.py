@@ -1,15 +1,19 @@
-"""Multigrid V-cycle Poisson solver for ∇²Φ = 4πGρ.
+"""Multigrid (V-cycle + FMG) Poisson solver for ∇²Φ = 4πGρ.
 
-Phase 1: single-process. Uniform-grid hierarchy, 7-point stencil
-Laplacian, damped Jacobi smoother, 8-cell-average restriction, nearest-
-neighbour prolongation (upgrade to trilinear in Phase 1.5).
+Uniform-grid hierarchy, 7-point stencil Laplacian, red-black
+Gauss-Seidel smoother (`rbgs_smoother`), 8-cell-average restriction,
+trilinear prolongation. Runs single-device or sharded: the shard_map
+FMG driver (`solve_poisson_fmg_shardmap`) uses the same kernels with
+per-shard halo exchange.
 
 API (high level):
     Φ = solve_poisson(ρ, dx, fourpiG, boundary, n_levels=None,
                       n_cycles=10, n_pre=2, n_post=2, tol=None)
 
-    `boundary` is the LUNA hydro convention (0 periodic, 1 Neumann,
-    2 reflective treated as Neumann for Φ).
+    `boundary` is the LUNA hydro convention:
+      0 periodic, 1 Neumann, 2 reflective (treated as Neumann for Φ),
+      3 isolated (Dirichlet faces from a multipole expansion — the
+        Guillet & Teyssier 2011 face-centred recipe in poisson_bc.py).
 
 Algorithm: standard V-cycle for the error equation
     1. pre-smooth Φ on level L
@@ -19,8 +23,8 @@ Algorithm: standard V-cycle for the error equation
     5. post-smooth Φ on level L
 
 At the coarsest level we do many smoother iterations (cheap on a small
-grid). Rank-reduction across shards is a Phase 2 problem — for now we
-cap `n_levels` so the coarsest grid is still at least 4 cells per side.
+grid); `n_levels` is capped so the coarsest grid is at least 4 cells
+per side (per shard in the sharded driver).
 
 Convergence: each V-cycle should knock the residual norm down by ~10x.
 For 1024³ self-grav at tol = 1e-6, expect 5–8 V-cycles per timestep.
@@ -54,7 +58,7 @@ def residual(phi, rhs, dx, halo_fn):
 
 
 # ---------------------------------------------------------------------------
-# Smoother (damped Jacobi)
+# Smoother (red-black Gauss-Seidel)
 # ---------------------------------------------------------------------------
 def _make_red_mask(shape):
     """Boolean mask: True where (i+j+k) is even (red cells)."""
@@ -103,10 +107,6 @@ def rbgs_smoother(phi, rhs, dx, halo_fn, n_iter):
         return phi
 
     return jax.lax.fori_loop(0, n_iter, body, phi)
-
-
-# Back-compat alias — most callers can now use the better smoother by default.
-jacobi_smoother = rbgs_smoother
 
 
 # ---------------------------------------------------------------------------
@@ -184,16 +184,16 @@ def vcycle(phi, rhs, dx, halo_fn, level, n_pre, n_post, n_coarsest):
     the Laplacian stencil, so reuse for free).
     """
     if level == 0:
-        return jacobi_smoother(phi, rhs, dx, halo_fn, n_coarsest)
+        return rbgs_smoother(phi, rhs, dx, halo_fn, n_coarsest)
 
-    phi = jacobi_smoother(phi, rhs, dx, halo_fn, n_pre)
+    phi = rbgs_smoother(phi, rhs, dx, halo_fn, n_pre)
     r = residual(phi, rhs, dx, halo_fn)
     r_c = restrict(r)
     e_c = vcycle(
         jnp.zeros_like(r_c), r_c, 2.0 * dx, halo_fn, level - 1, n_pre, n_post, n_coarsest
     )
     phi = phi + prolong(e_c, halo_fn=halo_fn)
-    phi = jacobi_smoother(phi, rhs, dx, halo_fn, n_post)
+    phi = rbgs_smoother(phi, rhs, dx, halo_fn, n_post)
     return phi
 
 

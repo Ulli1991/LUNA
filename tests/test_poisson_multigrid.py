@@ -23,7 +23,7 @@ from gravity.poisson_multigrid import (
     vcycle,
     laplacian_7pt,
     residual,
-    jacobi_smoother,
+    rbgs_smoother,
     restrict,
     prolong,
     _max_levels,
@@ -102,7 +102,7 @@ def _make_sine_problem(N, L, fourpiG, k_index=(1, 1, 1)):
     return rho, phi_exact, dx
 
 
-def test_jacobi_smoother_decreases_residual():
+def test_rbgs_smoother_decreases_residual():
     """Without multigrid, Jacobi alone reduces the residual on a single
     mode (any mode shorter than nyquist is decayed; the lowest mode
     decays slowest — that's why we add multigrid)."""
@@ -116,7 +116,7 @@ def test_jacobi_smoother_decreases_residual():
     rhs = fourpiG * rho
     phi = jnp.zeros_like(rho)
     r0 = jnp.max(jnp.abs(residual(phi, rhs, dx, halo_fn)))
-    phi = jacobi_smoother(phi, rhs, dx, halo_fn, n_iter=200)
+    phi = rbgs_smoother(phi, rhs, dx, halo_fn, n_iter=200)
     r1 = jnp.max(jnp.abs(residual(phi, rhs, dx, halo_fn)))
     print(f"  Jacobi: r0={float(r0):.3e} → r1={float(r1):.3e} after 200 iters")
     assert float(r1) < 0.5 * float(r0)
@@ -215,7 +215,7 @@ if __name__ == "__main__":
     for name, fn in [
         ("laplacian_sine_mode", test_laplacian_sine_mode),
         ("restrict_prolong_smooth_field", test_restrict_prolong_smooth_field),
-        ("jacobi_smoother_decreases_residual", test_jacobi_smoother_decreases_residual),
+        ("rbgs_smoother_decreases_residual", test_rbgs_smoother_decreases_residual),
         ("vcycle_converges_lowest_mode", test_vcycle_converges_lowest_mode),
         ("solve_poisson_recovers_sine_mode", test_solve_poisson_recovers_sine_mode),
         ("fmg_one_pass_hits_discretisation_floor", test_fmg_one_pass_hits_discretisation_floor),

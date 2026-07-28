@@ -1,18 +1,28 @@
 """Explicit ``jax.shard_map`` distribution of the AMR block step.
 
 Blocks are the shard unit (the ``n_slots`` axis is partitioned across devices),
-mirroring how the dense LUNA path shards spatial axes. The one AMR-specific twist:
+mirroring how the dense LUNA path shards spatial axes. The AMR-specific twist:
 block neighbours are *irregular* (Morton ids, any block can neighbour any other),
-so the halo / seam exchange is an explicit ``all_gather`` of the small boundary
-data rather than the dense path's nearest-neighbour ``ppermute``.
+so the halo / seam exchange cannot be a nearest-neighbour ``ppermute``. Three
+exchange strategies exist, selected by ``LUNA_AMR_HALO_MODE`` (read in
+``setup.runner_amr``):
 
-Per-device work: each device fills ghosts and computes fluxes/divergence for its
-LOCAL blocks (the expensive part, sharded); only the block-boundary reconstructed
-states are all-gathered so a block can pull its neighbour's reconstruction even
-when that neighbour lives on another device.
+  * ``sparse`` (default when sharded): host-built per-device-pair routing plans
+    (:func:`build_same_level_plan` and friends) turn the exchange into one
+    ``all_to_all`` of only the remote boundary blocks — O(surface) wire traffic.
+    Plans are rebuilt at (re)grid time and passed through the jitted step as
+    arguments.
+  * ``gather``: plain ``all_gather`` of the block data (simple, O(total) wire).
+  * ``ring``: chunked ring gather (``_use_ring`` / ``LUNA_AMR_HALO_RING``),
+    trading fill cost for peak memory when a full gather would OOM.
 
-First target: one periodic level (the base grid) — the core cross-device
-same-level seam exchange. Coarse-fine (parent gather) extends the same pattern.
+Production entry points: :func:`advance_shmap` (synchronized same-dt) and
+:func:`advance_subcycle_shmap` (Berger-Oliger). Both fill ghosts and compute
+fluxes/divergence per device for LOCAL blocks only; coarse-fine underlay, seam
+fluxes, reflux (three modes via ``LUNA_AMR_REFLUX``: replicated wrapper,
+explicit-psum ``sharded``, plan-routed ``iface``), restriction, and sharded
+regrid (:func:`regrid_sharded`, with lockstep barriers for multi-process
+dispatch drift) live here as well.
 """
 
 from __future__ import annotations
@@ -60,32 +70,6 @@ def _use_ring(n_dev, gathered_bytes):
         return False
     thresh_gb = float(os.environ.get("LUNA_AMR_HALO_RING_GB", "16"))
     return gathered_bytes > thresh_gb * 1e9
-
-
-def _fill_same_level_2src(local_data, global_data, neighbors, cfg):
-    """``fill_ghost_same_level`` with two sources: interior from this device's
-    ``local_data`` blocks, neighbour ghost bands gathered from the all-gathered
-    ``global_data`` (neighbour indices are global). Returns the local blocks'
-    ghosted array ``(Nloc, n_vars, *(bs+2g))``."""
-    g, ndim, bs = cfg.n_ghost, cfg.ndim, cfg.block_shape
-    Nloc, n_vars = local_data.shape[0], local_data.shape[1]
-    out = jnp.full((Nloc, n_vars) + tuple(s + 2 * g for s in bs), jnp.nan, local_data.dtype)
-    out = out.at[_spatial_slices(ndim, lambda d: slice(g, g + bs[d]))].set(local_data)
-    for d in range(ndim):
-        sax = 2 + d
-        plus_nb = global_data[neighbors[:, 2 * d]]
-        minus_nb = global_data[neighbors[:, 2 * d + 1]]
-        nb_first = [slice(None), slice(None)] + [slice(None)] * ndim
-        nb_first[sax] = slice(0, g)
-        nb_last = [slice(None), slice(None)] + [slice(None)] * ndim
-        nb_last[sax] = slice(bs[d] - g, bs[d])
-        out_plus = list(_spatial_slices(ndim, lambda dd: slice(g, g + bs[dd])))
-        out_plus[sax] = slice(g + bs[d], g + bs[d] + g)
-        out = out.at[tuple(out_plus)].set(plus_nb[tuple(nb_first)])
-        out_minus = list(_spatial_slices(ndim, lambda dd: slice(g, g + bs[dd])))
-        out_minus[sax] = slice(0, g)
-        out = out.at[tuple(out_minus)].set(minus_nb[tuple(nb_last)])
-    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -1013,55 +997,6 @@ def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
                             riemann_solver=riemann_solver, divergence_fn=div,
                             gravity=gravity, reflux=reflux, t0=t0,
                             reflux_fn=reflux_repl, fill_fn=fill_shard)
-
-
-def advance_level_shmap(data, neighbors, mesh, dt, level, cfg, *,
-                        gamma, limiter=1, riemann_solver="hllc"):
-    """One conservative same-level (seam-flux) step on a single periodic level,
-    sharded over devices via ``shard_map`` + ``all_gather``. ``data`` and
-    ``neighbors`` are sharded on the block axis; returns updated ``data``,
-    sharded the same way. Bit-matches the single-device pipeline
-    (``fill_ghost_same_level`` -> ``conservative_block_divergence`` -> update).
-    """
-    ndim = cfg.ndim
-    data_spec = P("blocks", *([None] * (data.ndim - 1)))
-    nbr_spec = P("blocks", None)
-    dx = cfg.level_dx(level)
-    inv = dict(inv_dx=1.0 / dx[0], inv_dy=1.0 / dx[1],
-               inv_dz=1.0 / dx[2] if ndim == 3 else 1.0)
-
-    # NOTE: test-only legacy kernel (test_amr_shard level-step); the production
-    # paths are advance_shmap/advance_subcycle_shmap, whose gathers are all
-    # ring-capable (_use_ring). This one keeps the simple O(total) all_gather.
-    def local(data_loc, nbr_loc):
-        data_g = jax.lax.all_gather(data_loc, "blocks", axis=0, tiled=True)   # global blocks
-        Wg = cons_to_prim_blocks(data_g, gamma)
-        gw = _fill_same_level_2src(cons_to_prim_blocks(data_loc, gamma), Wg, nbr_loc, cfg)
-
-        fluxes = list(block_face_fluxes(gw, dt, level, cfg, gamma=gamma,
-                                        limiter=limiter, riemann_solver=riemann_solver))
-        states = block_boundary_states(gw, dt, level, cfg, gamma=gamma, limiter=limiter)
-        sentinel = data_g.shape[0] - 1
-
-        def seam(a, b, d):
-            return jax.vmap(lambda x, y: riemann_face_flux(
-                x, y, axis=d, gamma=gamma, riemann_solver=riemann_solver))(a, b)
-
-        for d in range(ndim):
-            Ld, Rd = states[d]
-            Ld_g = jax.lax.all_gather(Ld, "blocks", axis=0, tiled=True)       # neighbour states
-            Rd_g = jax.lax.all_gather(Rd, "blocks", axis=0, tiled=True)
-            npl, nmi = nbr_loc[:, 2 * d], nbr_loc[:, 2 * d + 1]
-            F = fluxes[d]
-            F = _set_boundary_face(F, d, -1, seam(Rd, Ld_g[npl], d), npl != sentinel, ndim)
-            F = _set_boundary_face(F, d, 0, seam(Rd_g[nmi], Ld, d), nmi != sentinel, ndim)
-            fluxes[d] = F
-
-        dU = jax.vmap(lambda *fs: divergence_from_face_fluxes(fs, spatial_dim=ndim, **inv))(*fluxes)
-        return data_loc + dt * dU
-
-    return _shard_map(local, mesh=mesh, in_specs=(data_spec, nbr_spec),
-                      out_specs=data_spec)(data, neighbors)
 
 
 def build_reflux_plan(fine_coords_np, fine_neighbors_np, fine_n_active,
