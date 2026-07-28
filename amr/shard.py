@@ -817,9 +817,16 @@ def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
 
     repl = NamedSharding(mesh, P())
 
-    # halo_plans = (level_plans, seam_plan): per-level fill plans + the global
-    # batched-seam plan. None -> gather/ring path everywhere.
-    level_plans, seam_plan = (halo_plans if halo_plans is not None else (None, None))
+    # halo_plans = (level_plans, seam_plan[, reflux_plans]): per-level fill
+    # plans + the global batched-seam plan + optional per-level-pair
+    # interface-reflux plans. None -> gather/ring/replicated paths.
+    reflux_plans = None
+    if halo_plans is None:
+        level_plans, seam_plan = None, None
+    elif len(halo_plans) == 3:
+        level_plans, seam_plan, reflux_plans = halo_plans
+    else:
+        level_plans, seam_plan = halo_plans
 
     # Sharded ghost fill: each level's (big) ghosted array is born sharded on the
     # block axis instead of replicated -- this was ~half of the 6-level advance's
@@ -860,8 +867,17 @@ def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
     #    stay sharded, partial corrections psum'd EXPLICITLY (root-cause fix for
     #    the GSPMD landmine; the compute distributes too).
     n_dev_ = int(mesh.shape["blocks"])
-    _refl_sharded = os.environ.get("LUNA_AMR_REFLUX", "repl") == "sharded"
+    _refl_mode = os.environ.get("LUNA_AMR_REFLUX", "repl")
+    _refl_sharded = _refl_mode == "sharded"
     for L in range(len(hierarchy) - 1, 0, -1):
+        if (_refl_mode == "iface" and reflux_plans is not None
+                and reflux_plans[L - 1] is not None):
+            new_data[L - 1] = apply_reflux_iface(
+                new_data[L - 1], fluxes[L - 1], fluxes[L],
+                hierarchy[L].parent_slots, hierarchy[L].n_active,
+                hierarchy[L - 1].neighbors, dt, L - 1, cfg, mesh,
+                reflux_plans[L - 1])
+            continue
         if (_refl_sharded
                 and new_data[L - 1].shape[0] % n_dev_ == 0
                 and hierarchy[L].neighbors.shape[0] % n_dev_ == 0):
@@ -1046,6 +1062,205 @@ def advance_level_shmap(data, neighbors, mesh, dt, level, cfg, *,
 
     return _shard_map(local, mesh=mesh, in_specs=(data_spec, nbr_spec),
                       out_specs=data_spec)(data, neighbors)
+
+
+def build_reflux_plan(fine_coords_np, fine_neighbors_np, fine_n_active,
+                      fine_parent_slots_np, coarse_neighbors_np, n_coarse,
+                      cfg, n_dev):
+    """Host-side routing plan for :func:`apply_reflux_iface` pass B.
+
+    For every ACTIVE fine block face that is a C/F interface (no same-level
+    neighbour), reproduce apply_reflux_blocks' target arithmetic (octant q,
+    parent's neighbour, cell layer, transverse quadrant offset) and route the
+    restricted flux patch to the target's owner device.
+
+    Returns (send_idx, meta, K):
+      send_idx (n_dev, n_dev, K) int32 -- indices into the sender's flattened
+          (bpd_f * 2ndim) payload axis (payload order: [+d0, -d0, +d1, ...]).
+          Padding entries point at 0 (never read: their meta rows are -1).
+      meta (n_dev, n_dev*K, 4 + ndim) int32 -- per RECEIVER device, aligned
+          with its all_to_all buffer rows: [tgt_local_slot | d | sgn | cell_d
+          | o_0..o_{ndim-1}]; tgt = -1 marks padding.
+    """
+    import numpy as _np
+    ndim = cfg.ndim
+    bs = cfg.block_shape
+    hs = [s // 2 for s in bs]
+    Nf = fine_coords_np.shape[0]
+    bpd_f = Nf // n_dev
+    bpd_c = n_coarse // n_dev
+    f_sent = Nf - 1
+    c_sent = n_coarse - 1
+    na = int(fine_n_active)
+    covered_np = _np.zeros(n_coarse, bool)
+    act_par = fine_parent_slots_np[:na]
+    covered_np[act_par[act_par >= 0]] = True
+
+    # per (sender, receiver): lists of (payload_flat_idx, meta_row)
+    buckets = {(s, r): [] for s in range(n_dev) for r in range(n_dev)}
+    q = _np.maximum(fine_coords_np, 0) % 2
+    for i in range(na):
+        parent = int(fine_parent_slots_np[i])
+        if parent < 0:
+            continue
+        sdev = i // bpd_f
+        for d in range(ndim):
+            for s2, col, pay_off in ((+1, 2 * d, 0), (-1, 2 * d + 1, 1)):
+                if int(fine_neighbors_np[i, col]) != f_sent:
+                    continue                              # not a C/F face
+                qd = int(q[i, d])
+                if s2 > 0:
+                    tgt = parent if qd == 0 else int(
+                        coarse_neighbors_np[parent, 2 * d])
+                    cell = hs[d] if qd == 0 else 0
+                else:
+                    tgt = parent if qd == 1 else int(
+                        coarse_neighbors_np[parent, 2 * d + 1])
+                    cell = hs[d] - 1 if qd == 1 else bs[d] - 1
+                if tgt < 0 or tgt == c_sent:
+                    continue
+                if covered_np[tgt]:
+                    continue                  # restriction owns covered cells
+                rdev = tgt // bpd_c
+                offs = [int(q[i, t]) * hs[t] for t in range(ndim)]
+                meta_row = [tgt - rdev * bpd_c, d, s2, cell] + offs
+                pay_idx = (i - sdev * bpd_f) * (2 * ndim) + 2 * d + pay_off
+                buckets[(sdev, rdev)].append((pay_idx, meta_row))
+
+    K = max(1, max(len(v) for v in buckets.values()))
+    K = 1 << (K - 1).bit_length()                        # pow2 bucket
+    send_idx = _np.zeros((n_dev, n_dev, K), _np.int32)
+    meta = _np.full((n_dev, n_dev * K, 4 + ndim), -1, _np.int32)
+    for (sdev, rdev), items in buckets.items():
+        for j, (pidx, mrow) in enumerate(items):
+            send_idx[sdev, rdev, j] = pidx
+            meta[rdev, sdev * K + j] = mrow
+    return send_idx, meta, K
+
+
+def apply_reflux_iface(coarse_data, coarse_fluxes, fine_fluxes,
+                       fine_parent_slots, fine_n_active, coarse_neighbors,
+                       dt, coarse_level, cfg, mesh, plan):
+    """INTERFACE-LOCAL Berger-Colella reflux: O(C/F interface) communication.
+
+    The prior modes ship VOLUME-scale flux arrays every step (the replicated
+    wrapper gathers the sharded fine fluxes; apply_reflux_sharded replicates
+    the coarse-side fluxes, which for L1->L0 is the biggest array in the run).
+    Measured cost: ~0.8 s/step at 256^3/8 GPUs -- the dominant distributed-AMR
+    loss. Correction split:  U_c += (dt/dx_c) * s * (<F_f> - F_c)
+
+    Pass A (coarse-local, ZERO comm): the -F_c part. With complete octets and
+    proper nesting, a coarse block's (d, side) boundary layer receives the
+    full-face -F_c correction exactly when its OPPOSITE-side neighbour is
+    covered by children (replicated topology; corrections to covered blocks are
+    the reference's harmless-overwritten case, applied identically here).
+
+    Pass B (fine-side, INTERFACE-sized): the +<F_f> part. Each fine C/F face's
+    transverse-restricted flux patch travels via a sparse all_to_all plan
+    (built host-side at (re)grid time: ``build_reflux_plan``); receivers
+    scatter-add through fully precomputed meta rows. Per-step wire traffic =
+    the C/F face patches only.
+
+    ``plan`` = (send_idx (n_dev, n_dev, K) int32 into the flattened local
+    (bpd_f * 2ndim) payload axis, meta (n_dev, n_dev*K, 4 + ndim) int32 rows
+    [tgt_local_slot | d | sgn | cell_d | o_0..] with tgt = -1 padding)."""
+    from amr.reflux import _fine_boundary_face, _restrict_transverse
+    ndim = cfg.ndim
+    bs = cfg.block_shape
+    hs = tuple(s2 // 2 for s2 in bs)
+    n_vars = coarse_data.shape[1]
+    Nc = coarse_data.shape[0]
+    Nf = fine_parent_slots.shape[0]
+    dxc = cfg.level_dx(coarse_level)
+    n_dev = int(mesh.shape["blocks"])
+    bpd_c = Nc // n_dev
+    c_sent = Nc - 1
+
+    send_idx, meta = plan
+    K = send_idx.shape[-1]
+
+    # replicated: covered[c] = coarse slot has active children
+    covered = jnp.zeros((Nc,), bool).at[
+        jnp.where(fine_parent_slots >= 0, fine_parent_slots, c_sent)
+    ].max(jnp.arange(Nf) < fine_n_active)
+    covered = covered.at[c_sent].set(False)
+
+    cd_spec = P("blocks", *([None] * (coarse_data.ndim - 1)))
+    cfl_spec = tuple(P("blocks", *([None] * (f.ndim - 1))) for f in coarse_fluxes)
+    ffl_spec = tuple(P("blocks", *([None] * (f.ndim - 1))) for f in fine_fluxes)
+
+    def local(cd_loc, cfx_loc, ffx_loc, cov, cnb_repl, meta_all, send_tab):
+        dev = jax.lax.axis_index("blocks")
+        out = cd_loc
+        row0 = dev * bpd_c
+        gidx = row0 + jnp.arange(bpd_c)
+
+        # ---- pass A: -F_c on boundary layers facing a covered neighbour ----
+        # Reference mapping (octet-complete): s=+1 corrections land on the
+        # coarse block whose -d neighbour is covered, at layer 0, using its
+        # OWN -d face flux (face index 0); s=-1 mirrored (layer bs-1, face bs).
+        for d in range(ndim):
+            for s2, layer, face_i, opp_col in ((+1.0, 0, 0, 2 * d + 1),
+                                               (-1.0, bs[d] - 1, bs[d], 2 * d)):
+                nb = cnb_repl[gidx, opp_col]
+                m = (cov[jnp.clip(nb, 0, Nc - 1)] & (nb >= 0) & (nb != c_sent)
+                     & ~cov[gidx])          # covered targets: restriction owns them
+                Fc = jax.lax.index_in_dim(cfx_loc[d], face_i, axis=2 + d,
+                                          keepdims=False)
+                corr = -(dt / dxc[d]) * s2 * Fc
+                sl = [slice(None), slice(None)] + [slice(None)] * ndim
+                sl[2 + d] = layer
+                cur = out[tuple(sl)]
+                mm = m.reshape((bpd_c,) + (1,) * (cur.ndim - 1))
+                out = out.at[tuple(sl)].set(cur + jnp.where(mm, corr, 0.0))
+
+        # ---- pass B: +<F_f> patches via sparse plan --------------------------
+        patches = []
+        for d in range(ndim):
+            for f_idx in (-1, 0):                       # +d face, then -d face
+                face = jax.vmap(lambda F: _fine_boundary_face(F, d, f_idx, ndim))(
+                    ffx_loc[d])
+                patches.append(jax.vmap(
+                    lambda f: _restrict_transverse(f, ndim))(face))
+        payload = jnp.stack(patches, axis=1)            # (bpd_f, 2ndim, nv, *hs_t)
+        flat = payload.reshape((-1,) + payload.shape[2:])
+        buf = flat[send_tab[dev].reshape(-1)]
+        got = jax.lax.all_to_all(buf, "blocks", 0, 0, tiled=True)
+
+        mrows = meta_all[dev]                            # (n_dev*K, 4+ndim)
+        tgt, md_, sgn, cell = mrows[:, 0], mrows[:, 1], mrows[:, 2], mrows[:, 3]
+        offs = mrows[:, 4:4 + ndim]
+        ok = tgt >= 0
+        for d in range(ndim):
+            sel = ok & (md_ == d)
+            corr = (dt / dxc[d]) * sgn.astype(coarse_data.dtype).reshape(
+                (-1,) + (1,) * (got.ndim - 1)) * got
+
+            def place(c, cl, o, d=d):
+                shape = [n_vars] + [1 if t == d else hs[t] for t in range(ndim)]
+                start = [jnp.asarray(0, jnp.int32)] + [
+                    (cl if t == d else o[t]).astype(jnp.int32)
+                    for t in range(ndim)]
+                z = jnp.zeros((n_vars,) + tuple(bs), coarse_data.dtype)
+                return jax.lax.dynamic_update_slice(z, c.reshape(shape), start)
+
+            blocks = jax.vmap(place)(corr, cell, offs)
+            blocks = jnp.where(sel.reshape((-1,) + (1,) * (blocks.ndim - 1)),
+                               blocks, 0.0)
+            seg = jax.ops.segment_sum(blocks, jnp.where(sel, tgt, bpd_c),
+                                      num_segments=bpd_c + 1)[:bpd_c]
+            out = out + seg
+        return out
+
+    ins = (cd_spec, cfl_spec, ffl_spec, P(), P(), P(), P())
+    args = (coarse_data, coarse_fluxes, fine_fluxes, covered, coarse_neighbors,
+            meta, send_idx)
+    try:
+        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=cd_spec,
+                          check_vma=False)(*args)
+    except TypeError:
+        return _shard_map(local, mesh=mesh, in_specs=ins, out_specs=cd_spec,
+                          check_rep=False)(*args)
 
 
 def apply_reflux_sharded(coarse_data, coarse_fluxes, fine_fluxes, fine_coords,

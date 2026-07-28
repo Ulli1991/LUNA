@@ -459,7 +459,7 @@ def _pad_blocks(data, coords, pad_to):
     return data, coords
 
 
-def _sized_parents(flags, cpb, bucket, floor=0, cap=0):
+def _sized_parents(flags, cpb, bucket, floor=0, cap=0, shrink=True):
     """Number of parent slots to allocate for a refined level: the exact flagged
     count (+1 for sentinel headroom). With ``bucket`` set, rounded UP onto the
     geometric ladder ``bucket * 2**k`` and clamped to at least ``floor`` (the
@@ -476,16 +476,34 @@ def _sized_parents(flags, cpb, bucket, floor=0, cap=0):
     at 5 levels on Sedov). When flagged > cap the excess parents are simply not
     refined this regrid (``_children_j`` takes the first ``max_parents`` flagged
     slots -> deterministic slot/Morton order); the caller logs the shortfall.
-    The never-shrink floor is capped too, so a once-capped level stays capped."""
+    The never-shrink floor is capped too, so a once-capped level stays capped.
+
+    ``shrink`` (default True; env ``LUNA_AMR_NO_SHRINK=1`` disables): hysteretic
+    ONE-RUNG capacity shrink. The pure never-shrink floor leaves the PEAK
+    allocation (NaN padding) resident forever after refinement recedes -- e.g. a
+    Sedov shell that left the box keeps its peak-level block arrays (~40% of AMR
+    memory in receding-feature runs). When the (bucket-rounded) need falls to
+    <= floor/4, the floor drops by ONE factor of 2 per regrid: the 4x margin
+    prevents grow/shrink thrash at a bucket boundary, and the one-rung rate
+    bounds recompiles -- a full collapse from peak P costs <= log2(P/bucket)
+    regrids, the same ladder the growth already paid."""
+    import os as _os
     n = int(jnp.sum(flags)) + 1
     if cap and cap > 0:
         floor = min(int(floor), int(cap))
-    if bucket and bucket > 1:
-        size = int(bucket)
-        while size < max(n, floor):
-            size *= 2
-    else:
-        size = max(n, int(floor))
+    floor = int(floor)
+    # pow2 ladder value of the current need (base 8 parents). The old scheme
+    # used ``bucket`` as the ladder BASE, silently flooring every level at
+    # bucket parents (256 default = 2048 child slots) -- measured 32x padding
+    # in memory AND in the batched divergence, which computes over ALL slots.
+    need = 8
+    while need < n:
+        need *= 2
+    if shrink and floor > 0 and _os.environ.get("LUNA_AMR_NO_SHRINK", "0") != "1":
+        if need * 4 <= floor:
+            floor = max(floor // 2, need)
+    size = need if (bucket and bucket > 1) else n
+    size = max(size, floor)
     if cap and cap > 0:
         size = min(size, int(cap))
     return size
