@@ -105,11 +105,20 @@ def create_muscl_hancock_modular_step(
     # (asymmetric) face flux is required for correctness across shards.
     exact_wrap = (boundary == 0) and (not use_shardmap)
 
+    # Fused concat-free 3D step (opt-in): 2-ghost halo + reconstruction into
+    # the ghost ring + one flux call per axis, divergence by slicing. +17%
+    # at 512^3 FP64 on MI300A and full 2nd order at shard seams. Boundary
+    # 0/1 only (wider reflective/diode ghosts not implemented).
+    import os as _os
+    fused = (_os.environ.get("LUNA_HYDRO_FUSED", "0") == "1"
+             and order >= 1 and spatial_dim == 3 and boundary in (0, 1))
+
     # Inner step (semantics-only — same body whether dispatched per-shard
     # via shard_map or globally via auto-sharding).
     def _step_inner(U, dt):
         W = cons_to_prim(U, gamma)
-        W_pad = pad_halo_fn(W, boundary, spatial_dim)
+        W_pad = (pad_halo_fn(W, boundary, spatial_dim, width=2) if fused
+                 else pad_halo_fn(W, boundary, spatial_dim))
         dU = muscl_hancock_divergence(
             W_pad,
             dt,
@@ -123,6 +132,7 @@ def create_muscl_hancock_modular_step(
             boundary=boundary,
             order=order,
             exact_wrap=exact_wrap,
+            fused=fused,
         )
         U_new = U + dt * dU
         if sharding is not None and not use_shardmap:

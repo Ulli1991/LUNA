@@ -311,15 +311,14 @@ def _luna_emergence(step_fn, U0, cfg, is_main):
     else:
         tgt_np = _render_text_target(Nx, text, lo, lo * contrast)
     tgt = jnp.asarray(tgt_np)
-    per = max(1, int(round(n_steps ** 0.5)))
-    nchunk = (n_steps + per - 1) // per
 
     def simulate(theta):
+        # flat scan with a PER-STEP jax.checkpoint, exactly like the (ROCm-
+        # proven) IC-inversion rollout. The sqrt-chunked variant (inner scan
+        # nested in a checkpointed chunk) segfaults ROCm XLA beyond ~100 steps.
         U = build_from_theta(theta)
-        @jax.checkpoint
-        def chunk(U, _):
-            U, _ = jax.lax.scan(body, U, None, length=per); return U, None
-        Uf, _ = jax.lax.scan(chunk, U, None, length=nchunk)
+        cbody = jax.checkpoint(body)
+        Uf, _ = jax.lax.scan(cbody, U, None, length=n_steps)
         return Uf
 
     def loss(theta):
@@ -330,16 +329,109 @@ def _luna_emergence(step_fn, U0, cfg, is_main):
         print(f"  luna_emergence[{driver}]: Nx={Nx} ({nparams} free params), "
               f"n_steps={n_steps}, n_iter={n_iter}, target='{text}'", flush=True)
     loss_grad = jax.jit(jax.value_and_grad(loss))
-    m = jnp.zeros_like(theta); v = jnp.zeros_like(theta)
+    # movie hook: LUNA_EMERG_MOVIE=<dir> dumps (a) the optimized final state
+    # every LUNA_EMERG_MOVIE_EVERY iterations (the "learning" sequence) and
+    # (b) a dense replay of the optimized IC (the physical emergence).
+    movie_dir = os.environ.get("LUNA_EMERG_MOVIE", "")
+    movie_every = int(os.environ.get("LUNA_EMERG_MOVIE_EVERY", "2"))
+    # movie-frame forward sim: PLAIN scan, no jax.checkpoint. Compiling the
+    # remat'd simulate as a second forward-only executable next to loss_grad
+    # segfaults ROCm XLA (target.npy+opt_00000 then SIGSEGV); remat buys
+    # nothing without a reverse pass anyway.
+    sim_jit = jax.jit(lambda th: jax.lax.scan(
+        body, build_from_theta(th), None, length=n_steps)[0])
+    if movie_dir and is_main:
+        os.makedirs(movie_dir, exist_ok=True)
+        np.save(f"{movie_dir}/target.npy", tgt_np)
+    # Device-side Adam loop: ONE lax.scan invocation runs all n_iter
+    # iterations. The ROCm runtime deadlocks after ~2 synchronized reverse-
+    # mode shard_map executions when the optimizer loop lives on the host
+    # (every host-loop variant -- sbatch, srun, cache on/off, whole node,
+    # HIP_LAUNCH_BLOCKING -- hangs at iteration 2); a single scan invocation
+    # never re-enters the executable, sidestepping the bug entirely. Movie
+    # "learning" frames are reconstructed afterwards from the per-iteration
+    # thetas the scan emits (forward-only replays don't trigger it).
     t0 = time.time()
-    for it in range(n_iter):
-        L_, g = loss_grad(theta)
-        m = 0.9 * m + 0.1 * g
-        v = 0.999 * v + 0.001 * g * g
-        bc1 = 1 - 0.9 ** (it + 1); bc2 = 1 - 0.999 ** (it + 1)
-        theta = theta - lr * (m / bc1) / (jnp.sqrt(v / bc2) + 1e-8)
-        if is_main and (it % max(1, n_iter // 12) == 0 or it == n_iter - 1):
-            print(f"    it {it:4d}  L={float(L_):.3e}", flush=True)
+    vg = jax.value_and_grad(loss)
+
+    def adam_body(carry, it):
+        th, m_, v_ = carry
+        L_, g = vg(th)
+        m_ = 0.9 * m_ + 0.1 * g
+        v_ = 0.999 * v_ + 0.001 * g * g
+        bc1 = 1.0 - jnp.power(0.9, it + 1.0)
+        bc2 = 1.0 - jnp.power(0.999, it + 1.0)
+        th = th - lr * (m_ / bc1) / (jnp.sqrt(v_ / bc2) + 1e-8)
+        return (th, m_, v_), (L_, th)
+
+    ckpt = os.environ.get("LUNA_EMERG_CKPT", "")
+    hostloop = os.environ.get("LUNA_EMERG_HOSTLOOP", "0") == "1"
+    if not hostloop:
+        @jax.jit
+        def optimize(th0):
+            return jax.lax.scan(
+                adam_body, (th0, jnp.zeros_like(th0), jnp.zeros_like(th0)),
+                jnp.arange(n_iter, dtype=th0.dtype))
+
+        (theta, _, _), (Ls, thetas) = optimize(theta)
+        jax.block_until_ready(theta)
+        if is_main:
+            for it in list(range(0, n_iter, max(1, n_iter // 12))) + [n_iter - 1]:
+                print(f"    it {it:4d}  L={float(Ls[it]):.3e}", flush=True)
+        if movie_dir and is_main:
+            for it in range(0, n_iter, movie_every):
+                np.save(f"{movie_dir}/opt_{it:05d}.npy",
+                        np.asarray(observe(sim_jit(thetas[it])),
+                                   dtype=np.float32))
+    else:
+        # HOST-LOOP FALLBACK for the ROCm 3rd-invocation deadlock: run at
+        # most LUNA_EMERG_MAXIT_PER_PROC iterations (default 2 -- the proven
+        # per-process budget), checkpoint ONCE at the end (per-iteration
+        # ckpt syncs move the deadlock one call earlier), and let a driver
+        # loop restart the process until n_iter is reached.
+        m = jnp.zeros_like(theta); v = jnp.zeros_like(theta)
+        it0 = 0
+        if ckpt and os.path.exists(ckpt):
+            z = np.load(ckpt)
+            theta = jnp.asarray(z["theta"]); m = jnp.asarray(z["m"])
+            v = jnp.asarray(z["v"]); it0 = int(z["it"])
+            if is_main:
+                print(f"  resumed from {ckpt} at it {it0}", flush=True)
+        it_end = min(n_iter, it0 + int(os.environ.get(
+            "LUNA_EMERG_MAXIT_PER_PROC", "2")))
+        for it in range(it0, it_end):
+            if movie_dir and is_main and it % movie_every == 0:
+                np.save(f"{movie_dir}/opt_{it:05d}.npy",
+                        np.asarray(observe(sim_jit(theta)), dtype=np.float32))
+            L_, g = loss_grad(theta)
+            m = 0.9 * m + 0.1 * g
+            v = 0.999 * v + 0.001 * g * g
+            bc1 = 1 - 0.9 ** (it + 1); bc2 = 1 - 0.999 ** (it + 1)
+            theta = theta - lr * (m / bc1) / (jnp.sqrt(v / bc2) + 1e-8)
+            if is_main:
+                print(f"    it {it:4d}  L={float(L_):.3e}", flush=True)
+        if ckpt and is_main:
+            np.savez(ckpt + ".tmp.npz", theta=np.asarray(theta),
+                     m=np.asarray(m), v=np.asarray(v), it=it_end)
+            os.replace(ckpt + ".tmp.npz", ckpt)
+        if it_end < n_iter:            # driver loop restarts us; skip movie
+            if is_main:
+                print(f"  chunk done at it {it_end}/{n_iter}", flush=True)
+            return {"loss": float(L_) if is_main else None, "driver": driver}
+    if movie_dir and is_main:
+        np.save(f"{movie_dir}/theta_final.npy", np.asarray(theta))
+        stride = max(1, n_steps // int(os.environ.get("LUNA_EMERG_MOVIE_NFRAME",
+                                                      "240")))
+        U = build_from_theta(theta)
+        np.save(f"{movie_dir}/replay_00000.npy",
+                np.asarray(observe(U), dtype=np.float32))
+        replay_chunk = jax.jit(lambda U: jax.lax.scan(body, U, None,
+                                                      length=stride)[0])
+        for ns in range(stride, n_steps + 1, stride):
+            U = replay_chunk(U)
+            np.save(f"{movie_dir}/replay_{ns:05d}.npy",
+                    np.asarray(observe(U), dtype=np.float32))
+        print(f"  movie frames -> {movie_dir} (stride {stride})", flush=True)
     if not is_main:
         return {"loss": None, "driver": driver}
     print(f"  done ({time.time()-t0:.0f}s)", flush=True)

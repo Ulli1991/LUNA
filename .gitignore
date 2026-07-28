@@ -73,6 +73,12 @@ submit/*
 # viper-specific scaling artifacts (ignore for now)
 figures/scaling_fp64_amd_data.csv
 scripts/submit_viper_apu_2gpu.sh
+scripts/validation/plots/fig3_ramses_analog.py
+scripts/validation/plots/shock_density_singles.py
+scripts/validation/plots/workflow_figs.py
+scripts/validation/runs/m1_3d_check.py
+scripts/validation/runs/sedov3d_amr_cooling_run.py
+scripts/movies/
 
 # redundant _amd figure variants (README uses the plain names)
 code_paper_figs/scaling_weak_fp64_amd.png

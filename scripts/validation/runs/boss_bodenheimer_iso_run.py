@@ -57,7 +57,8 @@ def main():
         ORDER=1, LIMITER=0, CFL=0.3,
         riemann_solver=riemann,
         units=units,
-        t_end=t_end, time_bet_snaps=t_end / 60,   # ~1 kyr cadence -> land near 25/33/55 kyr
+        t_end=t_end,
+        time_bet_snaps=t_end / float(os.environ.get("LUNA_BB_NSNAP", "60")),
         SELF_GRAVITY=True, GRAVITATIONAL_G=units.GravityConstant,
         # ---- paper IC (physical cgs); SEREN Ω pinned directly ----
         bb_rho0_cgs=1.44e-17, bb_R_pc=R_pc, bb_omega_rad_s=1.6e-12,
@@ -84,6 +85,8 @@ def main():
         )
         print(f"  SINKS on: ρ_create={rho_create_code:.3e} code "
               f"({sink_fac}·ρ_AD), N_max=4")
+    if os.environ.get("LUNA_BB_OUT"):
+        overrides["output_dir"] = os.environ["LUNA_BB_OUT"]
     print(f"BB79 (physical/barotropic): Nx={Nx}, R={R_pc:.5f} pc, rho0=1.44e-17, A=0.5, "
           f"Omega=1.6e-12, T0=10K, rho_AD=1e-14, rho_SINK=2e-12, BC={hydro_bc}, riemann={riemann}, "
           f"t_end={t_Myr} Myr ({t_end:.4f} code), G_code={units.GravityConstant:.4e}")

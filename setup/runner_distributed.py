@@ -440,6 +440,14 @@ def run_simulation_distributed(
             # Each process writes its own shard to separate file
             write_snapshot_distributed(U_sharded, cfg, t, snapshot_idx)
 
+            # sink particles ride along as one small npz per snapshot
+            if sink_state is not None and is_main_process:
+                _sp, _sv, _sm, _sa = (np.asarray(a) for a in sink_state["carry"])
+                np.savez(os.path.join(cfg.output_dir,
+                                      f"sinks_{snapshot_idx:03d}.npz"),
+                         pos=_sp, vel=_sv, mass=_sm, active=_sa,
+                         t=np.float64(t))
+
             # Synchronize all processes after snapshot write
             # This ensures all processes finish I/O before proceeding
             # Overhead is minimal compared to the file I/O itself

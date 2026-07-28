@@ -235,6 +235,24 @@ def run_simulation_amr(cfg, is_main_process=True):
         # concatenation on host (nbr + level-offset), then one exchange plan over
         # the concatenated block axis. Cubic blocks only (stacked Ld/Rd payload) --
         # acfg.block_shape is (block,)*ndim, always cubic.
+        # per-level-pair interface-reflux plans (LUNA_AMR_REFLUX=iface)
+        reflux_plans = None
+        if os.environ.get("LUNA_AMR_REFLUX", "repl") == "iface":
+            from amr.shard import build_reflux_plan
+            rp = []
+            for L in range(1, len(h)):
+                if (h[L].data.shape[0] % n_dev) or (h[L - 1].data.shape[0] % n_dev):
+                    rp.append(None)
+                    continue
+                si, meta, _K = build_reflux_plan(
+                    np.asarray(h[L].coords), np.asarray(h[L].neighbors),
+                    int(h[L].n_active), np.asarray(h[L].parent_slots),
+                    np.asarray(h[L - 1].neighbors), h[L - 1].data.shape[0],
+                    acfg, n_dev)
+                rp.append((_to_global(jnp.asarray(si), repl),
+                           _to_global(jnp.asarray(meta), repl)))
+            reflux_plans = tuple(rp)
+
         seam_plan = None
         all_shardable = all(lvl.data.shape[0] % n_dev == 0 for lvl in h)
         cubic = len(set(acfg.block_shape)) == 1
@@ -247,30 +265,53 @@ def run_simulation_amr(cfg, is_main_process=True):
             ssi, srp, _sK = build_exchange_plan(nbr_all, acc, n_dev)
             seam_plan = (_to_global(jnp.asarray(ssi), repl),
                          _to_global(jnp.asarray(srp), repl))
-        return (tuple(level_plans), seam_plan)
+        return (tuple(level_plans), seam_plan, reflux_plans)
+
+    # --- radiative cooling on the hierarchy (operator-split, like the dense
+    # runner): cooling is a POINTWISE energy ODE, so it applies per block with
+    # the same dt on every level (synchronized path). vmapped over the block
+    # axis; NaN sentinel/padding blocks stay NaN (cooling of NaN is NaN).
+    from sources.cooling import setup_cooling
+    cooling_solver = setup_cooling(cfg, is_main_process)
+
+    def _cool_hierarchy(lv, dt):
+        if cooling_solver is None:
+            return lv
+        from hydro.cooling import apply_cooling
+        return tuple(
+            l._replace(data=jax.vmap(lambda u: apply_cooling(u, dt, cfg,
+                                                             cooling_solver))(l.data))
+            for l in lv)
 
     if shard_amr:
         from amr import shard
         if subcycle:
-            step = jax.jit(lambda lv, dt, hp=None: shard.advance_subcycle_shmap(
-                lv, dt, acfg, mesh, gamma=gamma, limiter=limiter, riemann_solver=riemann,
-                halo_plans=hp))
+            step = jax.jit(lambda lv, dt, hp=None: _cool_hierarchy(
+                shard.advance_subcycle_shmap(
+                    lv, dt, acfg, mesh, gamma=gamma, limiter=limiter,
+                    riemann_solver=riemann, halo_plans=hp), dt))
         else:
-            step = jax.jit(lambda lv, dt, hp=None: shard.advance_shmap(
-                lv, dt, acfg, mesh, gamma=gamma, limiter=limiter, riemann_solver=riemann,
-                halo_plans=hp))
+            step = jax.jit(lambda lv, dt, hp=None: _cool_hierarchy(
+                shard.advance_shmap(
+                    lv, dt, acfg, mesh, gamma=gamma, limiter=limiter,
+                    riemann_solver=riemann, halo_plans=hp), dt))
     elif subcycle:
-        step = jax.jit(lambda lv, dt, hp=None: driver.advance_subcycle(
-            lv, dt, acfg, gamma=gamma, limiter=limiter, riemann_solver=riemann))
+        step = jax.jit(lambda lv, dt, hp=None: _cool_hierarchy(
+            driver.advance_subcycle(
+                lv, dt, acfg, gamma=gamma, limiter=limiter,
+                riemann_solver=riemann), dt))
     else:
-        step = jax.jit(lambda lv, dt, hp=None: driver.advance(
-            lv, dt, acfg, gamma=gamma, limiter=limiter, riemann_solver=riemann))
+        step = jax.jit(lambda lv, dt, hp=None: _cool_hierarchy(
+            driver.advance(lv, dt, acfg, gamma=gamma, limiter=limiter,
+                           riemann_solver=riemann), dt))
     halo_plans = _build_halo_plans(hierarchy)
     if _sparse_halo and is_main_process:
-        _lp, _sp = halo_plans
+        _lp, _sp = halo_plans[0], halo_plans[1]
+        _rp = halo_plans[2] if len(halo_plans) > 2 else None
         print("  halo exchange: SPARSE all_to_all "
               f"({sum(p is not None for p in _lp)} level-fill plans, "
-              f"seam={'on' if _sp is not None else 'gather'})", flush=True)
+              f"seam={'on' if _sp is not None else 'gather'}, "
+              f"reflux={'iface' if _rp else 'repl'})", flush=True)
     # jitted: the eager version dispatched ~10 tiny ops per level on the host
     # every single step (a real per-step tax at thousands of blocks).
     dt_fn = jax.jit((lambda lv: driver.compute_dt_subcycle(lv, acfg, gamma=gamma, CFL=CFL)) if subcycle
@@ -685,7 +726,7 @@ def run_simulation_amr(cfg, is_main_process=True):
             cu_step = _cu_per_base_step(hierarchy)       # block counts changed
             if is_main_process:
                 counts = " ".join(
-                    f"L{L}={int(l.n_active)}"
+                    f"L{L}={int(l.n_active)}/{l.data.shape[0]}"
                     + (" AT-CAP" if max_blocks and L > 0
                        and int(l.n_active) >= max_blocks - 1 else "")
                     for L, l in enumerate(hierarchy))
@@ -711,9 +752,13 @@ def run_simulation_amr(cfg, is_main_process=True):
         write(si, cfg.t_end)
         si += 1
 
+    # per-device peak memory: the "memory-lean" claim measured on every run
+    peak = max((d.memory_stats() or {}).get("peak_bytes_in_use", 0)
+               for d in jax.local_devices()) / 1e9
     if is_main_process:
         elapsed = time.time() - t0
         avg = cu_total / max(elapsed, 1e-9) / 1e6
         print(f"AMR run done: {nstep} steps to t={t:.5f} in {elapsed:.1f}s")
         print(f"✓ Average performance: {avg:.2f} Mcells/s (AMR active cell-updates)")
+        print(f"✓ Peak GPU memory: {peak:.2f} GB/device (rank-0 local max)")
     return t, nstep, cfg.output_dir

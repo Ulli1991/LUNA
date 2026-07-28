@@ -62,7 +62,11 @@ def run(cfg):
     if getattr(cfg, "clear_output_dir", False) and jax.process_index() == 0:
         import shutil
         shutil.rmtree(cfg.output_dir, ignore_errors=True)
-    Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
+    try:
+        Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        pass   # multi-process NFS race: exist_ok can still raise when many
+               # ranks create the tree simultaneously; the dir exists -- fine.
 
     # Block-AMR multi-level hydro: builds its own (refined) state and runs its
     # own multi-level time loop, writing composited snapshots through the same

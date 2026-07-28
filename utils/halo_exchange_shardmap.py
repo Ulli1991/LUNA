@@ -44,20 +44,24 @@ def make_halo_shardmap(mesh, spatial_dim):
     n_proc = {a: int(mesh.shape[a]) for a in axis_names}
     array_axes = list(range(1, spatial_dim + 1))  # leading Nvar dim -> axes 1..D
 
-    def halo(U_local, boundary, sdim):
+    def halo(U_local, boundary, sdim, width=1):
         if sdim != spatial_dim:
             raise ValueError(
                 f"halo built for spatial_dim={spatial_dim}, called with {sdim}")
         if boundary not in (0, 1, 2, 4):
             raise NotImplementedError(
                 f"shard_map halo supports boundary 0/1/2/4; got {boundary}")
+        if width != 1 and boundary in (2, 4):
+            raise NotImplementedError(
+                "width>1 halo only supports boundary 0/1 (the _fix_face outer-"
+                "ghost correction is single-layer)")
         periodic = boundary == 0
         # x -> y -> z order; later axes use the already-padded array so corner
         # cells fill in correctly.
         U = U_local
         for axis, name in zip(array_axes, axis_names):
             U = _pad_axis(U, axis=axis, axis_name=name, n_proc=n_proc[name],
-                          periodic=periodic)
+                          periodic=periodic, width=width)
         # Reflective / diode: fix the OUTER ghost on the boundary shards after
         # all axes are padded (edge-fill first, then correct the outer ghost).
         if boundary == 2:
@@ -91,14 +95,18 @@ def _set_slab(U, axis, lo, val):
     return U.at[tuple(sl)].set(val)
 
 
-def _pad_axis(U, *, axis, axis_name, n_proc, periodic):
-    """Add a 1-cell halo along `axis` via ppermute then concat.
+def _pad_axis(U, *, axis, axis_name, n_proc, periodic, width=1):
+    """Add a `width`-cell halo along `axis` via ppermute then concat.
 
     `axis` is the array axis (1, 2 or 3 for x, y, z given the leading Nvar
     dim). `axis_name` is the mesh-axis name ('x','y','z').
     """
-    left_slab = _slab(U, axis, lo=True)
-    right_slab = _slab(U, axis, lo=False)
+    sl_lo = [slice(None)] * U.ndim
+    sl_hi = [slice(None)] * U.ndim
+    sl_lo[axis] = slice(0, width)
+    sl_hi[axis] = slice(-width, None)
+    left_slab = U[tuple(sl_lo)]
+    right_slab = U[tuple(sl_hi)]
 
     # Convention: perm = [(src, dst), ...] — device `src` sends its slab to
     # device `dst`. To receive my left ghost from neighbour (i-1)%N, device
@@ -111,10 +119,21 @@ def _pad_axis(U, *, axis, axis_name, n_proc, periodic):
     if periodic:
         left_ghost = left_ghost_periodic
         right_ghost = right_ghost_periodic
-    else:  # zero-gradient: boundary shards reuse their own edge as ghost
+    else:  # zero-gradient: boundary shards replicate their own EDGE CELL
         idx = jax.lax.axis_index(axis_name)
-        left_ghost = jnp.where(idx == 0, left_slab, left_ghost_periodic)
-        right_ghost = jnp.where(idx == n_proc - 1, right_slab, right_ghost_periodic)
+        if width == 1:
+            left_edge, right_edge = left_slab, right_slab
+        else:
+            e_lo = [slice(None)] * U.ndim
+            e_hi = [slice(None)] * U.ndim
+            e_lo[axis] = slice(0, 1)
+            e_hi[axis] = slice(-1, None)
+            reps = [1] * U.ndim
+            reps[axis] = width
+            left_edge = jnp.tile(U[tuple(e_lo)], reps)
+            right_edge = jnp.tile(U[tuple(e_hi)], reps)
+        left_ghost = jnp.where(idx == 0, left_edge, left_ghost_periodic)
+        right_ghost = jnp.where(idx == n_proc - 1, right_edge, right_ghost_periodic)
 
     return jnp.concatenate([left_ghost, U, right_ghost], axis=axis)
 

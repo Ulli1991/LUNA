@@ -23,13 +23,13 @@ def main():
         Lx=L, Ly=L, Lz=L,
         gamma=5.0 / 3.0,
         ORDER=1, LIMITER=1, CFL=0.3,
-        t_end=t_end, time_bet_snaps=t_end / 30,
+        t_end=t_end, time_bet_snaps=t_end / float(os.environ.get("LUNA_BB_NSNAP", "30")),
         SELF_GRAVITY=True, GRAVITATIONAL_G=G,
         bb_beta=0.16, bb_amp=0.1,
         # Enforce isothermal during collapse.
         isothermal_cs2=cs2,
         PLOT_AFTER_SIM=False, production_mode=True,
-        output_dir=f"snapshots/bb_Nx{Nx}",
+        output_dir=os.environ.get("LUNA_BB_OUT", f"snapshots/bb_Nx{Nx}"),
         clear_output_dir=True,
         enable_x64=True, enable_checkpointing=False,
     )

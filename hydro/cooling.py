@@ -200,16 +200,30 @@ class ExplicitCoolingSolver:
 # ---------------------------------------------------------------------------
 # High-level interface
 # ---------------------------------------------------------------------------
+def _uniform_interp(x, xs, ys):
+    """Linear interp on a UNIFORM grid ``xs`` by index arithmetic — NO
+    searchsorted. Both cooling tables are built on ``linspace`` log-T grids, so
+    the bin index is ``(x - xs[0]) / dx``: two gathers + a lerp. This exists
+    because ROCm's searchsorted kernel (used by ``jnp.interp``) takes async
+    GPU memory-access faults inside the cooling scan — first seen in the
+    reverse-mode VJP at >=64^3 (autodiff campaign), then in FORWARD mode on
+    multi-NODE runs (SN cooling hero: ranks segfault at first step; adiabatic
+    twin is stable; HIP_LAUNCH_BLOCKING unusable multi-node). Clamped ends
+    reproduce jnp.interp's flat extrapolation."""
+    n = xs.shape[0]
+    dx = (xs[-1] - xs[0]) / (n - 1)
+    f = jnp.clip((x - xs[0]) / dx, 0.0, n - 1.0)
+    i0 = jnp.clip(jnp.floor(f).astype(jnp.int32), 0, n - 2)
+    w = f - i0
+    return ys[i0] * (1.0 - w) + ys[i0 + 1] * w
+
+
 @jax.custom_vjp
 def _cooling_lambda(T, logT, logL):
-    """Lambda(T) = 10**interp(log10 T; logT, logL). Custom VJP: the backward uses
-    a central difference of the FORWARD interp instead of jnp.interp's native VJP.
-    The native VJP (searchsorted + gather) takes a GPU memory-access fault on the
-    ROCm backend at >=64^3 inside the nested reverse-mode cooling scan (a bare
-    HSA AsyncEventsLoop segfault). This is gradient-equivalent (dLam/dT is the
-    piecewise-constant interp slope) but calls only the crash-free forward op.
-    The cooling table (logT, logL) is constant -> zero cotangent."""
-    return 10.0 ** jnp.interp(jnp.log10(T), logT, logL)
+    """Lambda(T) = 10**interp(log10 T; logT, logL) on the uniform log-T table.
+    Custom VJP: the backward uses a central difference of the FORWARD interp
+    (gradient-equivalent; the table is constant -> zero cotangent)."""
+    return 10.0 ** _uniform_interp(jnp.log10(T), logT, logL)
 
 
 def _cooling_lambda_fwd(T, logT, logL):
@@ -219,8 +233,8 @@ def _cooling_lambda_fwd(T, logT, logL):
 def _cooling_lambda_bwd(res, g):
     T, logT, logL = res
     h = jnp.maximum(1.0e-4 * T, 1.0e-30)
-    lp = 10.0 ** jnp.interp(jnp.log10(T + h), logT, logL)
-    lm = 10.0 ** jnp.interp(jnp.log10(T - h), logT, logL)
+    lp = 10.0 ** _uniform_interp(jnp.log10(T + h), logT, logL)
+    lm = 10.0 ** _uniform_interp(jnp.log10(T - h), logT, logL)
     dT = g * (lp - lm) / (2.0 * h)
     return dT, jnp.zeros_like(logT), jnp.zeros_like(logL)
 

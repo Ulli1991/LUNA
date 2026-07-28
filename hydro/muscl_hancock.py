@@ -250,6 +250,51 @@ def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_
     return dU
 
 
+def _muscl_hancock_3d_fused(W_pad2, dt, *, gamma, limiter, riemann_solver,
+                            inv_dx, inv_dy, inv_dz):
+    """Concat-free 3D MUSCL-Hancock: needs a TWO-ghost pad.
+
+    Reconstructs (slopes + predictor) on interior PLUS one ghost ring, then
+    each axis does ONE flux call over all N+1 faces and assembles the
+    divergence by slicing -- no `concatenate`, no boundary special-casing
+    (ghosts carry the BC / neighbour-shard content, so shard seams get full
+    second-order reconstructed states). Measured +17% over the concat-
+    assembled path at 512^3 FP64 on MI300A (scaling/hydro_audit.py); the
+    slope/predictor overspill into the ghost ring costs (1+2/N)^3 extra work.
+
+    Restrictions: order=1 (MUSCL) path only; caller gates on boundary 0/1
+    (reflective/diode outer-ghost fixes are single-layer in the halo).
+    """
+    flux_fn = _pick_riemann(riemann_solver)
+    inv = (inv_dx, inv_dy, inv_dz)
+    Wg = W_pad2[:, 1:-1, 1:-1, 1:-1]          # interior + 1 ghost ring
+    dWs = [compute_slope_x_3d_from_padded(W_pad2, limiter),
+           compute_slope_y_3d_from_padded(W_pad2, limiter),
+           compute_slope_z_3d_from_padded(W_pad2, limiter)]
+    A_dW = apply_primitive_jacobian_3d_x(Wg, dWs[0] * inv_dx, gamma)
+    A_dW = A_dW + apply_primitive_jacobian_3d_y(Wg, dWs[1] * inv_dy, gamma)
+    A_dW = A_dW + apply_primitive_jacobian_3d_z(Wg, dWs[2] * inv_dz, gamma)
+    W_half = Wg - 0.5 * dt * A_dW
+
+    dU = None
+    for d in range(3):
+        Wr = W_half + 0.5 * dWs[d]
+        Wl = W_half - 0.5 * dWs[d]
+        lo = [slice(1, -1)] * 3
+        hi = [slice(1, -1)] * 3
+        lo[d] = slice(0, -1)                   # N+1 left face states
+        hi[d] = slice(1, None)                 # N+1 right face states
+        F = flux_fn(Wr[(slice(None),) + tuple(lo)],
+                    Wl[(slice(None),) + tuple(hi)], axis=d, gamma=gamma)
+        a = [slice(None)] * 4
+        b = [slice(None)] * 4
+        a[1 + d] = slice(0, -1)
+        b[1 + d] = slice(1, None)
+        contrib = (F[tuple(a)] - F[tuple(b)]) * inv[d]
+        dU = contrib if dU is None else dU + contrib
+    return dU
+
+
 # --------------------------------------------------------------------------
 # Face-flux variants (for AMR coarse-fine reflux)
 # --------------------------------------------------------------------------
@@ -548,6 +593,7 @@ def muscl_hancock_divergence(
     boundary,
     order,
     exact_wrap=False,
+    fused=False,
 ):
     """Compute dU/dt = -∇·F(U) using MUSCL-Hancock (second-order) or plain
     Godunov on primitives (first-order, order=0). All arguments after the
@@ -563,6 +609,16 @@ def muscl_hancock_divergence(
             inv_dy=inv_dy,
             inv_dz=inv_dz,
         )
+
+    # fused concat-free path: W_pad carries TWO ghost layers (see
+    # _muscl_hancock_3d_fused). Opt-in via integrators (LUNA_HYDRO_FUSED=1).
+    if fused:
+        if spatial_dim != 3:
+            raise NotImplementedError("fused path is 3D-only")
+        return _muscl_hancock_3d_fused(
+            W_pad, dt, gamma=gamma, limiter=limiter,
+            riemann_solver=riemann_solver,
+            inv_dx=inv_dx, inv_dy=inv_dy, inv_dz=inv_dz)
 
     # 3D path computes its slopes internally direction-by-direction (memory).
     if spatial_dim == 3:

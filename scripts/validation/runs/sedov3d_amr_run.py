@@ -26,9 +26,9 @@ cfg = replace(
     BOUNDARY=1,                     # outflow
     riemann_solver="hllc",
     t_end=T_END,
-    time_bet_snaps=T_END / 2.0,     # ~2 snapshots
+    time_bet_snaps=T_END / float(os.environ.get("AMR_NSNAP", "2")),
     AMR=True,
-    amr_block_shape=16,
+    amr_block_shape=int(os.environ.get("AMR_BLOCK", "16")),
     amr_levels=LEVELS,
     amr_criterion=os.environ.get("AMR_CRITERION", "pressure"),
     amr_subcycle=os.environ.get("AMR_SUBCYCLE", "0") == "1",

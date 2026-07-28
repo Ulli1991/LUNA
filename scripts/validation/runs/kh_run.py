@@ -26,7 +26,7 @@ def main():
         Lx=2.0, Ly=2.0,        # LUNA's KH IC uses tanh layers at y=0.5 and 1.5
         gamma=5.0 / 3.0,
         t_end=5.0,
-        time_bet_snaps=0.5,
+        time_bet_snaps=float(os.environ.get("LUNA_KH_SNAP", "0.5")),
         ORDER=1,
         LIMITER=1,             # MonCen (smooth-flow friendly)
         CFL=0.4,

@@ -93,7 +93,7 @@ def assemble_slab_from_chunk(local_arrays, specs, N_total, ndev, mesh,
     C = int(np.ceil(capacity_factor * N_total / ndev))
     n_local = int(local_arrays[0].shape[0])
     m = min(n_local, C)
-    ldev = mesh.local_devices()[0]                        # 1 GPU / process
+    ldev = mesh.local_devices[0]                          # 1 GPU / process
     out = []
     for a_host, spec in zip(local_arrays, specs):
         buf = np.zeros((C,) + a_host.shape[1:], dtype=a_host.dtype)
