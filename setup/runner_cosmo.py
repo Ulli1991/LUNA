@@ -31,10 +31,13 @@ import numpy as np
 from cosmology import Cosmology
 from gravity.poisson_bc import make_halo_3d
 from gravity.poisson_multigrid import solve_poisson_fmg
+from setup.cosmo_common import CosmoClock
 
 
-def run_simulation_cosmo(U, cfg, grid, step_fn, compute_dt_fn, sharding,
+def run_simulation_cosmo(U, cfg, step_fn, compute_dt_fn,
                          is_main_process=True):
+    """Gas-only super-comoving time loop (see the module docstring for the
+    scheme). Returns ``(U, a, step)``; `main.run` wraps it in a RunResult."""
     cosmo = Cosmology(Omega_m=getattr(cfg, "cosmo_Omega_m", 1.0),
                       Omega_L=getattr(cfg, "cosmo_Omega_L", 0.0))
     H0 = float(getattr(cfg, "cosmo_H0", 1.0))
@@ -51,10 +54,7 @@ def run_simulation_cosmo(U, cfg, grid, step_fn, compute_dt_fn, sharding,
     p_floor = float(getattr(cfg, "cosmo_p_floor", 0.0))   # pressure/temperature floor
 
     # a(tau) lookup table (RAMSES 'friedman': integrate da/dtau = a^3 H)
-    a_tab, tau_tab = cosmo.build_a_of_tau(a, a_end + 0.05, H0)
-
-    def a_of_tau(t):
-        return float(np.interp(t, tau_tab, a_tab))
+    clock = CosmoClock(cosmo, a, a_end, H0)
 
     @jax.jit
     def apply_gravity_source(U, fourpiG, dt):
@@ -95,8 +95,9 @@ def run_simulation_cosmo(U, cfg, grid, step_fn, compute_dt_fn, sharding,
 
     while a < a_end - 1e-12:
         dtau = float(compute_dt_fn(U))                          # CFL on (rho~,v~,P~)
-        dtau = min(dtau, dloga_max / (a * a * cosmo.H(a, H0)))  # expansion cap
-        a_next = a_of_tau(tau + dtau)
+        dtau = clock.cap_expansion(dtau, a, dloga_max)
+        dtau = clock.cap_to_table(dtau, tau)
+        a_next = clock.a_of_tau(tau + dtau)
         dloga = np.log(a_next / a)
         # LUNA scheme: hydro flux update, THEN the gravity source term applied
         # once (operator split, not a leapfrog / KDK), then the pressure floor.

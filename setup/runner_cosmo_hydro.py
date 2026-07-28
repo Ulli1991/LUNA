@@ -36,9 +36,11 @@ import numpy as np
 from cosmology import Cosmology
 from gravity.particle_mesh import ParticleMeshGravity
 from gravity.poisson_multigrid import solve_poisson_fmg
+from setup.cosmo_common import (CosmoClock, dtau_accel, poisson_coeff_fac,
+                                softening_from_config)
 
 
-def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
+def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
                                dm_pos, dm_p, dm_mass, is_main_process=True):
     """Couple the gas state U (super-comoving conserved grid) with DM particles
     (comoving positions dm_pos, canonical momenta dm_p == v~, masses dm_mass).
@@ -66,10 +68,10 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
 
     pm = ParticleMeshGravity(cfg)
     dx = pm.dx
-    eps_soft = float(getattr(cfg, "dm_softening", 0.0)) or dx
+    eps_soft = softening_from_config(cfg, dx)
     # comoving Poisson coefficient (3/2) Omega_m H0^2 a; for the dimensionless
     # pancake units (H0 = 1) this reduces to (3/2) Omega_m a.
-    coeff_fac = 1.5 * Om * H0 * H0
+    coeff_fac = poisson_coeff_fac(Om, H0)
     rho_bar = float(jnp.mean(U[0]))                          # mean comoving gas density
     rho_floor = float(getattr(cfg, "cosmo_rho_floor", 0.0)) * rho_bar   # density floor
     # low-density CFL guards (tame the v=p/rho and spurious-hot runaways in diffuse
@@ -84,10 +86,7 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
     dm_mass = jnp.asarray(dm_mass)
     active = jnp.ones(dm_pos.shape[0])
 
-    a_tab, tau_tab = cosmo.build_a_of_tau(a, a_end + 0.05, H0)
-
-    def a_of_tau(t):
-        return float(np.interp(t, tau_tab, a_tab))
+    clock = CosmoClock(cosmo, a, a_end, H0)
 
     @jax.jit
     def forces(U_arr, pos, coeff_val):
@@ -259,8 +258,8 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
     while a < a_end - 1e-9:
         gmax = float(jnp.max(jnp.sqrt(jnp.sum(g_dm ** 2, axis=1))))
         dt_cfl = float(compute_dt_fn(U))                          # gas CFL
-        dt_dloga = dloga_max / (a * a * cosmo.H(a, H0))           # expansion cap
-        dt_accel = eta * np.sqrt(eps_soft / (gmax + 1e-30))       # DM acceleration
+        dt_dloga = clock.dtau_expansion(a, dloga_max)             # expansion cap
+        dt_accel = dtau_accel(eta, eps_soft, gmax)                # DM acceleration
         dtau = min(dt_cfl, dt_dloga, dt_accel)
         if debug and is_main_process and (step % 10 == 0 or dtau < 1e-4
                                           or float(dmax) > 150.0):
@@ -284,9 +283,8 @@ def run_simulation_cosmo_hydro(U, cfg, grid, step_fn, compute_dt_fn, sharding,
                   f"gmax={gmax:.2e} | worstCFL: rho={float(rf):.2e} P={float(Pf):.2e} "
                   f"T={Tcell:.2e}K v={float(vf):.2e} cs={float(cf):.2e} "
                   f"KE/eint={ke_eint:.2e}", flush=True)
-        if tau + dtau > tau_tab[-1]:
-            dtau = tau_tab[-1] - tau
-        a_next = a_of_tau(tau + dtau)
+        dtau = clock.cap_to_table(dtau, tau)
+        a_next = clock.a_of_tau(tau + dtau)
         dloga = np.log(a_next / a)
         # DM half-kick @a, DM drift, gas hydro flux, JOINT solve @a_next,
         # gas operator-split kick, DM closing half-kick (one solve/step).
@@ -428,9 +426,9 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         raise ValueError(f"slab decomposition needs Nx ({Nx}) divisible by ndev ({ndev})")
     nx_loc = Nx // ndev
     n_levels = min(_max_levels(Nx), int(np.log2(nx_loc)) + 1)
-    coeff_fac = 1.5 * Om * H0 * H0
+    coeff_fac = poisson_coeff_fac(Om, H0)
     cap = float(getattr(cfg, "dm_capacity_factor", 1.5))
-    eps_soft = float(getattr(cfg, "dm_softening", 0.0)) or dx
+    eps_soft = softening_from_config(cfg, dx)
     rho_bar = float(jnp.mean(U[0]))
     rho_floor = float(getattr(cfg, "cosmo_rho_floor", 0.0)) * rho_bar
     v_max = float(getattr(cfg, "cosmo_vmax", 0.0))           # |v~| ceiling (0 = off)
@@ -473,10 +471,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         if is_main_process:
             print("[cosmo-hydro] DM particle path in fp32 (pos/mom/mass/active)", flush=True)
 
-    a_tab, tau_tab = cosmo.build_a_of_tau(a, a_end + 0.05, H0)
-
-    def a_of_tau(t):
-        return float(np.interp(t, tau_tab, a_tab))
+    clock = CosmoClock(cosmo, a, a_end, H0)
 
     @jax.jit
     def forces(U_arr, pos, mass, active, a_kick):
@@ -678,8 +673,8 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         gmag = jnp.sqrt(jnp.sum(g_dm ** 2, axis=1))
         gmax = float(jnp.max(jnp.where(actS > 0, gmag, 0.0)))
         dt_cfl = float(compute_dt_fn(U))
-        dt_dloga = dloga_max / (a * a * cosmo.H(a, H0))
-        dt_accel = eta * np.sqrt(eps_soft / (gmax + 1e-30))
+        dt_dloga = clock.dtau_expansion(a, dloga_max)
+        dt_accel = dtau_accel(eta, eps_soft, gmax)
         dtau = min(dt_cfl, dt_dloga, dt_accel)
         if debug and is_main_process and (step % 10 == 0 or float(dmax) > 150.0):
             rho = U[0]
@@ -703,9 +698,8 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
                   f"gmax={gmax:.2e} | worstCFL: rho={float(rf):.2e} P={float(Pf):.2e} "
                   f"T={Tcell:.2e}K v={float(vf):.2e} cs={float(cf):.2e} "
                   f"KE/eint={ke_eint:.2e}", flush=True)
-        if tau + dtau > tau_tab[-1]:
-            dtau = tau_tab[-1] - tau
-        a_next = a_of_tau(tau + dtau)
+        dtau = clock.cap_to_table(dtau, tau)
+        a_next = clock.a_of_tau(tau + dtau)
         dloga = np.log(a_next / a)
         # DM half-kick @a, drift + exchange to owning slab, gas hydro flux,
         # JOINT solve @a_next, gas kick + floors, DM closing half-kick.
@@ -831,7 +825,7 @@ def run_simulation_cosmo_hydro_music(cfg, is_main_process=True):
         mesh = make_slab_mesh(jax.devices())
     else:
         mesh, _ = create_distributed_mesh(cfg)
-    compute_dt_fn, step_fn, _, sharding = create_solver_distributed(cfg, grid, mesh)
+    compute_dt_fn, step_fn, sharding = create_solver_distributed(cfg, grid, mesh)
 
     if slab:
         Nx = int(cfg.Nx)
@@ -860,5 +854,5 @@ def run_simulation_cosmo_hydro_music(cfg, is_main_process=True):
         print(f"[cosmo-hydro] MUSIC baryon IC: {gas.n_part} gas + {dm.n_part} DM, "
               f"box={cfg.Lx:.0f} kpc/h, z={1/a-1:.1f}")
     return run_simulation_cosmo_hydro(
-        U, cfg, grid, step_fn, compute_dt_fn, sharding,
+        U, cfg, step_fn, compute_dt_fn,
         dm_pos, dm_p, dm_mass, is_main_process=is_main_process)

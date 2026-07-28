@@ -29,9 +29,13 @@ from cosmology import Cosmology
 from cosmology.music_ic import music_run_config, read_music_dm_ic
 from gravity.particle_mesh import ParticleMeshGravity
 from gravity.poisson_multigrid import solve_poisson_fmg
+from setup.cosmo_common import (CosmoClock, dtau_accel, poisson_coeff_fac,
+                                softening_from_config)
 
 
 def run_simulation_cosmo_dm(cfg, is_main_process=True):
+    """DM-only super-comoving KDK N-body from MUSIC ICs (see module docstring).
+    Returns ``{"a", "n_steps"}``; `main.run` wraps it in a RunResult."""
     ic = read_music_dm_ic(cfg.music_ic_path)
     cfg = music_run_config(ic, cfg.Nx, base=cfg)          # box + cosmology from IC
     cosmo = Cosmology(Omega_m=cfg.cosmo_Omega_m, Omega_L=cfg.cosmo_Omega_L, h=ic.h)
@@ -59,14 +63,11 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     active = jnp.ones(ic.n_part)
     p = jnp.asarray(ic.vel) * (a ** 1.5)                  # canonical momentum p=a^2 xdot
 
-    a_tab, tau_tab = cosmo.build_a_of_tau(a, a_end + 0.05, H0)
-
-    def a_of_tau(t):
-        return float(np.interp(t, tau_tab, a_tab))
+    clock = CosmoClock(cosmo, a, a_end, H0)
 
     # --- PM force (returns acceleration + delta_max), particle-parallel sharded ---
     ndev = jax.device_count()
-    coeff_fac = 1.5 * Om * H0 * H0
+    coeff_fac = poisson_coeff_fac(Om, H0)
 
     def force_core(pos, mass, active, a_kick):
         rho = pm.cic_deposit(pos, mass, active)            # this shard's particles
@@ -104,7 +105,7 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
 
     # gravitational timestep = acceleration criterion dtau ~ eta sqrt(eps/|a|),
     # softening eps -> PM cell (mesh-scale force resolution); NOT a hydro courant.
-    eps_soft = float(getattr(cfg, "dm_softening", 0.0)) or pm.dx
+    eps_soft = softening_from_config(cfg, pm.dx)
 
     tau, step, t0 = 0.0, 0, time.time()
     if is_main_process:
@@ -116,11 +117,9 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     g, dmax = force(pos, a)                                # force + delta_max
     while a < a_end - 1e-9:
         gmax = float(jnp.max(jnp.sqrt(jnp.sum(g ** 2, axis=1))))   # max |acceleration|
-        dtau = min(dloga_max / (a * a * cosmo.H(a, H0)),    # cap d ln a
-                   eta * np.sqrt(eps_soft / (gmax + 1e-30)))  # gravity accel criterion
-        if tau + dtau > tau_tab[-1]:
-            dtau = tau_tab[-1] - tau
-        a_next = a_of_tau(tau + dtau)
+        dtau = clock.cap_expansion(dtau_accel(eta, eps_soft, gmax), a, dloga_max)
+        dtau = clock.cap_to_table(dtau, tau)
+        a_next = clock.a_of_tau(tau + dtau)
         dloga = np.log(a_next / a)
         # KDK leapfrog (super-comoving): half-kick @a, drift, refresh MG force
         # @a_next, half-kick @a_next; end force reused -> one MG solve/step.
@@ -168,9 +167,9 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     mesh = make_slab_mesh(jax.devices())
     nx_loc = Nx // ndev
     n_levels = min(_max_levels(Nx), int(np.log2(nx_loc)) + 1)
-    coeff_fac = 1.5 * Om * H0 * H0
+    coeff_fac = poisson_coeff_fac(Om, H0)
     cap = float(getattr(cfg, "dm_capacity_factor", 1.5))
-    eps_soft = float(getattr(cfg, "dm_softening", 0.0)) or dx
+    eps_soft = softening_from_config(cfg, dx)
 
     # host-side spatial decomposition into per-slab fixed-capacity buffers
     pos0 = np.asarray(ic.pos)
@@ -183,10 +182,7 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     massS = jax.device_put(jnp.asarray(mass_g), NamedSharding(mesh, P("x")))
     actS = jax.device_put(jnp.asarray(act_g), NamedSharding(mesh, P("x")))
 
-    a_tab, tau_tab = cosmo.build_a_of_tau(a, a_end + 0.05, H0)
-
-    def a_of_tau(t):
-        return float(np.interp(t, tau_tab, a_tab))
+    clock = CosmoClock(cosmo, a, a_end, H0)
 
     @jax.jit
     def force(pos, mass, active, a_kick):
@@ -223,11 +219,9 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     while a < a_end - 1e-9:
         gmag = jnp.sqrt(jnp.sum(g ** 2, axis=1))
         gmax = float(jnp.max(jnp.where(actS > 0, gmag, 0.0)))   # active slots only
-        dtau = min(dloga_max / (a * a * cosmo.H(a, H0)),
-                   eta * np.sqrt(eps_soft / (gmax + 1e-30)))
-        if tau + dtau > tau_tab[-1]:
-            dtau = tau_tab[-1] - tau
-        a_next = a_of_tau(tau + dtau)
+        dtau = clock.cap_expansion(dtau_accel(eta, eps_soft, gmax), a, dloga_max)
+        dtau = clock.cap_to_table(dtau, tau)
+        a_next = clock.a_of_tau(tau + dtau)
         dloga = np.log(a_next / a)
         # KDK: half-kick @a, drift, exchange to owning slab, refresh force @a_next, half-kick.
         pS = pS + g * (0.5 * dtau)

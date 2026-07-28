@@ -73,7 +73,7 @@ def main():
     )
     initialize_jax_distributed(enable_x64=True)
     cfg = replace(Config(), **overrides)
-    result = run(cfg)
+    result = run(cfg).extra
     if isinstance(result, dict) and "ic_residual" in result:
         print(f"RESULT turbgrav ic_residual={result['ic_residual']:.3e}", flush=True)
 

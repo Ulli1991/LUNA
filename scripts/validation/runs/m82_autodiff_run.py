@@ -79,7 +79,7 @@ def main():
     # cfg.autodiff_mode to the differentiable runner.
     initialize_jax_distributed(enable_x64=True)
     cfg = replace(Config(), **overrides)
-    result = run(cfg)
+    result = run(cfg).extra
     if isinstance(result, dict) and "dlnLX_dlneta" in result:
         print("RESULT dlnLX/dlneta =", result["dlnLX_dlneta"], flush=True)
     elif isinstance(result, dict) and "all_finite" in result:

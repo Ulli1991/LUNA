@@ -97,7 +97,7 @@ def main():
         print(f"ISM turb box: L={L_pc} pc, n_H={n_H} cm^-3, T={T_K:.1e} K -> "
               f"rho0={rho0:.3e}, P0={P0:.3e}, cs={cs:.1f} km/s, Mach={mach}, "
               f"cooling={cool}", flush=True)
-    result = run(cfg)
+    result = run(cfg).extra
     if isinstance(result, dict) and "ic_residual" in result:
         print(f"RESULT ic_residual={result['ic_residual']:.3e}", flush=True)
 

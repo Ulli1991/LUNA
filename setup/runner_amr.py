@@ -1,18 +1,28 @@
-"""Block-AMR multi-level hydro runner, wired through ``main.run``.
+"""Block-AMR multi-level hydro runner, wired through ``main.run`` (``cfg.AMR``).
 
-Mirrors :func:`setup.runner_distributed.run_simulation_distributed` but drives the
-block-AMR hierarchy (:mod:`amr.driver`) instead of a single dense grid:
+Drives the block-AMR hierarchy (:mod:`amr.driver`) instead of a single dense
+grid:
 
   * build the conservative IC at the base grid via the standard
     ``ic_generation.initial_conditions`` path, then build the refined hierarchy;
-  * advance with a synchronized same-dt multi-level step (CFL over all levels);
+  * advance in chunked jitted steps — synchronized same-dt by default, or
+    Berger-Oliger subcycling with ``cfg.amr_subcycle`` — with dynamic regrid
+    every ``cfg.amr_regrid_interval`` base steps;
+  * optional physics hooks: self-gravity (multigrid per level), operator-split
+    cooling, cosmological comoving integration, and DM particles;
   * at each snapshot time, **composite the hierarchy to a dense finest-resolution
     field** and write it with the existing HDF5 writer
     (:func:`file_io.write_snapshot_distributed.write_snapshot_distributed`), so
-    the standard readers / ``plot_density2d`` work unchanged.
+    the standard readers / ``plot_density2d`` work unchanged (plus per-level
+    ``blocks_*.npz`` for AMR-aware tooling).
 
-Single device for now (the hierarchy is one host array); ``shard_map`` block
-distribution is the next layer. Selected by ``cfg.AMR``.
+Multi-device / multi-process: with >1 device the hierarchy DATA is sharded on
+the block axis and stepped via :mod:`amr.shard` (``advance_shmap`` /
+``advance_subcycle_shmap``); topology stays replicated for regrid. Halo/seam
+exchange strategy and reflux mode are selected by the ``LUNA_AMR_HALO_MODE``
+(sparse all_to_all plans by default) and ``LUNA_AMR_REFLUX`` env knobs; the
+sparse plans are rebuilt after every regrid and passed through the jitted chunk
+as arguments.
 """
 
 import copy
@@ -25,6 +35,14 @@ import numpy as np
 
 
 def run_simulation_amr(cfg, is_main_process=True):
+    """Block-AMR time loop (see the module docstring for the architecture).
+
+    Builds the refined hierarchy from the registered IC, advances it in
+    chunked jitted steps (subcycled if ``cfg.amr_subcycle``), regrids every
+    ``cfg.amr_regrid_interval`` base steps, and writes composited dense
+    snapshots + per-level ``blocks_*.npz``. Returns ``(t, nstep, output_dir)``;
+    `main.run` wraps it in a RunResult.
+    """
     # AMR bookkeeping (Morton ids, conservative prolong/restrict) wants fp64.
     jax.config.update("jax_enable_x64", True)
 
@@ -373,8 +391,13 @@ def run_simulation_amr(cfg, is_main_process=True):
     num = len(snapshot_times)
     regrid_interval = int(getattr(cfg, "amr_regrid_interval", 0))
 
-    t, si = 0.0, 0
-    if num and t >= snapshot_times[0]:
+    if getattr(cfg, "restart", False):
+        raise NotImplementedError(
+            "cfg.restart=True: the AMR runner has no checkpoint-restart yet "
+            "(only the dense path restores from checkpoints).")
+    t = float(getattr(cfg, "t_start", 0.0))
+    si = sum(1 for ts in snapshot_times if ts < t)   # file indices track the schedule
+    if num and si < num and t >= snapshot_times[si]:
         write(si, t)
         si += 1
 

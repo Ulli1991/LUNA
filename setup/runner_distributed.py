@@ -53,17 +53,20 @@ def _isothermal_project(U, cs2_iso, gamma):
 def _barotropic_project_jit(U, unit_density, unit_pressure, T0, rho_AD, mu, gm1):
     """Reset total energy so p follows the barotropic EOS (cgs):
         T(rho) = T0 [1 + (rho/rho_AD)^gm1],  p = k_B T rho / (mu m_H).
-    Leaves rho and momentum untouched. dtype follows U (run in fp64)."""
+    Leaves rho and momentum untouched. dtype follows U (run in fp64).
+    Momentum is U[1:-1], energy U[-1] — dimension-generic, same fix as
+    _isothermal_project_jit (hard-coded U[1..3]/.at[4] was a silent no-op
+    in 2D)."""
     K_B = 1.380649e-16
     M_H = 1.6726219e-24
     rho = U[0]
-    mx, my, mz = U[1], U[2], U[3]
+    mom = U[1:-1]
     rho_cgs = rho * unit_density
     T = T0 * (1.0 + (rho_cgs / rho_AD) ** gm1)
     p = (K_B * T * rho_cgs / (mu * M_H)) / unit_pressure
-    KE = 0.5 * (mx * mx + my * my + mz * mz) / rho
+    KE = 0.5 * jnp.sum(mom * mom, axis=0) / rho
     E_new = p / gm1 + KE
-    return U.at[4].set(E_new)
+    return U.at[-1].set(E_new)
 
 
 def _barotropic_project(U, cfg):

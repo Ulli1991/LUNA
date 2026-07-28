@@ -125,7 +125,7 @@ def main():
     # common — e.g. gamma / autodiff_fixed_dt for the turbulent-cooling setup —
     # doesn't trip replace()'s "multiple values for keyword" error.
     cfg = replace(Config(), **{**common, **ov})
-    result = run(cfg)
+    result = run(cfg).extra
     if isinstance(result, dict) and "ic_residual" in result:
         print(f"RESULT {problem} ic_residual={result['ic_residual']:.3e}",
               flush=True)

@@ -44,7 +44,7 @@ def main():
     )
     initialize_jax_distributed(enable_x64=True)
     cfg = replace(Config(), **overrides)
-    result = run(cfg)
+    result = run(cfg).extra
     if isinstance(result, dict) and "corr_err" in result:
         ce = result["corr_err"]; pe = result["coarse_err"]
         print(f"RESULT corrector: coarse-only={pe[-1] if pe else 'nan'} "

@@ -316,9 +316,9 @@ def initialize_simulation_distributed(cfg, mesh: Mesh) -> Tuple[Array, float, in
 
 def create_solver_distributed(
     cfg, grid: GridParams, mesh: Mesh
-) -> Tuple[Callable, str, NamedSharding]:
+) -> Tuple[Callable, Callable, NamedSharding]:
     """
-    Create time stepping function with integrated dt computation for distributed execution.
+    Build the distributed MUSCL-Hancock solver for a config + mesh.
 
     Parameters
     ----------
@@ -331,11 +331,12 @@ def create_solver_distributed(
 
     Returns
     -------
-    time_step_fn : Callable
-        Combined time stepping function: (U, t, t_snapshot, t_end) -> (U_new, dt)
-        Computes dt and performs time step in ONE function call (performance optimization)
-    integrator_name : str
-        Name of the integrator (e.g., "RK2", "MUSCL-Hancock", "RK4")
+    compute_dt_fn : Callable
+        (U,) -> dt_cfl.  Pure CFL estimate; the runner does all clamping
+        (snapshot times, t_end).
+    step_fn : Callable
+        (U, dt) -> U_new.  One shard_map MUSCL-Hancock step with explicit
+        ppermute halos.
     sharding : NamedSharding
         Sharding specification for arrays
     """
@@ -358,10 +359,6 @@ def create_solver_distributed(
     from utils.halo_exchange_shardmap import make_halo_shardmap
 
     pad_halo_fn = make_halo_shardmap(mesh, cfg.SPATIAL_DIMENSION)
-    # Toggle for A/B testing shard_map vs the (legacy) auto-sharding step path.
-    # NB the auto path reuses the ppermute halo, which needs a shard_map axis
-    # context — outside it this branch is expected to fail (auto halo was removed).
-    use_shardmap = os.environ.get("LUNA_USE_SHARDMAP", "1") == "1"
     if is_main_process:
         print("Using shard_map with explicit per-shard ppermute halos")
         print(f"Sharding spec: {sharding.spec}")
@@ -437,17 +434,16 @@ def create_solver_distributed(
             cfg.CFL,
             sharding=sharding,
             riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
-            use_shardmap=use_shardmap,
-            mesh=mesh if use_shardmap else None,
+            use_shardmap=True,
+            mesh=mesh,
         )
         integrator_name = (
             f"MUSCL-Hancock ({getattr(cfg, 'riemann_solver', 'hllc').upper()}"
-            + (", shard_map" if use_shardmap else "")
-            + ")"
+            ", shard_map)"
         )
 
     if is_main_process:
         print(f"Using {integrator_name} time integration")
         print("Runner controls dt clamping (snapshot times, t_end)")
 
-    return compute_dt_fn, step_fn, integrator_name, sharding
+    return compute_dt_fn, step_fn, sharding

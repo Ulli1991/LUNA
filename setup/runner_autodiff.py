@@ -83,11 +83,6 @@ def _spectral_ic_field(key, shape, k_max=0, amp=0.05, slope=0.0):
     return g / (jnp.std(g) + 1e-12) * amp
 
 
-# back-compat alias (older callers import _low_k_field); broadband by default now.
-def _low_k_field(key, shape, k_max=0, amp=0.05):
-    return _spectral_ic_field(key, shape, k_max=k_max, amp=amp)
-
-
 # ---------------------------------------------------------------------------
 # Differentiable evolution: simulate(theta, U0)
 # ---------------------------------------------------------------------------
@@ -206,7 +201,7 @@ def _render_image_target(Nx, path, lo, hi):
     return lo + (hi - lo) * img
 
 
-def _luna_emergence(step_fn, U0, cfg, is_main):
+def _luna_emergence(step_fn, cfg, is_main):
     """Reverse-mode IC optimization so the LATE-TIME field forms a target image
     (the word 'LUNA') purely from the dynamics -- diffhydro Fig. 12. The free
     parameter is the FULL per-cell IC field; nothing is placed by hand.
@@ -480,14 +475,20 @@ def _save_emergence_montage(panel0, panel0_lab, panel0_cmap, frames, fracs,
     print(f"  wrote {out}", flush=True)
 
 
-def run_simulation_autodiff(U0, cfg, grid, step_fn, compute_dt_fn, sharding,
+def run_simulation_autodiff(U0, cfg, step_fn, compute_dt_fn, sharding,
                             is_main_process=True):
+    """Differentiable-run dispatcher: selects the task by ``cfg.autodiff_task``
+    (``xray_sensitivity`` | ``eta_recovery`` | ``ic_inversion`` |
+    ``luna_emergence`` | ``corrector_training``) and returns that task's result
+    dict; `main.run` wraps it in a RunResult (dict lands in ``.extra``). All
+    tasks differentiate through the production step_fn from
+    create_solver_distributed."""
     task = getattr(cfg, "autodiff_task", "xray_sensitivity")
 
     # IC-field optimization so the late-time field forms a target image (fig19);
     # builds its own forward from step_fn, so it doesn't use build_simulate.
     if task == "luna_emergence":
-        return _luna_emergence(step_fn, U0, cfg, is_main_process)
+        return _luna_emergence(step_fn, cfg, is_main_process)
 
     # Solver-in-the-loop: a coarse/fine problem that builds its own KH
     # reference, so it doesn't use the single-resolution build_simulate.
@@ -946,7 +947,7 @@ def _corrector_training(U0, cfg, step_fn, compute_dt_fn, is_main):
     fmesh, _ = create_distributed_mesh(fine_cfg)
     Uf, _, _ = initialize_simulation_distributed(fine_cfg, fmesh)
     fgrid = GridParams.from_config(fine_cfg)
-    _, fstep, _, _ = create_solver_distributed(fine_cfg, fgrid, fmesh)
+    _, fstep, _ = create_solver_distributed(fine_cfg, fgrid, fmesh)
     fstep_j = jax.jit(fstep)
 
     @jax.jit

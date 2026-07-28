@@ -55,13 +55,13 @@ def main():
     mesh, _ = create_distributed_mesh(cfg)
     U, _, _ = initialize_simulation_distributed(cfg, mesh)
     grid = GridParams.from_config(cfg)
-    compute_dt_fn, step_fn, _, sharding = create_solver_distributed(cfg, grid, mesh)
+    compute_dt_fn, step_fn, sharding = create_solver_distributed(cfg, grid, mesh)
 
     dm_pos, dm_p, dm_mass = dm_zeldovich_ic(cfg)
     print(f"# coupled pancake: gas {cfg.Nx}^3 grid + {dm_pos.shape[0]} DM particles")
 
     U, dm_pos, dm_p, a, step = run_simulation_cosmo_hydro(
-        U, cfg, grid, step_fn, compute_dt_fn, sharding,
+        U, cfg, step_fn, compute_dt_fn,
         dm_pos, dm_p, dm_mass, is_main_process=True)
 
     # --- compare BOTH species to the analytic Zel'dovich solution at z=0 ---

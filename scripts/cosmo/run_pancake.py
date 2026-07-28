@@ -64,7 +64,8 @@ def analytic(a, cfg):
 def run_to(a_end):
     """Run the pancake through main to a_end; return profiles + L1 errors."""
     cfg = replace(build_cfg(), a_end=float(a_end))
-    U, a, step = main.run(cfg)
+    res = main.run(cfg)
+    U, a, step = res.extra["U"], res.t, res.n_steps
     U = np.asarray(U)
     rho_num = U[0, :, 0, 0]                 # uniform in y,z -> any line in x
     v_num = U[1, :, 0, 0] / U[0, :, 0, 0]

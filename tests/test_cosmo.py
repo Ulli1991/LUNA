@@ -55,7 +55,8 @@ def test_zeldovich_pancake_through_main():
         output_dir="/tmp/luna_test_zeldovich",
     )
 
-    U, a, step = main.run(cfg)
+    res = main.run(cfg)
+    U, a, step = res.extra["U"], res.t, res.n_steps
     U = np.asarray(U)
     assert np.isfinite(U).all(), "non-finite state"
 
