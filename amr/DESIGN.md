@@ -43,7 +43,7 @@ block-AMR layer. We cherry-pick ideas from JAX-AMR (vendored read-only under
 - **Block identity**: integer block-coords per level → **Morton code** (interleave
   `ndim` bits/level). O(N log N) sort/searchsorted for neighbour finding and for
   matching unaltered blocks across re-adaptation. (Upstream used an O(N²) pairwise
-  compare — `third_party/jaxamr/amr.py:356`.)
+  compare — `compare_coords` in `third_party/jaxamr/amr.py`.)
 - **NaN sentinel block**: the last slot of each level's padded block array is a
   NaN block (invalid-ghost source). All reductions are nan-aware (`nanmax`/`nansum`).
 - **Ghost halo** width `g` matches LUNA hydro's stencil need. Fill order per face:
@@ -145,13 +145,48 @@ block-AMR layer. We cherry-pick ideas from JAX-AMR (vendored read-only under
    PM (1e-11), deposit mass conservation across seams/C/F.
 6. `shard_map` blocks across devices; wire through `main.py`.
    **DONE (`amr/shard.py`, `setup/runner_amr.py`):** blocks are the shard unit
-   over a 1-D `("blocks",)` mesh; per-device divergence with an `all_gather` of
-   only block-boundary face states; batched all-levels kernel (`divergence_batched_
-   shmap`) for one compile; GSPMD-safe replicated reflux/gravity. Tests: shard
+   over a 1-D `("blocks",)` mesh; per-device divergence exchanging only
+   block-boundary face states; batched all-levels kernel (`divergence_batched_
+   shmap`) for one compile; GSPMD-safe reflux/gravity. Tests: shard
    step / full sync / subcycle+gravity+reflux all bit-match single device.
-   **LIMITATION — multi-process is a follow-up:** single process / N local
-   devices is the current target; `process_count() > 1` falls back to replicated
-   storage (correct, no per-device memory win) — `runner_amr.py:135`.
+   **Multi-process works too** (`_to_global` in `runner_amr` shards the block
+   DATA via `make_array_from_callback`, memory = total/n_proc; topology stays
+   replicated because regrid's Morton kernels need the global block set), with
+   `block_until_ready` lockstep barriers between `regrid_sharded`'s collective
+   kernels to prevent cross-process dispatch drift.
+
+## Distribution: halo & reflux modes (env-selected, read in `setup/runner_amr.py`)
+
+- **Halo/seam exchange** — `LUNA_AMR_HALO_MODE`:
+  - `sparse` (default when sharded): host-built per-device-pair routing plans
+    (`build_same_level_plan` + friends) → one `all_to_all` of only remote
+    boundary blocks, O(surface) wire. Plans are rebuilt after every regrid and
+    passed through the jitted chunk as ARGUMENTS (closure-captured plans go
+    stale on same-shape regrids). Benched strictly dominant: ~2.2× faster than
+    gather AND lowest peak memory.
+  - `gather`: plain `all_gather` (simple, O(total) wire).
+  - `ring`: chunked ring gather; auto-gated by `LUNA_AMR_HALO_RING`(`_GB`) when
+    a full gather would OOM — trades ~7× fill cost for peak-memory savings.
+- **Reflux** — `LUNA_AMR_REFLUX`: `repl` (replicated wrapper, default),
+  `sharded` (explicit-psum distributed, `apply_reflux_sharded`), `iface`
+  (plan-routed interface flux, `apply_reflux_iface` + `build_reflux_plan`;
+  +23% at the 8-GPU AMR rung, opt-in until a 2-process hang is root-caused).
+- Debug knobs: `LUNA_AMR_SHARD_DBG` (per-proc memory), `LUNA_AMR_LOOP_DBG`
+  (per-op loop + per-level regrid trace), `LUNA_AMR_NO_SHRINK` (freeze the
+  hysteretic capacity ladder).
+
+## Hybrid dense-L0 (`amr/hybrid.py`, in progress)
+
+Differential profiling showed the distributed-AMR cost is dominated by running
+the BASE level through the block machinery (per-step gather ghost-fill + copies
++ concat vs the dense path's ppermute-slabs + one fused stencil). Plan: store
+L0 DENSE (stepped by the dense `create_solver_distributed` machinery at
+gigacell speed; L0 always tiles the domain), keep refined levels as blocks.
+The C/F bridges already exist (`fill_ghost_from_coarse` with a dense parent
+field, `apply_reflux_dense`). Status: v1 single-device is bit-identical to the
+block driver (validated 64³/256³, 1-2 levels, mass exact) at 1.3-1.4× speed;
+v3 = dense L0 via the explicit-ppermute shard_map kernels is the decided
+multi-GPU route. Probes: `scaling/amr_scale/hybrid_validate.py`, `hybrid_mp.py`.
 
 Also DONE (a step-3 "follow-on"): the **Berger-Oliger time-subcycled** multi-level
 integrator (`driver.advance_subcycle`, r=2, `lax.scan` recursion, time-interpolated
@@ -161,15 +196,19 @@ in both integrators.
 
 ## Open work
 
-- **Multi-process sharded construction** (one local shard per process) — the
-  named follow-up; until then multi-node AMR is replicated (no memory win).
-- **Cosmology** (`amr/cosmo.py`): gas-only Phase 1 (super-comoving). DM not yet
-  wired into the cosmo path; **dual-energy raises `NotImplementedError`**; no
-  dedicated `test_amr_cosmo.py`.
+- **Cosmology** (`amr/cosmo.py`): gas-only Phase 1 (super-comoving); DM on AMR
+  via `amr/particles.py` wired in the runner. **Dual-energy on AMR raises
+  `NotImplementedError`**; `tests/test_amr_cosmo.py` covers the gas path.
 - **Deep-hierarchy stability**: 5-level Sedov-class runs can drive cells negative
-  and collapse dt (runner has STALLED / denormal-dt guards); `floor_positivity`
-  is opt-in. The `max_blocks` cap can drop a C/F seam mid-shock.
-- **Perf**: dense reflux/restrict variants (`reflux.apply_reflux_dense`) unroll
-  per-slot and won't compile at ~1e4 blocks — the scatter versions
-  (`apply_reflux_blocks`, `_restrict_into_parent`) are the hot path; remove/guard
-  the dense ones. int32 Morton truncates above ~1024 blocks/dim in 3D under fp32.
+  and collapse dt (runner has STALLED / denormal-dt guards); the auto-scaling
+  relative floor (`amr_rho_floor_frac`, `driver.floor_from_fraction`) is the
+  default mitigation. The `max_blocks` cap can drop a C/F seam mid-shock.
+- **Distributed perf at small per-GPU loads**: no single comm villain — the
+  fixed cost is spread across per-level fills, underlay, seam, concat, restrict.
+  The decided fix is the hybrid dense-L0 (section above). `LUNA_AMR_REFLUX=iface`
+  2-process hang still to root-cause.
+- **Perf notes**: the dense reflux/restrict variants (`reflux.apply_reflux_dense`)
+  unroll per-slot and won't compile at ~1e4 blocks — the scatter versions
+  (`apply_reflux_blocks`, `_restrict_into_parent`) are the block-path hot path;
+  the dense variant is retained as the hybrid dense-L0 bridge (and tests).
+  int32 Morton truncates above ~1024 blocks/dim in 3D under fp32.
