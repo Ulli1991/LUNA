@@ -34,6 +34,7 @@ from sources.self_gravity import setup_self_gravity
 from sources.cooling import setup_cooling
 from sources.ou_forcing import setup_ou_forcing
 from hydro.cooling import apply_cooling, PROTON_MASS_CGS, BOLTZMANN_CGS
+from setup.runner_distributed import _barotropic_project, _isothermal_project
 
 MYR_S = 1.0e6 * 3.15576e7
 
@@ -105,18 +106,29 @@ def build_simulate(U0_ref, cfg, step_fn, compute_dt_fn, sharding,
                 if cc85 is not None else jnp.zeros(2, dtype=U0_ref.dtype))
 
     iso_cs2 = float(getattr(cfg, "isothermal_cs2", 0.0))
-    gm1 = float(cfg.gamma) - 1.0
+
+    # Sinks and particles carry loop state (sink registry, particle positions)
+    # that the differentiable scan carry does not thread. They used to be
+    # SILENTLY skipped here while the standard path applied them -- refuse
+    # loudly instead so a config that enables them cannot diverge quietly.
+    if getattr(cfg, "sinks_enabled", False) or getattr(cfg, "particles_enabled", False):
+        raise NotImplementedError(
+            "autodiff_mode does not support sinks_enabled/particles_enabled "
+            "(their per-step state is not threaded through the scan carry)")
 
     def apply_sources(U, theta, dt, a, key):
-        # EXACT order of run_simulation_distributed._attempt_step:
-        # step -> forcing -> isothermal -> ext_grav -> self_grav -> cc85 -> cooling
+        # Same order as run_simulation_distributed._attempt_step:
+        # step -> forcing -> isothermal -> barotropic -> ext_grav -> self_grav
+        # -> cc85 -> cooling. One deliberate difference: cc85 uses the
+        # theta-parameterized apply_eta (eta_M/eta_E are the differentiated
+        # parameters); sinks/particles rejected above.
         U = step_fn(U, dt)
         if forcing is not None:
             U, a, key = forcing["apply"](U, a, key, dt)
         if iso_cs2 > 0.0:
-            # soft isothermal thermostat: reset E so p = cs2*rho (float64-safe)
-            ke = 0.5 * (U[1] ** 2 + U[2] ** 2 + U[3] ** 2) / U[0]
-            U = U.at[4].set(iso_cs2 * U[0] / gm1 + ke)
+            U = _isothermal_project(U, iso_cs2, cfg.gamma)
+        if getattr(cfg, "barotropic_eos", False):
+            U = _barotropic_project(U, cfg)
         if extg is not None:
             U = extg["apply"](U, dt)
         if selfg is not None:

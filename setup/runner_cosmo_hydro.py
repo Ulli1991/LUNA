@@ -772,6 +772,27 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     return U, posS, pS, a, step
 
 
+def run_simulation_cosmo_hydro_registered_ic(cfg, dm_pos, dm_p, dm_mass,
+                                             is_main_process=True):
+    """Coupled gas+DM run where the GAS comes from cfg's registered test
+    problem (`initialize_simulation_distributed`) and the DM arrays are
+    caller-provided (synthetic ICs, e.g. the coupled Zel'dovich pancake).
+    Builds mesh/solver exactly like `main.run`'s dense path, then dispatches
+    the coupled loop. Returns (U, dm_pos, dm_p, a, step)."""
+    from setup import (create_distributed_mesh, create_solver_distributed,
+                       initialize_simulation_distributed)
+    from utils.grid_params import GridParams
+
+    mesh, _ = create_distributed_mesh(cfg)
+    U, _, _ = initialize_simulation_distributed(cfg, mesh)
+    grid = GridParams.from_config(cfg)
+    compute_dt_fn, step_fn, _ = create_solver_distributed(cfg, grid, mesh)
+    return run_simulation_cosmo_hydro(
+        U, cfg, step_fn, compute_dt_fn,
+        jnp.asarray(dm_pos), jnp.asarray(dm_p), jnp.asarray(dm_mass),
+        is_main_process=is_main_process)
+
+
 def run_simulation_cosmo_hydro_music(cfg, is_main_process=True):
     """Assemble a coupled gas+DM run from a MUSIC baryon IC and dispatch the
     coupled runner. Gas (PartType0) is meshed to the grid; DM (PartType1) stays
