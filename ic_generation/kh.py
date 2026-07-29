@@ -1,5 +1,7 @@
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 
 def kelvin_helmholtz(cfg, x_slice=None, y_slice=None):
     """2D Kelvin-Helmholtz instability: two shearing layers seeded with a sin mode
@@ -11,19 +13,11 @@ def kelvin_helmholtz(cfg, x_slice=None, y_slice=None):
     gamma = cfg.gamma
 
     # Determine local ranges
-    if x_slice is not None:
-        x_start, x_end = x_slice
-        Nx_local = x_end - x_start
-    else:
-        x_start, x_end = 0, Nx
-        Nx_local = Nx
+    x_start, x_end = local_range(Nx, x_slice)
+    Nx_local = x_end - x_start
 
-    if y_slice is not None:
-        y_start, y_end = y_slice
-        Ny_local = y_end - y_start
-    else:
-        y_start, y_end = 0, Ny
-        Ny_local = Ny
+    y_start, y_end = local_range(Ny, y_slice)
+    Ny_local = y_end - y_start
 
     # Create coordinate arrays for local slice only
     x_full = jnp.linspace(0, Lx, Nx, endpoint=False)

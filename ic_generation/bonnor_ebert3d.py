@@ -10,6 +10,8 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.integrate import solve_ivp
 
+from ._grid import local_range
+
 
 def _be_table(xi_max=20.0, n_points=4000):
     """Integrate the isothermal Lane–Emden equation."""
@@ -59,12 +61,9 @@ def bonnor_ebert_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
 
     dx = Lx / Nx; dy = Ly / Ny; dz = Lz / Nz
     cx, cy, cz = 0.5 * Lx, 0.5 * Ly, 0.5 * Lz
-    if x_slice is None: xs, xe = 0, Nx
-    else: xs, xe = x_slice
-    if y_slice is None: ys, ye = 0, Ny
-    else: ys, ye = y_slice
-    if z_slice is None: zs, ze = 0, Nz
-    else: zs, ze = z_slice
+    xs, xe = local_range(Nx, x_slice)
+    ys, ye = local_range(Ny, y_slice)
+    zs, ze = local_range(Nz, z_slice)
 
     x_loc = (np.arange(xs, xe, dtype=np.float64) + 0.5) * dx - cx
     y_loc = (np.arange(ys, ye, dtype=np.float64) + 0.5) * dy - cy

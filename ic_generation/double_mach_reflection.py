@@ -1,5 +1,7 @@
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 
 def double_mach_reflection(cfg, x_slice=None, y_slice=None):
     """2D double Mach reflection test: strong shock producing a double Mach stem.
@@ -10,15 +12,9 @@ def double_mach_reflection(cfg, x_slice=None, y_slice=None):
     gamma = cfg.gamma
 
     # Determine local ranges
-    if x_slice is not None:
-        x_start, x_end = x_slice
-    else:
-        x_start, x_end = 0, Nx
+    x_start, x_end = local_range(Nx, x_slice)
 
-    if y_slice is not None:
-        y_start, y_end = y_slice
-    else:
-        y_start, y_end = 0, Ny
+    y_start, y_end = local_range(Ny, y_slice)
 
     # Create coordinate arrays for local slice only
     x_full = jnp.linspace(0, Lx, Nx, endpoint=False)

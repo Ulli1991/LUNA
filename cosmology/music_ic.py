@@ -166,12 +166,6 @@ def write_synthetic_dm_ic(path: str, Np: int = 32, box: float = 1.0,
 G_AREPO = 43007.1      # G in kpc/h (km/s)^2 / (1e10 Msun/h)
 
 
-def music_cosmology(ic: DMICs):
-    """A cosmology.Cosmology built from the IC header."""
-    from cosmology import Cosmology
-    return Cosmology(Omega_m=ic.Omega_m, Omega_L=ic.Omega_L, h=ic.h)
-
-
 def music_run_config(ic: DMICs, Nx: int, base=None):
     """Build a LUNA Config for a cosmological DM run from a loaded MUSIC IC:
     box, cosmology, a_init, periodic boundary, and Arepo unit constants

@@ -6,14 +6,11 @@ existing snapshots/jeans_Nx{N} runs; no in-figure title (per the figstyle rule).
 import glob
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from scripts.validation.plots._plotkit import mpl, save
 
+plt = mpl()
 from file_io.read_snapshot import read_snapshot
-from utils.figstyle import apply_style, decorate, FIGSIZE
-
-apply_style()
+from utils.figstyle import decorate, FIGSIZE
 
 # linear-theory parameters (code units) — must match jeans_instability_run.py
 RHO0 = 1.0
@@ -77,7 +74,7 @@ def main():
     decorate(ax)
     fig.tight_layout()
     out = "figures/jeans_growth.png"
-    fig.savefig(out, dpi=140)
+    save(fig, out, dpi=140)
     print(f"wrote {out}  (σ_analytic={GROWTH:.3f}; "
           f"σ_meas={[round(c[3], 2) for c in curves]})")
 

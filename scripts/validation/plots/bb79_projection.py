@@ -10,12 +10,10 @@ import os
 import glob
 import numpy as np
 import h5py
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from utils.figstyle import apply_style, decorate, FIGSIZE
+from scripts.validation.plots._plotkit import mpl, save, load_snap
 
-apply_style()
+plt = mpl()
+from utils.figstyle import decorate, FIGSIZE
 
 LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
 
@@ -80,20 +78,8 @@ def arepo_column_density(snap_path, Ng=128):
 
 def luna_column_density(snapdir):
     """Load LUNA 3D ρ and integrate along z."""
-    files = sorted(glob.glob(os.path.join(snapdir, "*.hdf5")))
-    with h5py.File(files[0], "r") as h:
-        a = h["cells"].attrs
-        Nx = int(a["Nx_global"]); Ny = int(a["Ny_global"]); Nz = int(a["Nz_global"])
-        L = float(a["Lx"]); dx = float(a["dx"]); t = float(a["time"])
-    rho = np.empty((Nx, Ny, Nz), dtype=np.float64)
-    for f in files:
-        with h5py.File(f, "r") as h:
-            c = h["cells"]
-            xs = int(c.attrs["x_start"]); ys = int(c.attrs["y_start"]); zs = int(c.attrs["z_start"])
-            shp = c["density"].shape
-            rho[xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["density"][:]
-    Sigma = rho.sum(axis=2) * dx
-    return Sigma, L, t
+    data, a = load_snap(snapdir)
+    return data["density"].sum(axis=2) * float(a["dx"]), float(a["Lx"]), float(a["time"])
 
 
 def main():
@@ -132,10 +118,9 @@ def main():
     axes[1].set_xlabel("x"); axes[1].set_ylabel("y")
     plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10} \Sigma$")
     fig.tight_layout()
-    os.makedirs("figures", exist_ok=True)
     Nx_luna = Sigma_L.shape[0]   # LUNA column density is (Nx, Ny)
     out = f"figures/arepo_vs_luna_bb79_projection_Nx{Nx_luna}.png"
-    fig.savefig(out); plt.close(fig)
+    save(fig, out, close=True)
     print(f"  wrote {out}")
 
 

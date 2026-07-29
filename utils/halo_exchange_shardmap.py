@@ -59,11 +59,6 @@ def make_halo_shardmap(mesh, spatial_dim):
     return halo
 
 
-def make_halo_3d_shardmap(mesh):
-    """Backwards-compatible 3D factory (thin wrapper over make_halo_shardmap)."""
-    return make_halo_shardmap(mesh, 3)
-
-
 def _slab(U, axis, lo):
     """Boundary slab (index 0 if lo else -1) along `axis`, keepdims, any rank."""
     sl = [slice(None)] * U.ndim

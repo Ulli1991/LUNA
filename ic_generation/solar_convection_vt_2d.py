@@ -8,6 +8,8 @@ V&T's vertical z maps to LUNA's y in 2D; gravity is still cfg.gravity_z
 
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 # V&T layer parameters
 _VT = dict(
     z_bounds=(0.0, 1.64, 7.77, 11.0),
@@ -37,7 +39,7 @@ def _equilibrium_columns(cfg, y_slice):
     Ny = cfg.Ny
     Ly = cfg.Ly
     dy = Ly / Ny
-    y_start, y_end = y_slice if y_slice is not None else (0, Ny)
+    y_start, y_end = local_range(Ny, y_slice)
     y_local = (jnp.arange(y_start, y_end) + 0.5) * dy
 
     g = -cfg.gravity_z
@@ -57,7 +59,7 @@ def _equilibrium_columns(cfg, y_slice):
 def solar_convection_vt_2d_equilibrium(cfg, x_slice=None, y_slice=None, z_slice=None):
     """Hydrostatic 3-layer polytropic equilibrium (no bubble), 2D."""
     Nx = cfg.Nx
-    x_start, x_end = x_slice if x_slice is not None else (0, Nx)
+    x_start, x_end = local_range(Nx, x_slice)
     nx_l = x_end - x_start
 
     rho_y, p_y = _equilibrium_columns(cfg, y_slice)
@@ -78,8 +80,8 @@ def solar_convection_vt_2d(cfg, x_slice=None, y_slice=None, z_slice=None):
     Lx, Ly = cfg.Lx, cfg.Ly
     dx = Lx / Nx
     dy = Ly / Ny
-    x_start, x_end = x_slice if x_slice is not None else (0, Nx)
-    y_start, y_end = y_slice if y_slice is not None else (0, Ny)
+    x_start, x_end = local_range(Nx, x_slice)
+    y_start, y_end = local_range(Ny, y_slice)
 
     x_local = (jnp.arange(x_start, x_end) + 0.5) * dx
     y_local = (jnp.arange(y_start, y_end) + 0.5) * dy

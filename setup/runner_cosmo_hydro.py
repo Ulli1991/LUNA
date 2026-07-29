@@ -18,6 +18,7 @@ from gravity.particle_mesh import ParticleMeshGravity
 from gravity.poisson_multigrid import solve_poisson_fmg
 from setup.cosmo_common import (CosmoClock, dtau_accel, poisson_coeff_fac,
                                 softening_from_config)
+from setup.run_report import StepLog
 
 
 def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
@@ -233,6 +234,9 @@ def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
         print("[cosmo-hydro] dual-energy formalism ON "
               f"(switch eta={dual_eta:.1e})", flush=True)
 
+    rep = StepLog(cfg, is_main_process,
+                  history_fields=["step", "a", "dloga", "delta_max",
+                                  "rho_max"])
     tau, step, t0 = 0.0, 0, time.time()
     g_gas, g_dm, dmax = forces(U, dm_pos, coeff_fac * a)
     while a < a_end - 1e-9:
@@ -283,10 +287,12 @@ def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
         tau += dtau
         a = a_next
         step += 1
-        if is_main_process and (step % 10 == 0 or a >= a_end - 1e-9):
-            print(f"[cosmo-hydro] {step:5d} {a:8.4f} {1/a-1:8.4f} {dloga:8.5f} "
-                  f"{float(dmax):10.3f} {float(jnp.max(U[0])):11.3e}", flush=True)
-            if not np.isfinite(float(jnp.max(U[0]))):
+        if rep.due(step, a >= a_end - 1e-9):
+            rho_max = float(jnp.max(U[0]))
+            rep.step(step, f"[cosmo-hydro] {step:5d} {a:8.4f} {1/a-1:8.4f} "
+                     f"{dloga:8.5f} {float(dmax):10.3f} {rho_max:11.3e}",
+                     row=[step, a, dloga, float(dmax), rho_max], force=True)
+            if not np.isfinite(rho_max):
                 print("[cosmo-hydro] non-finite gas state -- stopping"); break
         if is_main_process and snap_every > 0 and step % snap_every == 0:
             write_snap(a, U, dm_pos)
@@ -568,6 +574,9 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
                       "pm_deposit_pct,pm_fmg_pct,pm_grad_pct,pm_gather_pct\n")
         prof_fh.flush()
 
+    rep = StepLog(cfg, is_main_process,
+                  history_fields=["step", "a", "dloga", "delta_max",
+                                  "rho_max"])
     tau, step, t0 = 0.0, 0, time.time()
     tc = time.time()
     g_gas, g_dm, dmax = forces(U, posS, massS, actS, a)
@@ -661,12 +670,15 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         a = a_next
         step += 1
         n_bad_tot += int(n_bad)
-        if is_main_process and (step % 10 == 0 or a >= a_end - 1e-9):
-            print(f"[cosmo-hydro] {step:5d} {a:8.4f} {1/a-1:8.4f} {dloga:8.5f} "
-                  f"dmax={float(dmax):9.3f} rhomax={float(jnp.max(U[0])):10.3e} "
-                  f"occ={int(max_occ)} nbad={int(n_bad)} "
-                  f"{(time.time()-t0)/step:5.2f}s/st", flush=True)
-            if not np.isfinite(float(jnp.max(U[0]))):
+        if rep.due(step, a >= a_end - 1e-9):
+            rho_max = float(jnp.max(U[0]))
+            rep.step(step, f"[cosmo-hydro] {step:5d} {a:8.4f} {1/a-1:8.4f} "
+                     f"{dloga:8.5f} dmax={float(dmax):9.3f} rhomax={rho_max:10.3e} "
+                     f"occ={int(max_occ)} nbad={int(n_bad)} "
+                     f"{(time.time()-t0)/step:5.2f}s/st",
+                     row=[step, a, dloga, float(dmax), int(max_occ), int(n_bad)],
+                     force=True)
+            if not np.isfinite(rho_max):
                 print("[cosmo-hydro] non-finite gas state -- stopping")
                 break
         # write_snap enters a shard_map collective (cic_deposit_slab) -> every

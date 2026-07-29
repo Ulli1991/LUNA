@@ -30,6 +30,7 @@ from scripts.validation.runner import sweep
 from scripts.validation.athenak_io import load_1d as load_athenak_bin
 from scripts.validation.metrics import l1_error, l2_error, convergence_slope
 from file_io.read_snapshot import read_snapshot, latest_snapshot_dir
+from scripts.validation.plots._plotkit import save
 
 
 NX_SCAN = [32, 64, 128, 256, 512]
@@ -120,9 +121,7 @@ def main():
     decorate(ax)
     fig.tight_layout()
 
-    Path("figures").mkdir(exist_ok=True)
-    fig.savefig("figures/soundwave_standing_convergence.pdf")
-    fig.savefig("figures/soundwave_standing_convergence.png", dpi=200)
+    save(fig, "figures/soundwave_standing_convergence.pdf", also_png=True)
     print("Saved figures/soundwave_standing_convergence.{pdf,png}")
 
 

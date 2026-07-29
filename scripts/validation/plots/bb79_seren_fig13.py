@@ -11,18 +11,13 @@ Reads snapshots/bb79_baro_Nx256 (barotropic) and snapshots/bb79_baro_Nx256_sinks
 (sinks); override base via LUNA_BB_SNAP_BARO / LUNA_BB_SNAP_SINK.
 """
 import os
-import glob
 
 import numpy as np
-import h5py
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
-from utils.figstyle import apply_style
+from scripts.validation.plots._plotkit import mpl, save, snap_times
 from scripts.validation.plots.bb79_iso_luna import luna_column_density
 
-apply_style()
+plt = mpl()
 
 PC = 3.0856775814913673e18
 MYR = 1.0e6 * 3.15576e7
@@ -37,20 +32,10 @@ ROWS = [
 ]
 
 
-def _snap_times(dirpath):
-    dirs = sorted(glob.glob(os.path.join(dirpath, "snapdir_*")))
-    times = []
-    for d in dirs:
-        f = sorted(glob.glob(os.path.join(d, "*.hdf5")))[0]
-        with h5py.File(f, "r") as h:
-            times.append(float(h["cells"].attrs["time"]))
-    return dirs, np.array(times)
-
-
 def main():
     panels = {}                                # (row, col) -> (S, L)
     for r, (_, dp) in enumerate(ROWS):
-        dirs, times = _snap_times(dp)
+        dirs, times = snap_times(dp)
         if len(dirs) == 0:
             print(f"  WARN: no snapshots under {dp}")
             continue
@@ -97,9 +82,8 @@ def main():
     cax = fig.add_axes([0.92, 0.12, 0.018, 0.76])
     if im is not None:
         fig.colorbar(im, cax=cax, label=r"$\log_{10}\,\Sigma$")
-    os.makedirs("figures", exist_ok=True)
     out = "figures/bb79_seren_fig13.png"
-    fig.savefig(out)
+    save(fig, out)
     print(f"  wrote {out}")
 
 

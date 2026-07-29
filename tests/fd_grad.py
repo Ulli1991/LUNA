@@ -82,21 +82,3 @@ def horizon_scan(f_for_horizon, params, horizons, h, log_relative=True):
         else:
             err[k] = float(np.max(np.abs(ga - gf)))
     return grads_ad, grads_fd, err
-
-
-def plot_horizon_scan(horizons, err, out_path, title="AD vs FD: |Δg|/|g_FD|"):
-    """Write a log-scale plot of the FD/AD error vs integration horizon."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from utils.figstyle import apply_style, decorate, FIGSIZE
-    apply_style()
-    fig, ax = plt.subplots(figsize=FIGSIZE)
-    ax.semilogy(horizons, err, "o-", lw=1.5)
-    ax.set_xlabel("integration horizon  T")
-    ax.set_ylabel("|∇_AD − ∇_FD| / |∇_FD|  (max over params)")
-    ax.axhline(1e-3, color="0.5", lw=1.0, ls="-")
-    decorate(ax)
-    fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)

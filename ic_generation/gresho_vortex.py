@@ -7,6 +7,8 @@ cfg.gresho_Mmax (default 0.01) so u_max/c_s hits the requested Mach number.
 
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 
 def gresho_vortex(cfg, x_slice=None, y_slice=None, z_slice=None):
     Nx, Ny = cfg.Nx, cfg.Ny
@@ -19,8 +21,8 @@ def gresho_vortex(cfg, x_slice=None, y_slice=None, z_slice=None):
     p0 = rho0 / (gamma * Mmax * Mmax)
 
     dx, dy = cfg.Lx / Nx, cfg.Ly / Ny
-    x_start, x_end = x_slice if x_slice is not None else (0, Nx)
-    y_start, y_end = y_slice if y_slice is not None else (0, Ny)
+    x_start, x_end = local_range(Nx, x_slice)
+    y_start, y_end = local_range(Ny, y_slice)
     x_loc = (jnp.arange(x_start, x_end) + 0.5) * dx
     y_loc = (jnp.arange(y_start, y_end) + 0.5) * dy
     X, Y = jnp.meshgrid(x_loc, y_loc, indexing="ij")

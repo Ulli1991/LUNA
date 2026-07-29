@@ -9,6 +9,8 @@ radial velocity buildup indicates an issue.
 import jax.numpy as jnp
 import numpy as np
 
+from ._grid import local_range
+
 
 def _maclaurin_omega2(e, G, rho):
     """Chandrasekhar's relation between eccentricity and rotation Ω²."""
@@ -47,9 +49,9 @@ def maclaurin_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
 
     dx = Lx / Nx; dy = Ly / Ny; dz = Lz / Nz
     cx, cy, cz = 0.5 * Lx, 0.5 * Ly, 0.5 * Lz
-    xs, xe = (0, Nx) if x_slice is None else x_slice
-    ys, ye = (0, Ny) if y_slice is None else y_slice
-    zs, ze = (0, Nz) if z_slice is None else z_slice
+    xs, xe = local_range(Nx, x_slice)
+    ys, ye = local_range(Ny, y_slice)
+    zs, ze = local_range(Nz, z_slice)
 
     x_loc = (np.arange(xs, xe, dtype=np.float64) + 0.5) * dx - cx
     y_loc = (np.arange(ys, ye, dtype=np.float64) + 0.5) * dy - cy

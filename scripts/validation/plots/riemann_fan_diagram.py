@@ -9,10 +9,9 @@ approximate Riemann solvers, for the MUSCL-Hancock section.
 
 No data dependency. Writes figures/riemann_fan_hll_hllc.png.
 """
-import os
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from scripts.validation.plots._plotkit import mpl, save
+
+plt = mpl(style=False)
 from matplotlib.patches import Polygon, FancyArrowPatch
 
 UL = "#cfe3f7"     # left state U_L  (blue)
@@ -85,10 +84,8 @@ def main():
     panel_hll(axes[0])
     panel_hllc(axes[1])
     fig.tight_layout(pad=1.2)
-    os.makedirs("figures", exist_ok=True)
     out = "figures/riemann_fan_hll_hllc.png"
-    fig.savefig(out, dpi=150)
-    plt.close(fig)
+    save(fig, out, dpi=150, close=True)
     print(f"wrote {out}")
 
 

@@ -17,6 +17,7 @@ apply_style()
 from scripts.validation.runner import sweep
 from scripts.validation.athenak_io import load_1d as load_ak
 from file_io.read_snapshot import read_snapshot, latest_snapshot_dir
+from scripts.validation.plots._plotkit import save
 
 
 # Per-problem: t_end, slug, physical domain, BC (1 = zero-gradient/outflow,
@@ -134,13 +135,10 @@ def plot_one(problem_name, params):
                       labelspacing=0.3, borderaxespad=0.3)
 
     fig.tight_layout()
-    Path("figures").mkdir(exist_ok=True)
     fname_pdf = f"figures/shock_panels_{slug}.pdf"
     fname_png = f"figures/shock_panels_{slug}.png"
-    fig.savefig(fname_pdf)
-    fig.savefig(fname_png, dpi=200)
+    save(fig, fname_pdf, also_png=True, close=True)
     print(f"Saved {fname_pdf} and {fname_png}")
-    plt.close(fig)
 
 
 def main():

@@ -8,7 +8,6 @@ AthenaK output is in reference/athenak/kh_8192/bin/ (.bin per timestamp).
 
 Saved to figures/kh_8192_luna_vs_athenak.{pdf,png}.
 """
-from pathlib import Path
 import glob, os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -19,6 +18,7 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 apply_style()
 
 from file_io.read_snapshot import read_snapshot, find_snapshot_at_time
+from scripts.validation.plots._plotkit import save
 from scripts.validation.athenak_io import load_2d as ak_load_2d
 
 
@@ -83,9 +83,7 @@ def main():
     axes[1, 0].set_ylabel("AthenaK")
 
     fig.tight_layout()
-    Path("figures").mkdir(exist_ok=True)
-    fig.savefig("figures/kh_8192_luna_vs_athenak.pdf")
-    fig.savefig("figures/kh_8192_luna_vs_athenak.png", dpi=200)
+    save(fig, "figures/kh_8192_luna_vs_athenak.pdf", also_png=True)
     print("Saved figures/kh_8192_luna_vs_athenak.{pdf,png}")
 
 

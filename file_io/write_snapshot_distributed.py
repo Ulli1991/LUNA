@@ -1,35 +1,43 @@
 """Distributed HDF5 snapshot writer: one file per shard under
 snapdir_NNN/, no gather; stitched back by file_io/read_snapshot.py."""
 import os
-import jax
 import h5py
-import jax.numpy as jnp
 import numpy as np
-from utils.distributed import compute_local_slice, create_device_mesh
+
+from file_io.checkpoint_utils import _shard_context, _write_units
 
 
 def write_snapshot_distributed(U_sharded, cfg, t, step, mesh=None):
-    """Write one HDF5 file per addressable shard to
-    snapdir_{step:03d}/{base_name}_{step:03d}.{global_shard_id}.hdf5,
-    storing primitives + conservatives with x/y/z_start placement attrs."""
-    # Get process info
-    process_id = jax.process_index()
-    process_count = jax.process_count()
+    """
+    Save the simulation state from sharded arrays to HDF5 files.
+    Each process writes its own shard to a separate file.
 
-    # Reconstruct mesh if not provided. Use total device count, not process
-    # count: in single-process multi-GPU mode these differ (e.g. 1 process,
-    # 4 GPUs would otherwise build a (1, 1) mesh that doesn't cover devices).
-    if mesh is None:
-        mesh, _ = create_device_mesh(jax.device_count(), cfg.SPATIAL_DIMENSION)
+    This avoids expensive gather operations that can cause hangs.
+    Post-processing can stitch these files together if needed.
 
-    # Get local addressable shards. In single-process multi-GPU mode there
-    # are multiple shards per process; in true multi-process mode there is
-    # typically one. We loop over them and write ONE FILE PER SHARD using
-    # shard.index to derive each shard's position in the global grid. This
-    # avoids guessing a concatenation axis and matches the reader's stitcher.
-    local_shards = U_sharded.addressable_shards
+    Filename format: {base_name}_{step:03d}.{process_id}.hdf5
+    Example: snap_000.0.hdf5, snap_000.1.hdf5, snap_000.2.hdf5, snap_000.3.hdf5
+
+    Parameters
+    ----------
+    U_sharded : sharded array
+        Distributed array across devices
+    cfg : Config
+        Configuration object
+    t : float
+        Current simulation time
+    step : int
+        Snapshot number
+    mesh : Mesh, optional
+        JAX mesh object (will be reconstructed if not provided)
+    """
+    # Process info, mesh reconstruction (total device count — single-process
+    # multi-GPU differs from process count) and local shards. In single-process
+    # multi-GPU mode there are multiple shards per process; we write ONE FILE
+    # PER SHARD using shard.index to derive each shard's position in the global
+    # grid, which matches the reader's stitcher.
+    process_id, process_count, mesh, local_shards = _shard_context(U_sharded, cfg, mesh)
     if len(local_shards) == 0:
-        print(f"Warning: Process {process_id} has no addressable shards")
         return
 
     snapshot_dir = os.path.join(cfg.output_dir, f"snapdir_{step:03d}")
@@ -123,15 +131,7 @@ def write_snapshot_distributed(U_sharded, cfg, t, step, mesh=None):
             cells.create_dataset("pressure", data=pressure)
             cells.create_dataset("U", data=shard_arr)
 
-            if cfg.units.is_enabled:
-                units_grp = f.create_group("units")
-                units_grp.attrs["UnitLength_in_cm"] = cfg.units.UnitLength_in_cm
-                units_grp.attrs["UnitMass_in_g"] = cfg.units.UnitMass_in_g
-                units_grp.attrs["UnitVelocity_in_cm_per_s"] = cfg.units.UnitVelocity_in_cm_per_s
-                units_grp.attrs["UnitTime_in_s"] = cfg.units.UnitTime_in_s
-                units_grp.attrs["UnitDensity_in_cgs"] = cfg.units.UnitDensity_in_cgs
-                units_grp.attrs["UnitPressure_in_cgs"] = cfg.units.UnitPressure_in_cgs
-                units_grp.attrs["UnitEnergy_in_cgs"] = cfg.units.UnitEnergy_in_cgs
+            _write_units(f, cfg, full=True)
 
         print(
             f"Process {process_id} shard {shard_idx}: saved {os.path.basename(snapshot_filename)}"

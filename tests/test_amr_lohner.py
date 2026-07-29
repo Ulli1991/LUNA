@@ -7,25 +7,14 @@ resolution-independent. These pin that behaviour.
 import numpy as np
 import jax
 jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp
 
-from amr.config import AMRConfig
 from amr import driver
-
-GAMMA = 5.0 / 3.0
-
-
-def _U(rho):
-    """3D conserved state from a density field, uniform pressure, zero velocity."""
-    E = np.ones_like(rho) / (GAMMA - 1.0)
-    z = np.zeros_like(rho)
-    return jnp.asarray(np.stack([rho, z, z, z, E], axis=0))
+from tests._helpers import GAMMA, cfg3d, uniform_U as _U
 
 
 def _flags(rho, criterion, thr, bs=8):
     n = rho.shape[0]
-    cfg = AMRConfig(ndim=3, box=(1.,) * 3, base_grid=(n,) * 3, block_shape=(bs,) * 3,
-                    max_levels=0, boundary=1, gamma=GAMMA)
+    cfg = cfg3d(n, bs=bs, max_levels=0, boundary=1, gamma=GAMMA)
     h = driver.build_hierarchy(_U(rho), cfg, thresholds=[thr], criterion=criterion,
                                periodic=False, pad_to=1)
     f = np.asarray(jax.device_get(driver._flag_blocks(h[0], cfg, thr, 0, criterion)))

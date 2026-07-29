@@ -58,13 +58,11 @@ def create_wb_muscl_hancock_step(
         energy_idx = 3
         # primitive: (rho, vx, vy, p), pressure idx 3
         p_idx = 3
-        vert_vel_idx = 2  # vy
     else:
         # U = (rho, mvx, mvy, mvz, E)
         vert_mom_idx = 3
         energy_idx = 4
         p_idx = 4
-        vert_vel_idx = 3  # vz
 
     # Same CFL condition as the standard integrator — share its factory.
     compute_dt_fn = _make_compute_dt_fn(gamma, CFL, spatial_dim, dx, dy, dz)

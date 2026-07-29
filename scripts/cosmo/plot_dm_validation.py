@@ -13,12 +13,12 @@ import sys
 
 import h5py
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
 
 sys.path.insert(0, os.getcwd())
+from scripts.validation.plots._plotkit import mpl, save
+
+plt = mpl(style=False)
+from matplotlib.colors import LogNorm
 from utils.figstyle import apply_style, decorate, FIGSIZE
 
 LUNA = "snapshots/cosmo_dm_l9_512/snap_a1.0001.hdf5"
@@ -70,7 +70,7 @@ def cosmic_web(Ng=768, slab_frac=0.25):
     ax[0].set_ylabel(r"$y\;[h^{-1}\mathrm{Mpc}]$")
     fig.tight_layout()
     p = os.path.join(OUT, "fig32_cosmic_web_arepo_vs_luna.png")
-    fig.savefig(p, dpi=200, bbox_inches="tight")
+    save(fig, p, dpi=200, bbox_inches="tight")
     print("wrote", p)
 
 
@@ -99,7 +99,7 @@ def powerspec():
 
     fig.tight_layout()
     p = os.path.join(OUT, "fig33_dm_powerspec_arepo_vs_luna.png")
-    fig.savefig(p, dpi=200, bbox_inches="tight")
+    save(fig, p, dpi=200, bbox_inches="tight")
     print("wrote", p)
 
 

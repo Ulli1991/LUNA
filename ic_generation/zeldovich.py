@@ -7,6 +7,8 @@ import jax.numpy as jnp
 
 from cosmology import Cosmology
 
+from ._grid import local_range
+
 
 def zeldovich_pancake_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
@@ -23,9 +25,9 @@ def zeldovich_pancake_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     dx = Lx / Nx
     A = a_i / a_c
 
-    xs, xe = (0, Nx) if x_slice is None else x_slice
-    ys, ye = (0, Ny) if y_slice is None else y_slice
-    zs, ze = (0, Nz) if z_slice is None else z_slice
+    xs, xe = local_range(Nx, x_slice)
+    ys, ye = local_range(Ny, y_slice)
+    zs, ze = local_range(Nz, z_slice)
 
     x = (jnp.arange(xs, xe) + 0.5) * dx
     # Newton-invert  x = q - A sin(k q)/k  ->  q  (monotonic for A < 1)

@@ -23,32 +23,19 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 apply_style()
 
 from scripts.validation.metrics import radial_profile
+from scripts.validation.plots._plotkit import save, load_snap
 
 
 TARGET_T = 0.8
 
 
 def _load(snapdir):
-    files = sorted(glob.glob(os.path.join(snapdir, "*.hdf5")))
-    with h5py.File(files[0], "r") as h:
-        a = h["cells"].attrs
-        Nx = int(a["Nx_global"]); Ny = int(a["Ny_global"]); Nz = int(a["Nz_global"])
-        Lx = float(a["Lx"]); dx = float(a["dx"]); dy = float(a["dy"]); dz = float(a["dz"])
-        t = float(a["time"])
-    rho = np.empty((Nx, Ny, Nz), dtype=np.float64)
-    vx = np.empty_like(rho); vy = np.empty_like(rho); vz = np.empty_like(rho)
-    P = np.empty_like(rho)
-    for f in files:
-        with h5py.File(f, "r") as h:
-            c = h["cells"]
-            xs = int(c.attrs["x_start"]); ys = int(c.attrs["y_start"]); zs = int(c.attrs["z_start"])
-            shp = c["density"].shape
-            rho[xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["density"][:]
-            vx [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_x"][:]
-            vy [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_y"][:]
-            vz [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_z"][:]
-            P  [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["pressure"][:]
-    return dict(rho=rho, vx=vx, vy=vy, vz=vz, P=P, t=t, Lx=Lx, dx=dx, dy=dy, dz=dz, Nx=Nx)
+    d, a = load_snap(snapdir, fields=("density", "velocity_x", "velocity_y",
+                                      "velocity_z", "pressure"))
+    return dict(rho=d["density"], vx=d["velocity_x"], vy=d["velocity_y"],
+                vz=d["velocity_z"], P=d["pressure"], t=float(a["time"]),
+                Lx=float(a["Lx"]), dx=float(a["dx"]), dy=float(a["dy"]),
+                dz=float(a["dz"]), Nx=int(a["Nx_global"]))
 
 
 def _radial_vr(snap):
@@ -141,8 +128,7 @@ def main():
         decorate(ax)
 
     out = "figures/evrard_radial.png"
-    os.makedirs("figures", exist_ok=True)
-    fig.savefig(out, bbox_inches="tight")
+    save(fig, out, bbox_inches="tight")
     print(f"Saved {out}")
 
 

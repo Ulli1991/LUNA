@@ -34,11 +34,9 @@ def main():
         pass
     img = np.log10(H + 1.0)
 
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from utils.figstyle import FIGSIZE, apply_style, decorate
-    apply_style()
+    from scripts.validation.plots._plotkit import mpl, save
+    plt = mpl()
+    from utils.figstyle import FIGSIZE, decorate
     L = box / 1000.0                                      # kpc/h -> Mpc/h
     vmin = float(np.percentile(img, 45))
     vmax = float(np.percentile(img, 99.9))
@@ -51,9 +49,8 @@ def main():
     decorate(ax)
     ax.grid(False)                                        # no grid over the image
     fig.tight_layout()
-    os.makedirs("figures", exist_ok=True)
     out = "figures/cosmo_dm_web.png"
-    fig.savefig(out)
+    save(fig, out)
     print(f"# wrote {out}")
 
 

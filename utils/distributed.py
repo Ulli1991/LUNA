@@ -7,7 +7,6 @@ Functions for creating device meshes, sharding arrays, and gathering results.
 import jax
 import jax.numpy as jnp
 from jax.experimental import mesh_utils
-from jax.experimental.multihost_utils import process_allgather
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
@@ -237,14 +236,3 @@ def shard_array_to_devices(U_global, mesh, spatial_dimension):
     U_sharded = jax.device_put(U_global, sharding)
 
     return U_sharded
-
-
-def gather_array_from_devices(U_sharded):
-    """Gather a sharded array into a global array replicated on all processes.
-
-    Collective operation — MUST be called on all processes.
-    """
-    # Use process_allgather to properly gather data across multiple processes
-    # This is a collective operation - all processes must participate
-    U_global = process_allgather(U_sharded)
-    return U_global

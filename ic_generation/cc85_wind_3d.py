@@ -8,6 +8,8 @@ enabled.
 
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 # Physical-units knobs (read from cfg, with sensible M82 defaults below).
 _PROTON_MASS = 1.67262e-24  # g
 _BOLTZMANN = 1.38065e-16  # erg/K
@@ -41,9 +43,9 @@ def cc85_wind_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     rho_code = rho_cgs / cfg.units.UnitDensity_in_cgs
     p_code = p_cgs / cfg.units.UnitPressure_in_cgs
 
-    x_start, x_end = x_slice if x_slice is not None else (0, Nx)
-    y_start, y_end = y_slice if y_slice is not None else (0, Ny)
-    z_start, z_end = z_slice if z_slice is not None else (0, Nz)
+    x_start, x_end = local_range(Nx, x_slice)
+    y_start, y_end = local_range(Ny, y_slice)
+    z_start, z_end = local_range(Nz, z_slice)
     nx_l = x_end - x_start
     ny_l = y_end - y_start
     nz_l = z_end - z_start

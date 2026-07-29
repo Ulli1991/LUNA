@@ -1,5 +1,7 @@
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 
 def shu_osher(cfg, x_slice=None):
     """1D Shu-Osher test: Mach 3 shock (x < -4) hitting a sinusoidal density field.
@@ -10,10 +12,7 @@ def shu_osher(cfg, x_slice=None):
     gamma = cfg.gamma
 
     # Determine local range
-    if x_slice is not None:
-        x_start, x_end = x_slice
-    else:
-        x_start, x_end = 0, Nx
+    x_start, x_end = local_range(Nx, x_slice)
 
     # Create coordinate array for local slice only
     x_full = jnp.linspace(-Lx / 2, Lx / 2, Nx, endpoint=False)

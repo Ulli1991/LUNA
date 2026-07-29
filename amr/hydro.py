@@ -139,6 +139,16 @@ def block_boundary_states(W_ghosted, dt, level, cfg, *, gamma, limiter=1):
     return jax.vmap(one_block)(W_pad)
 
 
+def _make_seam(gamma, riemann_solver):
+    """Build the block-batched seam-flux closure ``seam(a, b, d)``: ONE Riemann
+    flux per block face from the left/right reconstructions ``a``/``b`` along
+    axis ``d``. Shared by the replicated and sharded seam couplings."""
+    def seam(a, b, d):
+        return jax.vmap(lambda x, y: riemann_face_flux(
+            x, y, axis=d, gamma=gamma, riemann_solver=riemann_solver))(a, b)
+    return seam
+
+
 def _set_boundary_face(F_d, d, idx, new_face, mask, ndim):
     """Overwrite a block's boundary face flux (``idx`` 0 = -d, -1 = +d; face axis
     at array position ``2+d`` because of the leading (n_slots, n_vars) axes) with
@@ -182,10 +192,7 @@ def conservative_block_divergence(
     ))
     states = block_boundary_states(W_ghosted, dt, level, cfg, gamma=gamma, limiter=limiter)
 
-    def _seam(a, b, d):
-        return jax.vmap(
-            lambda x, y: riemann_face_flux(x, y, axis=d, gamma=gamma, riemann_solver=riemann_solver)
-        )(a, b)
+    _seam = _make_seam(gamma, riemann_solver)
 
     bs = cfg.block_shape
     r = cfg.refinement_ratio

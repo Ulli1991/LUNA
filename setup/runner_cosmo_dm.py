@@ -16,6 +16,7 @@ from gravity.poisson_multigrid import solve_poisson_fmg
 from file_io.write_gadget import write_gadget_dm_snapshot
 from setup.cosmo_common import (CosmoClock, dtau_accel, poisson_coeff_fac,
                                 softening_from_config)
+from setup.run_report import StepLog
 
 
 def run_simulation_cosmo_dm(cfg, is_main_process=True):
@@ -98,6 +99,8 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
               f"mesh={cfg.Nx}^3  Om={Om} OL={cfg.cosmo_Omega_L} H0={H0:.5f}")
         print(f"[cosmo-dm] a_init={a:.4f} (z={1/a-1:.2f}) -> a_end={a_end:.4f}")
         print(f"[cosmo-dm] {'step':>5} {'a':>8} {'z':>8} {'dloga':>8} {'delta_max':>10}")
+    rep = StepLog(cfg, is_main_process,
+                  history_fields=["step", "a", "dloga", "delta_max"])
 
     g, dmax = force(pos, a)                                # force + delta_max
     while a < a_end - 1e-9:
@@ -115,9 +118,9 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
         tau += dtau
         a = a_next
         step += 1
-        if is_main_process and (step % 10 == 0 or a >= a_end - 1e-9):
-            print(f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} {dloga:8.5f} "
-                  f"{float(dmax):10.3f}")
+        rep.step(step, f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} "
+                 f"{dloga:8.5f} {float(dmax):10.3f}",
+                 row=[step, a, dloga, float(dmax)], force=a >= a_end - 1e-9)
 
     if is_main_process:
         print(f"[cosmo-dm] done: {step} steps, a={a:.4f} (z={1/a-1:.4f}), "
@@ -200,6 +203,9 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     jax.block_until_ready(g)
     if is_main_process:
         print(f"[cosmo-dm] first force compiled+ran in {time.time()-tc:.1f}s", flush=True)
+    rep = StepLog(cfg, is_main_process,
+                  history_fields=["step", "a", "dloga", "delta_max",
+                                  "max_occ", "n_bad"])
     n_bad_tot = 0
     while a < a_end - 1e-9:
         gmag = jnp.sqrt(jnp.sum(g ** 2, axis=1))
@@ -219,10 +225,11 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         a = a_next
         step += 1
         n_bad_tot += int(n_bad)
-        if is_main_process and (step % 10 == 0 or a >= a_end - 1e-9):
-            print(f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} {dloga:8.5f} "
-                  f"{float(dmax):10.3f} {int(max_occ):8d} {int(n_bad):6d} "
-                  f"{(time.time()-t0)/step:6.2f}s/step", flush=True)
+        rep.step(step, f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} "
+                 f"{dloga:8.5f} {float(dmax):10.3f} {int(max_occ):8d} "
+                 f"{int(n_bad):6d} {(time.time()-t0)/step:6.2f}s/step",
+                 row=[step, a, dloga, float(dmax), int(max_occ), int(n_bad)],
+                 force=a >= a_end - 1e-9)
 
     if is_main_process:
         print(f"[cosmo-dm] done: {step} steps, a={a:.4f} (z={1/a-1:.4f}), "

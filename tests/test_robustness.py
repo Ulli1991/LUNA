@@ -18,74 +18,10 @@ import os
 import shutil
 import tempfile
 
-import jax
 import numpy as np
 import pytest
 
-
-def _build_cfg_for_test(**overrides):
-    from template_config import Config
-
-    cfg = Config(**overrides)
-    cfg.production_mode = True
-    cfg.PLOT_AFTER_SIM = False
-    cfg.enable_diagnostics = True
-    cfg.enable_checkpointing = False
-    return cfg
-
-
-def _make_step_fns(cfg):
-    """Return (compute_dt_fn, step_fn) for a Config — same shard_map path as
-    production, on a single-device mesh."""
-    import jax
-    import numpy as np
-    from jax.sharding import Mesh
-
-    from time_integration.integrators import create_muscl_hancock_modular_step
-    from utils.grid_params import GridParams
-    from utils.halo_exchange_shardmap import make_halo_shardmap
-
-    grid = GridParams.from_config(cfg)
-    sdim = cfg.SPATIAL_DIMENSION
-    names = ("x", "y", "z")[:sdim]
-    mesh = Mesh(np.asarray(jax.devices()[:1]).reshape((1,) * sdim), names)
-    pad = make_halo_shardmap(mesh, sdim)
-
-    return create_muscl_hancock_modular_step(
-        pad,
-        cfg.gamma,
-        cfg.ORDER,
-        cfg.LIMITER,
-        grid.dx,
-        grid.dy,
-        grid.dz,
-        grid.inv_dx,
-        grid.inv_dy,
-        grid.inv_dz,
-        cfg.BOUNDARY,
-        cfg.SPATIAL_DIMENSION,
-        cfg.CFL,
-        sharding=None,
-        riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
-        use_shardmap=True,
-        mesh=mesh,
-    )
-
-
-def _run_short(cfg):
-    from ic_generation.ic import initial_conditions
-
-    U = initial_conditions(cfg)
-    compute_dt_fn, step_fn = _make_step_fns(cfg)
-    t = 0.0
-    while t < cfg.t_end:
-        dt = float(compute_dt_fn(U))
-        dt = min(dt, cfg.t_end - t)
-        U = step_fn(U, dt)
-        t += dt
-        if dt < 1e-15:
-            break
-    return np.asarray(U)
+from tests._helpers import _build_cfg_for_test, _make_step_fns, _run_short
 
 
 # ---------------------------------------------------------------------------

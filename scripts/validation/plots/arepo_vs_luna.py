@@ -16,12 +16,10 @@ import re
 import glob
 import numpy as np
 import h5py
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from utils.figstyle import apply_style, decorate, FIGSIZE
+from scripts.validation.plots._plotkit import mpl, save, load_snap
 
-apply_style()
+plt = mpl()
+from utils.figstyle import decorate, FIGSIZE
 
 
 AREPO_RUN = os.environ.get("AREPO_RUN", "arepo/run/examples")
@@ -54,26 +52,13 @@ def load_arepo(path, boxsize_fallback=4.0):
 
 
 def load_luna(snapdir, boxsize_fallback=4.0):
-    files = sorted(glob.glob(os.path.join(snapdir, "*.hdf5")))
-    if not files:
+    if not glob.glob(os.path.join(snapdir, "*.hdf5")):
         return None
-    with h5py.File(files[0], "r") as h:
-        a = h["cells"].attrs
-        Nx = int(a["Nx_global"]); Ny = int(a["Ny_global"]); Nz = int(a["Nz_global"])
-        L = float(a["Lx"]); dx = float(a["dx"]); t = float(a["time"])
-    rho = np.empty((Nx, Ny, Nz), dtype=np.float64)
-    vx  = np.empty_like(rho); vy = np.empty_like(rho); vz = np.empty_like(rho)
-    P   = np.empty_like(rho)
-    for f in files:
-        with h5py.File(f, "r") as h:
-            c = h["cells"]
-            xs = int(c.attrs["x_start"]); ys = int(c.attrs["y_start"]); zs = int(c.attrs["z_start"])
-            shp = c["density"].shape
-            rho[xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["density"][:]
-            vx [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_x"][:]
-            vy [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_y"][:]
-            vz [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_z"][:]
-            P  [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["pressure"][:]
+    d, a = load_snap(snapdir, fields=("density", "velocity_x", "velocity_y",
+                                      "velocity_z", "pressure"))
+    rho, vx, vy, vz, P = (d[k] for k in ("density", "velocity_x", "velocity_y",
+                                         "velocity_z", "pressure"))
+    Nx = int(a["Nx_global"]); L = float(a["Lx"]); dx = float(a["dx"]); t = float(a["time"])
     coord = (np.arange(Nx) + 0.5) * dx - 0.5 * L
     X, Y, Z = np.meshgrid(coord, coord, coord, indexing="ij")
     r = np.sqrt(X*X + Y*Y + Z*Z).ravel()
@@ -190,14 +175,12 @@ def compare_test(name, arepo_subdir, luna_subdir, target_t, out_path):
         ax.legend()
         decorate(ax)
     fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)
+    save(fig, out_path, close=True)
     print(f"    wrote {out_path}")
     return True
 
 
 def main():
-    os.makedirs("figures", exist_ok=True)
     tests = [
         ("Evrard",     "evrard_3d",            "evrard_Nx64",          0.80, "figures/arepo_vs_luna_evrard.png"),
         ("BE sub",     "bonnor_ebert_3d_sub",  "be_xi5.0_Nx64",        3.00, "figures/arepo_vs_luna_be_sub.png"),

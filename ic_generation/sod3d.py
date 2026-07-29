@@ -1,5 +1,7 @@
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 
 def sod_shock_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     """3D Sod shock tube: shock along x, uniform in y/z.
@@ -39,26 +41,14 @@ def sod_shock_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
         print(f"  Total cells: {Nx*Ny*Nz:,}")
 
     # Determine local ranges
-    if x_slice is not None:
-        x_start, x_end = x_slice
-        Nx_local = x_end - x_start
-    else:
-        x_start, x_end = 0, Nx
-        Nx_local = Nx
+    x_start, x_end = local_range(Nx, x_slice)
+    Nx_local = x_end - x_start
 
-    if y_slice is not None:
-        y_start, y_end = y_slice
-        Ny_local = y_end - y_start
-    else:
-        y_start, y_end = 0, Ny
-        Ny_local = Ny
+    y_start, y_end = local_range(Ny, y_slice)
+    Ny_local = y_end - y_start
 
-    if z_slice is not None:
-        z_start, z_end = z_slice
-        Nz_local = z_end - z_start
-    else:
-        z_start, z_end = 0, Nz
-        Nz_local = Nz
+    z_start, z_end = local_range(Nz, z_slice)
+    Nz_local = z_end - z_start
 
     # Create coordinate arrays for local slice only
     x_full = jnp.linspace(0, Lx, Nx, endpoint=False)
@@ -106,9 +96,9 @@ def sod_shock_3d_amr(cfg, x_slice=None, y_slice=None, z_slice=None):
     import jax.numpy as jnp
     Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
     Lx, gamma = cfg.Lx, cfg.gamma
-    xs, xe = x_slice if x_slice is not None else (0, Nx)
-    ys, ye = y_slice if y_slice is not None else (0, Ny)
-    zs, ze = z_slice if z_slice is not None else (0, Nz)
+    xs, xe = local_range(Nx, x_slice)
+    ys, ye = local_range(Ny, y_slice)
+    zs, ze = local_range(Nz, z_slice)
     x = (jnp.arange(xs, xe) + 0.5) * (Lx / Nx)
     left = (x < 0.5 * Lx)[:, None, None]
     ny, nz = ye - ys, ze - zs

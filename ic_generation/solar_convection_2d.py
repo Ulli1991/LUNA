@@ -8,6 +8,8 @@ must be < 0 (downward). State has 4 fields (rho, vx, vy, E).
 import jax.numpy as jnp
 import numpy as np
 
+from ._grid import local_range
+
 
 def _polytropic_profile(cfg):
     rho0 = getattr(cfg, "solar_rho0", 1.0)
@@ -26,7 +28,7 @@ def _equilibrium_arrays(cfg, y_slice):
     rho0, p0, Gamma, H = _polytropic_profile(cfg)
     Ny, Ly = cfg.Ny, cfg.Ly
     dy = Ly / Ny
-    y_start, y_end = y_slice if y_slice is not None else (0, Ny)
+    y_start, y_end = local_range(Ny, y_slice)
     y_local = (jnp.arange(y_start, y_end) + 0.5) * dy
     base = jnp.maximum(1.0 - y_local / H, 1e-8)
     rho_eq = rho0 * base ** (1.0 / (Gamma - 1.0))
@@ -37,7 +39,7 @@ def _equilibrium_arrays(cfg, y_slice):
 def solar_convection_2d_equilibrium(cfg, x_slice=None, y_slice=None, z_slice=None):
     """Hydrostatic equilibrium U_eq for the 2D polytropic atmosphere."""
     Nx, Ny = cfg.Nx, cfg.Ny
-    x_start, x_end = x_slice if x_slice is not None else (0, Nx)
+    x_start, x_end = local_range(Nx, x_slice)
     nx_l = x_end - x_start
     rho_y, p_y = _equilibrium_arrays(cfg, y_slice)
     ny_l = rho_y.shape[0]

@@ -19,71 +19,7 @@ import jax
 import numpy as np
 import pytest
 
-
-def _build_cfg_for_test(**overrides):
-    """Construct a Config with sensible test defaults; allow per-test overrides."""
-    from template_config import Config
-
-    cfg = Config(**overrides)
-    # Make tests quiet and fast.
-    cfg.production_mode = True
-    cfg.PLOT_AFTER_SIM = False
-    cfg.enable_diagnostics = True
-    cfg.enable_checkpointing = False
-    return cfg
-
-
-def _run_short(cfg):
-    """Drive a short simulation directly and return the final state.
-    Skips the full main.py machinery — assembles only the bits we need so
-    tests run in seconds without SLURM / file I/O overhead.
-    """
-    from ic_generation.ic import initial_conditions
-    import jax
-    import numpy as np
-    from jax.sharding import Mesh
-
-    from time_integration.integrators import create_muscl_hancock_modular_step
-    from utils.grid_params import GridParams
-    from utils.halo_exchange_shardmap import make_halo_shardmap
-
-    grid = GridParams.from_config(cfg)
-    U = initial_conditions(cfg)
-    sdim = cfg.SPATIAL_DIMENSION
-    names = ("x", "y", "z")[:sdim]
-    mesh = Mesh(np.asarray(jax.devices()[:1]).reshape((1,) * sdim), names)
-    pad_halo_fn = make_halo_shardmap(mesh, sdim)
-
-    compute_dt_fn, step_fn = create_muscl_hancock_modular_step(
-        pad_halo_fn,
-        cfg.gamma,
-        cfg.ORDER,
-        cfg.LIMITER,
-        grid.dx,
-        grid.dy,
-        grid.dz,
-        grid.inv_dx,
-        grid.inv_dy,
-        grid.inv_dz,
-        cfg.BOUNDARY,
-        cfg.SPATIAL_DIMENSION,
-        cfg.CFL,
-        sharding=None,
-        riemann_solver=getattr(cfg, "riemann_solver", "hllc"),
-        use_shardmap=True,
-        mesh=mesh,
-    )
-
-    t = 0.0
-    while t < cfg.t_end:
-        dt = float(compute_dt_fn(U))
-        dt = min(dt, cfg.t_end - t)
-        U = step_fn(U, dt)
-        t += dt
-        # Safety net: bail out if integrator stalls.
-        if dt < 1e-15:
-            break
-    return np.asarray(U)
+from tests._helpers import _build_cfg_for_test, _run_short
 
 
 # ---------------------------------------------------------------------------

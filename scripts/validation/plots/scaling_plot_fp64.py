@@ -11,6 +11,8 @@ import re
 
 import numpy as np
 
+from scripts.validation.plots._plotkit import save
+
 # Weak ladder: grid grows with the GPU count.
 #  A100 : 2048^3 does NOT fit on 64 GPUs in FP64 (134M cells/GPU OOMs on 40GB),
 #         so its rung is at 128 GPUs.
@@ -221,8 +223,7 @@ def main():
         ax.legend(fontsize=8, loc="upper left")
         ax.grid(True, which="both", alpha=0.25)
         fig.tight_layout()
-        fig.savefig(out, dpi=140)
-        plt.close(fig)
+        save(fig, out, dpi=140, close=True)
         print(f"wrote {out}")
 
     _panel(weak, [f"{nx}$^3$\n{gpu}" for nx, gpu, *_ in weak],

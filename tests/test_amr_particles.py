@@ -7,9 +7,9 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 
-from amr.config import AMRConfig
 from amr import driver
 from amr.particles import locate_particles
+from tests._helpers import blob_U, cfg3d
 
 N = 32
 BOX = 1.0
@@ -17,19 +17,11 @@ BOX = 1.0
 
 def _blob_U(n):
     """Gas density blob -> partial refinement around the box centre."""
-    x = (jnp.arange(n) + 0.5) * (BOX / n)
-    X, Y, Z = jnp.meshgrid(x, x, x, indexing="ij")
-    r2 = (X - 0.5) ** 2 + (Y - 0.5) ** 2 + (Z - 0.5) ** 2
-    rho = 1.0 + 4.0 * jnp.exp(-r2 / 0.02)
-    U = jnp.zeros((5, n, n, n))
-    U = U.at[0].set(rho)
-    U = U.at[4].set(1.0)
-    return U
+    return blob_U(n, amp=4.0, sigma2=0.02, p_amp=0.0, E0=1.0)
 
 
 def test_locate_particles_containment_and_finest():
-    cfg = AMRConfig(ndim=3, box=(BOX,) * 3, base_grid=(N,) * 3,
-                    block_shape=(16,) * 3, max_levels=2, boundary=0)
+    cfg = cfg3d(N, max_levels=2, boundary=0)
     h = driver.build_hierarchy(_blob_U(N), cfg, thresholds=[1.5, 2.5],
                                criterion="overdensity", periodic=True)
     assert int(h[1].n_active) > 0 and int(h[2].n_active) > 0
@@ -62,8 +54,7 @@ def test_locate_particles_containment_and_finest():
 
 
 def test_locate_particles_l0_always_owns():
-    cfg = AMRConfig(ndim=3, box=(BOX,) * 3, base_grid=(N,) * 3,
-                    block_shape=(16,) * 3, max_levels=0, boundary=0)
+    cfg = cfg3d(N, max_levels=0, boundary=0)
     h = driver.build_hierarchy(_blob_U(N), cfg, thresholds=[], periodic=True)
     rng = np.random.default_rng(3)
     pos = jnp.asarray(rng.uniform(-0.3, 1.3, size=(2000, 3)))   # incl. wrap
@@ -82,8 +73,7 @@ def test_gather_cic_matches_dense_pm():
     from amr.poisson import _ghost_phi
     from amr.state import partition_to_blocks
 
-    cfg = AMRConfig(ndim=3, box=(BOX,) * 3, base_grid=(N,) * 3,
-                    block_shape=(16,) * 3, max_levels=0, boundary=0)
+    cfg = cfg3d(N, max_levels=0, boundary=0)
     h = driver.build_hierarchy(_blob_U(N), cfg, thresholds=[], periodic=True)
 
     x = (jnp.arange(N) + 0.5) * (BOX / N)
@@ -121,8 +111,7 @@ def test_gather_cic_two_level_smoke():
     from amr.particles import accel_blocks, gather_cic
     from amr.poisson import _ghost_phi, solve_phi_hierarchy
 
-    cfg = AMRConfig(ndim=3, box=(BOX,) * 3, base_grid=(N,) * 3,
-                    block_shape=(16,) * 3, max_levels=1, boundary=0)
+    cfg = cfg3d(N, max_levels=1, boundary=0)
     h = driver.build_hierarchy(_blob_U(N), cfg, thresholds=[1.5],
                                criterion="overdensity", periodic=True)
     assert int(h[1].n_active) > 0
@@ -153,8 +142,7 @@ def test_deposit_cic_conserves_mass():
     precision, with particles straddling block seams AND coarse-fine faces."""
     from amr.particles import deposit_cic
 
-    cfg = AMRConfig(ndim=3, box=(BOX,) * 3, base_grid=(N,) * 3,
-                    block_shape=(16,) * 3, max_levels=2, boundary=0)
+    cfg = cfg3d(N, max_levels=2, boundary=0)
     h = driver.build_hierarchy(_blob_U(N), cfg, thresholds=[1.5, 2.5],
                                criterion="overdensity", periodic=True)
     assert int(h[1].n_active) > 0 and int(h[2].n_active) > 0
@@ -186,8 +174,7 @@ def test_deposit_cic_uniform_matches_dense():
     from amr.particles import deposit_cic
     from amr.state import assemble_base_level
 
-    cfg = AMRConfig(ndim=3, box=(BOX,) * 3, base_grid=(N,) * 3,
-                    block_shape=(16,) * 3, max_levels=0, boundary=0)
+    cfg = cfg3d(N, max_levels=0, boundary=0)
     h = driver.build_hierarchy(_blob_U(N), cfg, thresholds=[], periodic=True)
 
     rng = np.random.default_rng(29)

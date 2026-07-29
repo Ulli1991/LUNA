@@ -10,18 +10,14 @@ run, so no sink particles are needed for this montage.
 Reads snapshots/bb79_baro_Nx256 (override with LUNA_BB_SNAP).
 """
 import os
-import glob
 
 import numpy as np
-import h5py
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
-from utils.figstyle import apply_style, FIGSIZE
+from scripts.validation.plots._plotkit import mpl, save, snap_times
+
+plt = mpl()
+from utils.figstyle import FIGSIZE
 from scripts.validation.plots.bb79_iso_luna import luna_column_density
-
-apply_style()
 
 LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
 
@@ -35,15 +31,9 @@ TIMES_CODE = [t * MYR / UNIT_TIME_S for t in TIMES_MYR]
 
 
 def main():
-    dirs = sorted(glob.glob(os.path.join(SNAP, "snapdir_*")))
+    dirs, times = snap_times(SNAP)
     if not dirs:
         raise SystemExit(f"no snapshots under {SNAP}")
-    times = []
-    for d in dirs:
-        f = sorted(glob.glob(os.path.join(d, "*.hdf5")))[0]
-        with h5py.File(f, "r") as h:
-            times.append(float(h["cells"].attrs["time"]))
-    times = np.array(times)
 
     Ss, ts, Ls = [], [], []
     for tc in TIMES_CODE:
@@ -77,10 +67,9 @@ def main():
     cb.ax.xaxis.set_ticks_position("bottom")
     cb.ax.tick_params(colors="w", labelsize=LABEL_FS - 2)
     cb.outline.set_edgecolor("w")
-    os.makedirs("figures", exist_ok=True)
     tag = "_sinks" if "sink" in SNAP else ""
     out = f"figures/bb79_montage_Nx{Ss[0].shape[0]}{tag}.png"
-    fig.savefig(out)
+    save(fig, out)
     print(f"  wrote {out}  (times kyr: {[round(t*1e3) for t in TIMES_MYR]})")
 
 

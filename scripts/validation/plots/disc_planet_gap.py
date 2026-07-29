@@ -11,12 +11,10 @@ import os
 import glob
 import numpy as np
 import h5py
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from utils.figstyle import apply_style, decorate, FIGSIZE
+from scripts.validation.plots._plotkit import mpl, save
 
-apply_style()
+plt = mpl()
+from utils.figstyle import decorate, FIGSIZE
 
 
 def load_2d(snapdir):
@@ -99,9 +97,8 @@ def main():
     decorate(ax[1])
 
     fig.tight_layout()
-    os.makedirs("figures", exist_ok=True)
     out = f"figures/disc_planet_gap{m}.png"
-    fig.savefig(out); plt.close(fig)
+    save(fig, out, close=True)
     print(f"wrote {out}  (final t={last['t']:.2f} = {n_orb_last:.1f} orbits)")
 
 

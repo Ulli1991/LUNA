@@ -1,5 +1,7 @@
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 # Physical parameters used when cfg.units is enabled.
 # SN-style thermal-bomb injection (top-hat sphere) into a uniform warm-ISM
 # background.
@@ -52,18 +54,9 @@ def sedov_blast_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
         print(f"  E_inject = {E_inject:.6e} (code units)")
 
     # Local-slice ranges.
-    if x_slice is not None:
-        x_start, x_end = x_slice
-    else:
-        x_start, x_end = 0, Nx
-    if y_slice is not None:
-        y_start, y_end = y_slice
-    else:
-        y_start, y_end = 0, Ny
-    if z_slice is not None:
-        z_start, z_end = z_slice
-    else:
-        z_start, z_end = 0, Nz
+    x_start, x_end = local_range(Nx, x_slice)
+    y_start, y_end = local_range(Ny, y_slice)
+    z_start, z_end = local_range(Nz, z_slice)
     Nx_local = x_end - x_start
     Ny_local = y_end - y_start
     Nz_local = z_end - z_start

@@ -7,10 +7,10 @@ t in {0, 0.25, 0.5, 0.75, 1.0}.
 
 Saves figures/square_advection.{pdf,png}.
 """
-from pathlib import Path
 import matplotlib.pyplot as plt
 
 from utils.figstyle import apply_style, decorate, FIGSIZE
+from scripts.validation.plots._plotkit import save
 
 apply_style()
 
@@ -73,9 +73,7 @@ def main():
             ax.set_yticklabels([])
 
     fig.tight_layout()
-    Path("figures").mkdir(exist_ok=True)
-    fig.savefig(f"figures/square_advection_Nx{NX}.pdf")
-    fig.savefig(f"figures/square_advection_Nx{NX}.png", dpi=200)
+    save(fig, f"figures/square_advection_Nx{NX}.pdf", also_png=True)
     print(f"Saved figures/square_advection_Nx{NX}.{{pdf,png}}")
 
 

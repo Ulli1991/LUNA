@@ -14,9 +14,9 @@ import json
 import os
 
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from scripts.validation.plots._plotkit import mpl, save
+
+plt = mpl(style=False)
 
 from scripts.validation.sod_exact import sod_exact
 from scripts.validation.plots.amr_sedov_benchmark import load_snapshot
@@ -88,7 +88,7 @@ def main():
     ax2.legend(frameon=False, fontsize=9)
     fig.tight_layout()
     out = f"code_paper_figs/amr_benchmark_sod{TAG}.png"
-    fig.savefig(out, dpi=150)
+    save(fig, out, dpi=150)
     print("wrote", out)
     with open(out.replace(".png", ".json"), "w") as f:
         json.dump(dict(t=A["t"],

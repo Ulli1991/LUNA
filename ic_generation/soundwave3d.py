@@ -1,5 +1,7 @@
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 
 def soundwave_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     """3D linear sound wave: small diagonal sinusoidal perturbation on a uniform
@@ -11,20 +13,11 @@ def soundwave_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     gamma = cfg.gamma
 
     # Determine local ranges
-    if x_slice is not None:
-        x_start, x_end = x_slice
-    else:
-        x_start, x_end = 0, Nx
+    x_start, x_end = local_range(Nx, x_slice)
 
-    if y_slice is not None:
-        y_start, y_end = y_slice
-    else:
-        y_start, y_end = 0, Ny
+    y_start, y_end = local_range(Ny, y_slice)
 
-    if z_slice is not None:
-        z_start, z_end = z_slice
-    else:
-        z_start, z_end = 0, Nz
+    z_start, z_end = local_range(Nz, z_slice)
 
     # Create coordinate arrays for local slice only
     x_full = jnp.linspace(0, Lx, Nx, endpoint=False)

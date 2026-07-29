@@ -12,6 +12,8 @@ from hydro.external_gravity import (
     vcirc_at_midplane,
 )
 
+from ._grid import local_range
+
 # Same physical constants as the rest of the CC85 setup.
 _PROTON_MASS = 1.67262e-24
 _BOLTZMANN = 1.38065e-16
@@ -56,9 +58,9 @@ def m82_disk_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     gamma = cfg.gamma
 
     # Slices (Cartesian box, x,y in-plane, z perpendicular).
-    x_start, x_end = x_slice if x_slice is not None else (0, Nx)
-    y_start, y_end = y_slice if y_slice is not None else (0, Ny)
-    z_start, z_end = z_slice if z_slice is not None else (0, Nz)
+    x_start, x_end = local_range(Nx, x_slice)
+    y_start, y_end = local_range(Ny, y_slice)
+    z_start, z_end = local_range(Nz, z_slice)
     nx_l = x_end - x_start
     ny_l = y_end - y_start
     nz_l = z_end - z_start

@@ -11,32 +11,18 @@ whether the evolution kicks up motion (= boundary or solver issue).
 import os
 import glob
 import numpy as np
-import h5py
+
+from scripts.validation.plots._plotkit import load_snap as _stitch
 
 
 def load_snap(snapdir):
-    files = sorted(glob.glob(os.path.join(snapdir, "*.hdf5")))
-    if not files:
+    if not glob.glob(os.path.join(snapdir, "*.hdf5")):
         return None
-    with h5py.File(files[0], "r") as h:
-        a = h["cells"].attrs
-        Nx = int(a["Nx_global"]); Ny = int(a["Ny_global"]); Nz = int(a["Nz_global"])
-        Lx = float(a["Lx"]); dx = float(a["dx"])
-        t = float(a["time"])
-    rho = np.empty((Nx, Ny, Nz), dtype=np.float64)
-    vx = np.empty_like(rho); vy = np.empty_like(rho); vz = np.empty_like(rho)
-    P = np.empty_like(rho)
-    for f in files:
-        with h5py.File(f, "r") as h:
-            c = h["cells"]
-            xs = int(c.attrs["x_start"]); ys = int(c.attrs["y_start"]); zs = int(c.attrs["z_start"])
-            shp = c["density"].shape
-            rho[xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["density"][:]
-            vx [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_x"][:]
-            vy [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_y"][:]
-            vz [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_z"][:]
-            P  [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["pressure"][:]
-    return dict(rho=rho, vx=vx, vy=vy, vz=vz, P=P, t=t, Lx=Lx, dx=dx, Nx=Nx)
+    d, a = _stitch(snapdir, fields=("density", "velocity_x", "velocity_y",
+                                    "velocity_z", "pressure"))
+    return dict(rho=d["density"], vx=d["velocity_x"], vy=d["velocity_y"],
+                vz=d["velocity_z"], P=d["pressure"], t=float(a["time"]),
+                Lx=float(a["Lx"]), dx=float(a["dx"]), Nx=int(a["Nx_global"]))
 
 
 def stat(snap, label=""):

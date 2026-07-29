@@ -12,27 +12,19 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
-from amr.config import AMRConfig
 from amr import driver
 from amr.poisson import (solve_phi_level, kick_level, _ghost_phi,
                          solve_phi_hierarchy, apply_gravity_kick)
 from amr.state import assemble_base_level
+from tests._helpers import GAMMA, blob_U, cfg3d
 
-GAMMA = 5.0 / 3.0
 BOX = 1.0
 NB = 32
 FOURPIG = 4.0 * np.pi
 
 
 def _blob_U(n):
-    x = (np.arange(n) + 0.5) / n * BOX
-    X, Y, Z = np.meshgrid(x, x, x, indexing="ij")
-    r2 = (X - 0.5) ** 2 + (Y - 0.5) ** 2 + (Z - 0.5) ** 2
-    rho = 1.0 + 3.0 * np.exp(-r2 / (2 * 0.08 ** 2))
-    U = np.zeros((5, n, n, n))
-    U[0] = rho
-    U[4] = 1.0 / (GAMMA - 1.0)                       # uniform P, v=0
-    return jnp.asarray(U)
+    return blob_U(n, amp=3.0, sigma=0.08, p_amp=0.0)  # uniform P, v=0
 
 
 def _make_gravity(acfg):
@@ -53,9 +45,7 @@ def _make_gravity(acfg):
 
 def test_subcycle_gravity_reflux_matches_synchronized():
     levels = 2
-    acfg = AMRConfig(ndim=3, box=(BOX,) * 3, base_grid=(NB,) * 3,
-                     block_shape=(16,) * 3, max_levels=levels, boundary=0,
-                     gamma=GAMMA, grav_G=1.0)
+    acfg = cfg3d(NB, max_levels=levels, boundary=0, gamma=GAMMA, grav_G=1.0)
     h0 = driver.build_hierarchy(_blob_U(NB), acfg, thresholds=[1.5, 2.5],
                                 criterion="overdensity", periodic=True)
     assert int(h0[1].n_active) > 0 and int(h0[2].n_active) > 0

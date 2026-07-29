@@ -17,8 +17,7 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from amr.config import AMRConfig
 from amr import driver, shard
 from tests.test_amr_multilevel import _kh_ic
-
-GAMMA = 5.0 / 3.0
+from tests._helpers import GAMMA, blob_U, cfg3d
 
 
 def test_shard_map_multilevel_subcycle_matches_single_device():
@@ -55,15 +54,8 @@ def test_shard_subcycle_gravity_reflux_matches_single_device():
 
     devs = jax.devices()
     D = len(devs)
-    cfg = AMRConfig(ndim=3, box=(1.0,) * 3, base_grid=(32,) * 3,
-                    block_shape=(16,) * 3, max_levels=1, boundary=0)
-    x = (np.arange(32) + 0.5) / 32.0
-    X, Y, Z = np.meshgrid(x, x, x, indexing="ij")
-    r2 = (X - 0.5) ** 2 + (Y - 0.5) ** 2 + (Z - 0.5) ** 2
-    U = np.zeros((5, 32, 32, 32))
-    U[0] = 1.0 + 3.0 * np.exp(-r2 / (2 * 0.08 ** 2))
-    U[4] = 1.0 / (GAMMA - 1.0)
-    U = jnp.asarray(U)
+    cfg = cfg3d(32, max_levels=1, boundary=0)
+    U = blob_U(32, amp=3.0, sigma=0.08, p_amp=0.0)
     h = driver.build_hierarchy(U, cfg, thresholds=[1.5], criterion="overdensity",
                                pad_to=D, periodic=True)
     assert int(h[1].n_active) > 0

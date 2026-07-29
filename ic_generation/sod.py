@@ -1,5 +1,7 @@
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 
 def sod_shock(cfg, x_slice=None):
     """1D Sod shock tube: discontinuity at 0.5*Lx, L=(1, 0, 1), R=(0.125, 0, 0.1).
@@ -9,12 +11,8 @@ def sod_shock(cfg, x_slice=None):
     gamma = cfg.gamma
 
     # Determine local range
-    if x_slice is not None:
-        x_start, x_end = x_slice
-        Nx_local = x_end - x_start
-    else:
-        x_start, x_end = 0, Nx
-        Nx_local = Nx
+    x_start, x_end = local_range(Nx, x_slice)
+    Nx_local = x_end - x_start
 
     # Create coordinate array for local slice only
     x_full = jnp.linspace(0, Lx, Nx, endpoint=False)

@@ -1,11 +1,14 @@
 # ic.py
+from ._grid import local_range  # re-export (IC modules import it from ._grid)
 from .advection_square import advection_square
 from .cc85_wind_3d import cc85_wind_3d
 from .double_mach_reflection import double_mach_reflection
 from .driven_turbulence_3d import driven_turbulence_3d
-from .einfeldt_shear_rarefaction import einfeldt_shear_rarefaction
-from .einfeldt_strong_rarefaction import einfeldt_strong_rarefaction
-from .einfeldt_transverse_rarefaction import einfeldt_transverse_rarefaction
+from .einfeldt import (
+    einfeldt_shear_rarefaction,
+    einfeldt_strong_rarefaction,
+    einfeldt_transverse_rarefaction,
+)
 from .bonnor_ebert3d import bonnor_ebert_3d
 from .evrard3d import evrard_3d
 from .gresho_vortex import gresho_vortex
@@ -96,11 +99,6 @@ _EQ_REGISTRY = {
     "Solar-Convection-2D": solar_convection_2d_equilibrium,
     "Solar-Convection-VT-2D": solar_convection_vt_2d_equilibrium,
 }
-
-
-def available_test_problems():
-    """Return the list of supported test_problem names."""
-    return list(_IC_REGISTRY.keys())
 
 
 # Cosmological problems require comoving integration (cfg.CosmologicalIntegration

@@ -8,7 +8,6 @@ cannot inline them as MLIR constants for multi-process sharded arrays.
 
 import jax
 import jax.numpy as jnp
-import numpy as _np
 from jax.sharding import NamedSharding, PartitionSpec
 
 from hydro.turbulence import OUDriver

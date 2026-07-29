@@ -14,7 +14,9 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 - Block-structured **AMR** (dimension-generic, Berger-Oliger subcycling, machine-precision conservation)
 
 **New to the code?** Start with the guided tour + glossary in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The full **results & validation
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), then run your first simulation
+with [docs/TUTORIAL.md](docs/TUTORIAL.md); every config knob is documented in
+[docs/CONFIG.md](docs/CONFIG.md). The full **results & validation
 gallery** (shock tubes, KH, Sedov, scaling, autodiff showcases, science
 applications) lives in [docs/GALLERY.md](docs/GALLERY.md).
 

@@ -7,6 +7,8 @@ locally-isothermal benchmark). State is [Σ, Σ v_x, Σ v_y, E].
 """
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 
 def disc_planet_2d(cfg, x_slice=None, y_slice=None):
     Nx, Ny = cfg.Nx, cfg.Ny
@@ -29,8 +31,8 @@ def disc_planet_2d(cfg, x_slice=None, y_slice=None):
     R_out = float(getattr(cfg, "disc_R_out", 2.5))
     floor = float(getattr(cfg, "disc_floor", 1.0e-4))
 
-    xs, xe = x_slice if x_slice is not None else (0, Nx)
-    ys, ye = y_slice if y_slice is not None else (0, Ny)
+    xs, xe = local_range(Nx, x_slice)
+    ys, ye = local_range(Ny, y_slice)
 
     dx, dy = Lx / Nx, Ly / Ny
     # Radial smoothing length of the disc edges. The floor→disc transition is a

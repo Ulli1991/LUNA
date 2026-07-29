@@ -8,6 +8,8 @@ validation); to drive convection use Gamma > gamma or the entropy seed.
 import jax.numpy as jnp
 import numpy as np
 
+from ._grid import local_range
+
 
 def _polytropic_profile(cfg):
     rho0 = getattr(cfg, "solar_rho0", 1.0)
@@ -28,7 +30,7 @@ def _equilibrium_arrays(cfg, z_slice):
     Nz = cfg.Nz
     Lz = cfg.Lz
     dz = Lz / Nz
-    z_start, z_end = z_slice if z_slice is not None else (0, Nz)
+    z_start, z_end = local_range(Nz, z_slice)
     z_local = (jnp.arange(z_start, z_end) + 0.5) * dz  # cell-centered
 
     base = 1.0 - z_local / H  # (Nz_local,)
@@ -46,8 +48,8 @@ def solar_convection_3d_equilibrium(cfg, x_slice=None, y_slice=None, z_slice=Non
     integrator path.
     """
     Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
-    x_start, x_end = x_slice if x_slice is not None else (0, Nx)
-    y_start, y_end = y_slice if y_slice is not None else (0, Ny)
+    x_start, x_end = local_range(Nx, x_slice)
+    y_start, y_end = local_range(Ny, y_slice)
     nx_l = x_end - x_start
     ny_l = y_end - y_start
 

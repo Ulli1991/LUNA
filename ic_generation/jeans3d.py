@@ -7,6 +7,8 @@ import math
 
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 
 def jeans_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
     Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
@@ -27,18 +29,9 @@ def jeans_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
 
     dx = Lx / Nx; dy = Ly / Ny; dz = Lz / Nz
 
-    if x_slice is None:
-        xs, xe = 0, Nx
-    else:
-        xs, xe = x_slice
-    if y_slice is None:
-        ys, ye = 0, Ny
-    else:
-        ys, ye = y_slice
-    if z_slice is None:
-        zs, ze = 0, Nz
-    else:
-        zs, ze = z_slice
+    xs, xe = local_range(Nx, x_slice)
+    ys, ye = local_range(Ny, y_slice)
+    zs, ze = local_range(Nz, z_slice)
 
     x = (jnp.arange(xs, xe) + 0.5) * dx
     y = (jnp.arange(ys, ye) + 0.5) * dy

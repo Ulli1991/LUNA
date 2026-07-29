@@ -13,6 +13,7 @@ import h5py
 import matplotlib.pyplot as plt
 
 from utils.figstyle import apply_style, decorate, FIGSIZE
+from scripts.validation.plots._plotkit import save
 
 apply_style()
 
@@ -110,9 +111,7 @@ def main():
                 bbox=dict(facecolor="black", alpha=0.55, edgecolor="none", pad=2))
 
     fig.tight_layout()
-    Path("figures").mkdir(exist_ok=True)
-    fig.savefig("figures/turbulence_panel.pdf")
-    fig.savefig("figures/turbulence_panel.png", dpi=200)
+    save(fig, "figures/turbulence_panel.pdf", also_png=True)
     print(f"Saved figures/turbulence_panel.{{pdf,png}} "
           f"(vmin={vmin:.3f}, vmax={vmax:.3f})")
     for Nx in NX_LIST:

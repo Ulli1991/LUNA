@@ -1,5 +1,7 @@
 import jax.numpy as jnp
 
+from ._grid import local_range
+
 
 def soundwave(cfg, x_slice=None):
     """1D linear sound wave: single right-going acoustic eigenmode (matches
@@ -10,10 +12,7 @@ def soundwave(cfg, x_slice=None):
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma
 
-    if x_slice is not None:
-        x_start, x_end = x_slice
-    else:
-        x_start, x_end = 0, Nx
+    x_start, x_end = local_range(Nx, x_slice)
 
     # Cell-centered coordinates (finite-volume convention)
     dx = Lx / Nx

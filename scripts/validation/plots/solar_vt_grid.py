@@ -11,6 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from file_io.read_snapshot import read_snapshot
 from utils.figstyle import apply_style, decorate, FIGSIZE
+from scripts.validation.plots._plotkit import save
 
 apply_style()
 
@@ -145,8 +146,7 @@ def _plot_grid(field_key, label, outpath_stem, runs):
 
     for ext in ("pdf", "png"):
         path = f"{outpath_stem}.{ext}"
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        fig.savefig(path, dpi=180, bbox_inches="tight")
+        save(fig, path, dpi=180, bbox_inches="tight")
         print(f"wrote {path}")
     plt.close(fig)
 

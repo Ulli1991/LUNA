@@ -65,18 +65,3 @@ def cnn_correction(params, U, norm):
     fx, fy = f[:4], f[4:]
     div = (fx - jnp.roll(fx, 1, axis=1)) + (fy - jnp.roll(fy, 1, axis=2))
     return 0.02 * div * norm[:, None, None]
-
-
-def setup_corrector(cfg, U0):
-    """Return {"init": params, "apply": fn(U, weights), "norm": norm}.
-
-    norm (per-field scale) is frozen from the IC so the correction is
-    scale-aware but the normalization itself isn't a trained quantity."""
-    norm = jnp.std(U0, axis=(1, 2)) + 1e-12
-    key = jax.random.PRNGKey(int(getattr(cfg, "corrector_seed", 0)))
-    params0 = cnn_init(key)
-
-    def apply(U, weights):
-        return U + cnn_correction(weights, U, norm)
-
-    return {"init": params0, "apply": apply, "norm": norm}

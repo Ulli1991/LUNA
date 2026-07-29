@@ -7,12 +7,12 @@ avoiding expensive gather operations.
 
 import os
 from typing import Optional
-import jax
 from jax import Array
 from jax.sharding import Mesh
 import h5py
 import numpy as np
-from utils.distributed import create_device_mesh
+
+from file_io.checkpoint_utils import _shard_context, _write_meta, _write_units
 
 
 def write_checkpoint_distributed(
@@ -23,23 +23,42 @@ def write_checkpoint_distributed(
     checkpoint_dir: str = "checkpoints",
     mesh: Optional[Mesh] = None,
 ) -> Optional[str]:
-    """Each process writes its local shard to
-    checkpoint_{step:06d}.{process_id}.hdf5 (no gather). Returns this
-    process's file path, or None if it has no addressable shards."""
-    # Get process info
-    process_id = jax.process_index()
-    process_count = jax.process_count()
+    """
+    Write distributed checkpoint - each process writes its own shard.
 
-    # Reconstruct mesh if not provided. Single-process multi-GPU uses
-    # jax.device_count() (e.g., 4), multi-process uses process_count.
-    if mesh is None:
-        n_devices = jax.device_count() if process_count == 1 else process_count
-        mesh, _ = create_device_mesh(n_devices, cfg.SPATIAL_DIMENSION)
+    This avoids the memory-intensive gather operation by having each process
+    write its local shard to a separate file. On restart, each process reads
+    its own shard back.
 
-    # Get local addressable shard for this process
-    local_shards = U_sharded.addressable_shards
+    Filename format: checkpoint_{step:06d}.{process_id}.hdf5
+    Example: checkpoint_000100.0.hdf5, checkpoint_000100.1.hdf5, etc.
+
+    Parameters
+    ----------
+    U_sharded : Array
+        Distributed conserved variables array
+    cfg : Config
+        Configuration object
+    t : float
+        Current simulation time
+    step : int
+        Current step number
+    checkpoint_dir : str, optional
+        Directory to save checkpoints (default: "checkpoints")
+    mesh : Mesh, optional
+        JAX mesh object (will be reconstructed if not provided)
+
+    Returns
+    -------
+    checkpoint_filename : str or None
+        Path to the checkpoint file written by this process,
+        or None if this process has no addressable shards
+    """
+    # Process info + mesh reconstruction (single-process multi-GPU uses
+    # jax.device_count(), multi-process uses process_count) + local shards.
+    process_id, process_count, mesh, local_shards = _shard_context(
+        U_sharded, cfg, mesh, per_process=True)
     if len(local_shards) == 0:
-        print(f"Warning: Process {process_id} has no addressable shards")
         return None
 
     # Get the data from the local shard(s) and convert to numpy
@@ -68,47 +87,9 @@ def write_checkpoint_distributed(
         # Save LOCAL shard of conserved variables (no compression for speed)
         conserved.create_dataset("U", data=U_local)
 
-        # Save simulation state
-        state = f.create_group("state")
-        state.attrs["time"] = float(t)
-        state.attrs["step"] = int(step)
-
-        # Save grid configuration (global, same on all processes)
-        grid = f.create_group("grid")
-        grid.attrs["Nx"] = cfg.Nx
-        grid.attrs["Ny"] = cfg.Ny
-        grid.attrs["Nz"] = cfg.Nz
-        grid.attrs["Lx"] = cfg.Lx
-        grid.attrs["Ly"] = cfg.Ly
-        grid.attrs["Lz"] = cfg.Lz
-        grid.attrs["SPATIAL_DIMENSION"] = cfg.SPATIAL_DIMENSION
-        grid.attrs["BOUNDARY"] = cfg.BOUNDARY
-
-        # Local shard info (varies by process)
-        grid.attrs["local_shape"] = U_local.shape
-
-        # Save physics parameters
-        physics = f.create_group("physics")
-        physics.attrs["gamma"] = cfg.gamma
-
-        # Save numerical scheme parameters
-        numerics = f.create_group("numerics")
-        numerics.attrs["ORDER"] = cfg.ORDER
-        numerics.attrs["LIMITER"] = cfg.LIMITER
-        numerics.attrs["CFL"] = cfg.CFL
-
-        # Save time control
-        time_control = f.create_group("time_control")
-        time_control.attrs["t_start"] = cfg.t_start
-        time_control.attrs["t_end"] = cfg.t_end
-        time_control.attrs["time_bet_snaps"] = cfg.time_bet_snaps
-
-        # Save unit system if configured
-        if cfg.units.is_enabled:
-            units_grp = f.create_group("units")
-            units_grp.attrs["UnitLength_in_cm"] = cfg.units.UnitLength_in_cm
-            units_grp.attrs["UnitMass_in_g"] = cfg.units.UnitMass_in_g
-            units_grp.attrs["UnitVelocity_in_cm_per_s"] = cfg.units.UnitVelocity_in_cm_per_s
+        # Metadata (grid is global; local_shape is this process's shard) + units.
+        _write_meta(f, cfg, t, step, local_shape=U_local.shape)
+        _write_units(f, cfg)
 
     # Print confirmation (each process prints its own)
     print(

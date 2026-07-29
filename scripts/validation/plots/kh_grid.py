@@ -18,6 +18,7 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 apply_style()
 
 from file_io.read_snapshot import read_snapshot, find_snapshot_at_time
+from scripts.validation.plots._plotkit import save
 
 
 LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
@@ -73,9 +74,7 @@ def main():
                         bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
 
     fig.tight_layout()
-    Path("figures").mkdir(exist_ok=True)
-    fig.savefig("figures/kh_grid.pdf")
-    fig.savefig("figures/kh_grid.png", dpi=200)
+    save(fig, "figures/kh_grid.pdf", also_png=True)
     print("Saved figures/kh_grid.{pdf,png}")
 
 

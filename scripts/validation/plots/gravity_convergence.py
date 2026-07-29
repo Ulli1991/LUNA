@@ -10,17 +10,14 @@ the login node.
 """
 import os
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from scripts.validation.plots._plotkit import mpl, save
 
-from utils.figstyle import apply_style, decorate, FIGSIZE
+plt = mpl()
+from utils.figstyle import decorate, FIGSIZE
 from scripts.validation.plots.arepo_vs_luna import (
     AREPO_RUN, LUNA_SNAP, load_arepo, load_luna, radial_bins,
     pick_snap_at_time, pick_luna_snap_at_time,
 )
-
-apply_style()
 
 # (name, arepo_subdir, luna_subdir_template, target_t)
 TESTS = [
@@ -33,7 +30,6 @@ RES_COLOR = {64: "C0", 128: "C1", 256: "C2"}
 
 
 def main():
-    os.makedirs("figures", exist_ok=True)
     for name, arepo_sub, luna_tmpl, target_t in TESTS:
         fig, ax = plt.subplots(figsize=FIGSIZE)
 
@@ -69,7 +65,7 @@ def main():
         fig.tight_layout()
         stem = name.lower().replace(" ", "_")
         out = f"figures/gravity_convergence_{stem}.png"
-        fig.savefig(out); plt.close(fig)
+        save(fig, out, close=True)
         print(f"wrote {out}")
 
 

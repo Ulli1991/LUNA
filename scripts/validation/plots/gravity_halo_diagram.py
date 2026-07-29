@@ -17,10 +17,9 @@ communication differs from the single read-halo of one hydro step:
 
 Writes figures/halo_exchange_gravity.png. No data dependency.
 """
-import os
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from scripts.validation.plots._plotkit import mpl, save
+
+plt = mpl(style=False)
 from matplotlib.patches import Rectangle, FancyArrowPatch, Circle
 
 BLUE = "#1f77b4"      # x-direction ring shift
@@ -191,10 +190,8 @@ def main():
     panel_c(axes[1, 0])
     panel_d(axes[1, 1])
     fig.tight_layout(pad=1.5)
-    os.makedirs("figures", exist_ok=True)
     out = "figures/halo_exchange_gravity.png"
-    fig.savefig(out, dpi=150)
-    plt.close(fig)
+    save(fig, out, dpi=150, close=True)
     print(f"wrote {out}")
 
 

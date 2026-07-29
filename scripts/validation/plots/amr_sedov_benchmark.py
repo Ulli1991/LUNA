@@ -10,9 +10,9 @@ import os
 
 import h5py
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+from scripts.validation.plots._plotkit import mpl, save
+
+plt = mpl(style=False)
 
 from scripts.validation.sedov_analytic import sedov_taylor_3d
 
@@ -138,7 +138,7 @@ def main():
     ax2.legend(frameon=False, fontsize=9)
     fig.tight_layout()
     out = f"code_paper_figs/amr_benchmark_sedov{TAG}.png"
-    fig.savefig(out, dpi=150)
+    save(fig, out, dpi=150)
     print("wrote", out)
     with open(out.replace(".png", ".json"), "w") as f:
         json.dump({k: v for k, v in dict(

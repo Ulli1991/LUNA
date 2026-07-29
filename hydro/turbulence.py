@@ -229,28 +229,3 @@ class OUDriver:
         U_new = U_new.at[3].add(dmz)
         U_new = U_new.at[4].add(dE)
         return U_new
-
-
-# ----------------------------------------------------------------------
-# Convenience: build local-shard coordinate arrays
-# ----------------------------------------------------------------------
-def local_cell_centers(cfg, x_slice=None, y_slice=None, z_slice=None):
-    """Return cell-center coordinate arrays (X, Y, Z) for a local shard,
-    matching the convention used by the IC generators (cell-centered)."""
-    Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
-    Lx, Ly, Lz = cfg.Lx, cfg.Ly, cfg.Lz
-    dx, dy, dz = Lx / Nx, Ly / Ny, Lz / Nz
-
-    x_full = jnp.arange(Nx, dtype=jnp.float32) * dx + 0.5 * dx
-    y_full = jnp.arange(Ny, dtype=jnp.float32) * dy + 0.5 * dy
-    z_full = jnp.arange(Nz, dtype=jnp.float32) * dz + 0.5 * dz
-
-    if x_slice is not None:
-        x_full = x_full[x_slice[0] : x_slice[1]]
-    if y_slice is not None:
-        y_full = y_full[y_slice[0] : y_slice[1]]
-    if z_slice is not None:
-        z_full = z_full[z_slice[0] : z_slice[1]]
-
-    X, Y, Z = jnp.meshgrid(x_full, y_full, z_full, indexing="ij")
-    return X, Y, Z

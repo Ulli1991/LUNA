@@ -6,15 +6,11 @@ axis lines disappear with periodic BC, they came from our isolated
 multipole-Dirichlet implementation. If they stay, it's the HLLC 3D
 carbuncle.
 """
-import os, glob
 import numpy as np
-import h5py
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from utils.figstyle import apply_style, decorate, FIGSIZE
+from scripts.validation.plots._plotkit import mpl, save, load_snap, latest_clean
 
-apply_style()
+plt = mpl()
+from utils.figstyle import decorate, FIGSIZE
 
 LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
 
@@ -23,34 +19,8 @@ PER_DIR  = "snapshots/bb_periodic_minmod_Nx256"
 
 
 def col_density(snapdir):
-    files = sorted(glob.glob(os.path.join(snapdir, "*.hdf5")))
-    with h5py.File(files[0], "r") as h:
-        a = h["cells"].attrs
-        Nx = int(a["Nx_global"]); Ny = int(a["Ny_global"]); Nz = int(a["Nz_global"])
-        L = float(a["Lx"]); dx = float(a["dx"]); t = float(a["time"])
-    rho = np.empty((Nx, Ny, Nz), dtype=np.float64)
-    for f in files:
-        with h5py.File(f, "r") as h:
-            c = h["cells"]
-            xs = int(c.attrs["x_start"]); ys = int(c.attrs["y_start"]); zs = int(c.attrs["z_start"])
-            shp = c["density"].shape
-            rho[xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["density"][:]
-    return rho.sum(axis=2) * dx, L, t
-
-
-def latest_clean(root):
-    dirs = sorted(glob.glob(os.path.join(root, "snapdir_*")))
-    last = None
-    for d in dirs:
-        files = sorted(glob.glob(os.path.join(d, "*.hdf5")))
-        bad = False
-        for f in files:
-            with h5py.File(f, "r") as h:
-                if h["cells"]["density"][:].min() <= 0:
-                    bad = True; break
-        if bad: return last
-        last = d
-    return last
+    data, a = load_snap(snapdir)
+    return data["density"].sum(axis=2) * float(a["dx"]), float(a["Lx"]), float(a["time"])
 
 
 def main():
@@ -88,10 +58,9 @@ def main():
     plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10}\Sigma$")
 
     fig.tight_layout()
-    os.makedirs("figures", exist_ok=True)
     Nx_luna = S_iso.shape[0]   # column density is (Nx, Ny)
     out = f"figures/bb79_iso_vs_periodic_diagnostic_Nx{Nx_luna}.png"
-    fig.savefig(out); plt.close(fig)
+    save(fig, out, close=True)
     print(f"  wrote {out}")
 
 

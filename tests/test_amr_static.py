@@ -7,23 +7,13 @@ is what the SMR convergence-order tests rely on.
 import numpy as np
 import jax
 jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp
 
-from amr.config import AMRConfig
 from amr import driver
-
-GAMMA = 5.0 / 3.0
-
-
-def _U(rho):
-    E = np.ones_like(rho) / (GAMMA - 1.0)
-    z = np.zeros_like(rho)
-    return jnp.asarray(np.stack([rho, z, z, z, E], axis=0))
+from tests._helpers import GAMMA, cfg3d, uniform_U as _U
 
 
 def _n_children(criterion, region, n=64, bs=16):
-    cfg = AMRConfig(ndim=3, box=(1.,) * 3, base_grid=(n,) * 3, block_shape=(bs,) * 3,
-                    max_levels=1, boundary=1, gamma=GAMMA, static_region=region)
+    cfg = cfg3d(n, bs=bs, max_levels=1, boundary=1, gamma=GAMMA, static_region=region)
     h = driver.build_hierarchy(_U(np.ones((n, n, n))), cfg, thresholds=[0.1],
                                criterion=criterion, periodic=False, pad_to=1)
     return int(h[1].n_active), h

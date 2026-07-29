@@ -4,7 +4,6 @@ step, and a small Kelvin-Helmholtz smoke run."""
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 jax.config.update("jax_enable_x64", True)
 
@@ -16,7 +15,7 @@ from amr.halo import (
     fill_ghost_same_level,
 )
 from amr.state import build_base_level
-from hydro.conversions import cons_to_prim, prim_to_cons
+from hydro.conversions import prim_to_cons
 
 GAMMA = 5.0 / 3.0
 

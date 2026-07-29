@@ -9,10 +9,8 @@ Two panels:
 
 Saves figures/sedov3d.{pdf,png}.
 """
-from pathlib import Path
 import glob, os
 import numpy as np
-import h5py
 import matplotlib.pyplot as plt
 
 from utils.figstyle import apply_style, decorate, FIGSIZE
@@ -20,6 +18,7 @@ from utils.figstyle import apply_style, decorate, FIGSIZE
 apply_style()
 
 from scripts.validation.metrics import radial_profile
+from scripts.validation.plots._plotkit import save, load_snap as _stitch
 
 
 SEC_PER_YEAR = 3.15576e7
@@ -67,26 +66,12 @@ print(f"2-panel sedov snapshot dir (highest Nx): {OUTDIR}")
 
 def load_snapshot(snapdir):
     """Stitch shards in a snapdir into global arrays (rho, vx, vy, vz, p, t)."""
-    files = sorted(glob.glob(os.path.join(snapdir, "*.hdf5")))
-    with h5py.File(files[0], "r") as h:
-        a = h["cells"].attrs
-        Nx = int(a["Nx_global"]); Ny = int(a["Ny_global"]); Nz = int(a["Nz_global"])
-        Lx = float(a["Lx"]); dx = float(a["dx"]); dy = float(a["dy"]); dz = float(a["dz"])
-        t = float(a["time"])
-    rho = np.empty((Nx, Ny, Nz), dtype=np.float32); vx = np.empty_like(rho)
-    vy = np.empty_like(rho); vz = np.empty_like(rho); p = np.empty_like(rho)
-    for f in files:
-        with h5py.File(f, "r") as h:
-            c = h["cells"]
-            xs = int(c.attrs["x_start"]); ys = int(c.attrs["y_start"]); zs = int(c.attrs["z_start"])
-            shp = c["density"].shape
-            rho[xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["density"][:]
-            vx [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_x"][:]
-            vy [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_y"][:]
-            vz [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["velocity_z"][:]
-            p  [xs:xs+shp[0], ys:ys+shp[1], zs:zs+shp[2]] = c["pressure"][:]
-    return dict(rho=rho, vx=vx, vy=vy, vz=vz, p=p, t=t,
-                Lx=Lx, dx=dx, dy=dy, dz=dz, Nx=Nx)
+    d, a = _stitch(snapdir, fields=("density", "velocity_x", "velocity_y",
+                                    "velocity_z", "pressure"), dtype=np.float32)
+    return dict(rho=d["density"], vx=d["velocity_x"], vy=d["velocity_y"],
+                vz=d["velocity_z"], p=d["pressure"], t=float(a["time"]),
+                Lx=float(a["Lx"]), dx=float(a["dx"]), dy=float(a["dy"]),
+                dz=float(a["dz"]), Nx=int(a["Nx_global"]))
 
 
 def shock_radius_from_snap(snap):
@@ -218,9 +203,7 @@ def main():
         ax.tick_params(which="major", labelsize=8, length=3.0)
         ax.tick_params(which="minor", length=1.8)
     figR.tight_layout()
-    Path("figures").mkdir(exist_ok=True)
-    figR.savefig("figures/sedov3d_radial.pdf")
-    figR.savefig("figures/sedov3d_radial.png", dpi=200)
+    save(figR, "figures/sedov3d_radial.pdf", also_png=True)
 
     # === Figure 2: R_s(t) + column density projection ===
     fig, (axR, axS) = plt.subplots(1, 2, figsize=(FIGSIZE[0]*2, FIGSIZE[1]))
@@ -242,9 +225,8 @@ def main():
     axS.grid(False)
 
     fig.tight_layout()
-    Path("figures").mkdir(exist_ok=True)
     Nx_fig = final["Nx"]
-    fig.savefig(f"figures/sedov3d_Nx{Nx_fig}.pdf"); fig.savefig(f"figures/sedov3d_Nx{Nx_fig}.png", dpi=200)
+    save(fig, f"figures/sedov3d_Nx{Nx_fig}.pdf", also_png=True)
     print(f"Saved figures/sedov3d_Nx{Nx_fig}.{{pdf,png}}")
     print(f"R_s (sim, final) = {R_sim[-1]:.2f} pc")
     print(f"R_s (analytic, final) = {R_s_analytic_pc:.2f} pc")
