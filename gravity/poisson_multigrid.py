@@ -1,33 +1,10 @@
-"""Multigrid (V-cycle + FMG) Poisson solver for ∇²Φ = 4πGρ.
+"""Multigrid (V-cycle + FMG) Poisson solver for ∇²Φ = 4πGρ: uniform grid,
+7-point Laplacian, red-black Gauss-Seidel smoother, 8-cell restriction,
+trilinear prolongation; single-device or shard_map-sharded.
 
-Uniform-grid hierarchy, 7-point stencil Laplacian, red-black
-Gauss-Seidel smoother (`rbgs_smoother`), 8-cell-average restriction,
-trilinear prolongation. Runs single-device or sharded: the shard_map
-FMG driver (`solve_poisson_fmg_shardmap`) uses the same kernels with
-per-shard halo exchange.
-
-API (high level):
-    Φ = solve_poisson(ρ, dx, fourpiG, boundary, n_levels=None,
-                      n_cycles=10, n_pre=2, n_post=2, tol=None)
-
-    `boundary` is the LUNA hydro convention:
-      0 periodic, 1 Neumann, 2 reflective (treated as Neumann for Φ),
-      3 isolated (Dirichlet faces from a multipole expansion — the
-        Guillet & Teyssier 2011 face-centred recipe in poisson_bc.py).
-
-Algorithm: standard V-cycle for the error equation
-    1. pre-smooth Φ on level L
-    2. r = rhs - ∇²Φ (residual)
-    3. recurse on coarser level with e := 0, rhs' := restrict(r)
-    4. Φ ← Φ + prolong(e)
-    5. post-smooth Φ on level L
-
-At the coarsest level we do many smoother iterations (cheap on a small
-grid); `n_levels` is capped so the coarsest grid is at least 4 cells
-per side (per shard in the sharded driver).
-
-Convergence: each V-cycle should knock the residual norm down by ~10x.
-For 1024³ self-grav at tol = 1e-6, expect 5–8 V-cycles per timestep.
+`boundary` follows the LUNA hydro convention: 0 periodic, 1 Neumann,
+2 reflective (= Neumann for Φ), 3 isolated (multipole Dirichlet faces).
+`n_levels` is capped so the coarsest grid is >= 4 cells per side (per shard).
 """
 
 import jax
@@ -82,18 +59,9 @@ def _gs_full_update(phi, rhs, dx, halo_fn):
 
 
 def rbgs_smoother(phi, rhs, dx, halo_fn, n_iter):
-    """Red-black Gauss-Seidel.
-
-    On the 7-point stencil, red cells (i+j+k even) and black cells
-    (i+j+k odd) form a checkerboard: red cells only have black
-    neighbours and vice versa. So a sweep of all reds (using current
-    black values) can be done in parallel, then a sweep of all blacks
-    (using freshly-updated red values).
-
-    Each RBGS iteration is 2 halo exchanges + 2 stencil applies =
-    roughly 2x the work of weighted-Jacobi but ~4x the per-iteration
-    convergence rate on the smoothest error mode. Net win on multigrid.
-    """
+    """Red-black Gauss-Seidel: parallel sweep of all red cells (i+j+k even),
+    then all black cells using the freshly-updated reds; ``n_iter`` full
+    iterations."""
     red_mask = _make_red_mask(phi.shape)
 
     def body(_, phi):
@@ -123,23 +91,10 @@ def restrict(field):
 
 
 def prolong(field, halo_fn=None):
-    """Trilinear prolongation: 1 coarse cell → 8 fine cells with linear
-    interpolation in each direction.
-
-    For cell-centred grids each fine cell sits at offset ±dx_fine/2 from
-    its parent coarse cell centre. 1D interpolation along axis i:
-        fine[2I]   = (3 coarse[I] + coarse[I-1]) / 4   (lower fine cell)
-        fine[2I+1] = (3 coarse[I] + coarse[I+1]) / 4   (upper fine cell)
-    Applied in three directions sequentially gives trilinear.
-
-    Boundary handling: if `halo_fn` is supplied (shard_map context, this
-    is the same `halo_fn` the smoother uses), we halo-exchange the coarse
-    field once up front and use the resulting (Nx+2, Ny+2, Nz+2) padded
-    array. That gives neighbour-shard data at coarse-fine interfaces.
-    For single-process callers `halo_fn=None`, we fall back to
-    `jnp.pad(mode='edge')` (Neumann-style) which is the right behaviour
-    on the global boundary anyway.
-    """
+    """Trilinear prolongation, 1 coarse cell → 8 fine cells:
+    ``fine[2I] = (3 c[I] + c[I-1])/4``, ``fine[2I+1] = (3 c[I] + c[I+1])/4``
+    per axis. ``halo_fn`` (shard_map context) supplies neighbour-shard data at
+    interfaces; None falls back to edge-pad (Neumann-style)."""
     Nx, Ny, Nz = field.shape
 
     if halo_fn is None:
@@ -175,24 +130,44 @@ def _max_levels(Nx, min_per_side=4):
     return n
 
 
-def vcycle(phi, rhs, dx, halo_fn, level, n_pre, n_post, n_coarsest):
+def _resolve_n_levels(rho, n_levels):
+    """Shared driver preamble: default the multigrid depth so the coarsest
+    grid keeps at least 4 cells per side."""
+    return _max_levels(rho.shape[0]) if n_levels is None else n_levels
+
+
+def _finish(phi, rhs, dx, halo_fn, return_residual):
+    """Shared driver postamble: optionally append the residual ∞-norm."""
+    if return_residual:
+        return phi, jnp.max(jnp.abs(residual(phi, rhs, dx, halo_fn)))
+    return phi
+
+
+def vcycle(phi, rhs, dx, halo_fn, level, n_pre, n_post, n_coarsest, halo_inner=None):
     """Recursive V-cycle. `level` counts down to 0 (coarsest).
 
     `halo_fn` is passed to both the smoother *and* the prolongation —
     using the same halo source for prolong is what keeps coarse-fine
     interfaces correct under shard_map (the smoother already uses it for
     the Laplacian stencil, so reuse for free).
+
+    `halo_inner` (isolated-BC split, Guillet-Teyssier style): when set,
+    the recursive error subproblem and the prolongation use this halo
+    (zero Dirichlet) while this level's smoothing keeps `halo_fn`
+    (multipole Dirichlet). None → use `halo_fn` throughout.
     """
     if level == 0:
         return rbgs_smoother(phi, rhs, dx, halo_fn, n_coarsest)
 
+    inner = halo_fn if halo_inner is None else halo_inner
     phi = rbgs_smoother(phi, rhs, dx, halo_fn, n_pre)
     r = residual(phi, rhs, dx, halo_fn)
     r_c = restrict(r)
     e_c = vcycle(
-        jnp.zeros_like(r_c), r_c, 2.0 * dx, halo_fn, level - 1, n_pre, n_post, n_coarsest
+        jnp.zeros_like(r_c), r_c, 2.0 * dx, inner, level - 1, n_pre, n_post, n_coarsest,
+        halo_inner=halo_inner,
     )
-    phi = phi + prolong(e_c, halo_fn=halo_fn)
+    phi = phi + prolong(e_c, halo_fn=inner)
     phi = rbgs_smoother(phi, rhs, dx, halo_fn, n_post)
     return phi
 
@@ -248,9 +223,7 @@ def solve_poisson(
     phi : array (Nx, Ny, Nz)
     [phi, r_norm] if return_residual
     """
-    Nx = rho.shape[0]
-    if n_levels is None:
-        n_levels = _max_levels(Nx)
+    n_levels = _resolve_n_levels(rho, n_levels)
     if n_levels < 1:
         raise ValueError(f"n_levels must be >= 1; got {n_levels}")
 
@@ -267,10 +240,7 @@ def solve_poisson(
     for c in range(n_cycles):
         phi = vcycle(phi, rhs, dx, halo_fn, n_levels - 1, n_pre, n_post, n_coarsest)
 
-    if return_residual:
-        r_norm = jnp.max(jnp.abs(residual(phi, rhs, dx, halo_fn)))
-        return phi, r_norm
-    return phi
+    return _finish(phi, rhs, dx, halo_fn, return_residual)
 
 
 # ---------------------------------------------------------------------------
@@ -290,25 +260,16 @@ def solve_poisson_fmg_shardmap(
     n_coarsest=50,
     subtract_mean=True,
 ):
-    """shard_map-wrapped Full Multigrid Poisson solve.
-
-    Each device runs FMG on its local shard; halos in the smoother /
-    residual / Laplacian use `jax.lax.ppermute` for cross-shard data
-    movement. Same FMG algorithm and same convergence as the
-    single-process driver — just bounded per-shard memory.
-
-    `subtract_mean` applies the periodic-BC solvability fix (Jeans
-    swindle) globally before entering shard_map.
-    """
+    """shard_map-wrapped FMG Poisson solve: each device runs FMG on its local
+    shard with ppermute halos. ``subtract_mean`` applies the periodic-BC Jeans
+    swindle globally before entering shard_map."""
     from functools import partial
     from jax.experimental.shard_map import shard_map
     from jax.sharding import PartitionSpec as P
 
     from gravity.poisson_bc_shardmap import make_scalar_halo_3d_shardmap
 
-    Nx = rho.shape[0]
-    if n_levels is None:
-        n_levels = _max_levels(Nx)
+    n_levels = _resolve_n_levels(rho, n_levels)
 
     halo_factory = make_scalar_halo_3d_shardmap(mesh)
     halo_fn = halo_factory(boundary)
@@ -383,9 +344,7 @@ def solve_poisson_pcg(
     or for hard problems (e.g. cosmological boxes where one mode is
     millions of times stronger than the others).
     """
-    Nx = rho.shape[0]
-    if n_levels is None:
-        n_levels = _max_levels(Nx)
+    n_levels = _resolve_n_levels(rho, n_levels)
     halo_fn = make_halo_3d(boundary)
     rhs = fourpiG * rho
 
@@ -413,10 +372,7 @@ def solve_poisson_pcg(
         p = z + beta * p
         rz = rz_new
 
-    if return_residual:
-        r_norm = jnp.max(jnp.abs(rhs - apply_A(x)))
-        return x, r_norm
-    return x
+    return _finish(x, rhs, dx, halo_fn, return_residual)
 
 
 # ---------------------------------------------------------------------------
@@ -432,27 +388,10 @@ def fmg_solve(
     n_coarsest=50,
     n_vcycles_per_level=1,
 ):
-    """Full Multigrid Poisson solve.
-
-    Standard V-cycle starts at the finest level with Φ=0 and walks down
-    then up. FMG instead:
-      1. Build a hierarchy of restricted RHS arrays.
-      2. Solve at the coarsest level with heavy smoothing.
-      3. Prolong the coarsest solution to the next-finer level as a
-         warm-start initial guess, then do n_vcycles_per_level V-cycles.
-      4. Repeat upward until we reach the finest level.
-
-    Because each level starts from a near-converged initial guess
-    (instead of zeros), one pass of FMG typically achieves
-    discretisation-error accuracy — i.e. the residual at the finest
-    level falls to the level set by the 7-point stencil's O(dx²) truncation
-    in *one* FMG pass, instead of 5-10 V-cycles starting from zero.
-
-    Cost: ~(8/7) of one V-cycle (geometric series of work per level),
-    plus one V-cycle at each level on the way up. Net ~2-3x a single
-    V-cycle but ~10x the convergence — same total time-to-tol as
-    V-cycle multigrid would need 10 cycles to achieve.
-    """
+    """Full Multigrid Poisson solve: restrict the RHS down the hierarchy,
+    solve coarsest with heavy smoothing, then prolong upward with
+    ``n_vcycles_per_level`` V-cycles per level. One FMG pass typically reaches
+    discretisation-error accuracy."""
     # 1) Build the RHS hierarchy: rhs_levels[0] is finest, [-1] coarsest.
     rhs_levels = [rhs]
     dx_levels = [dx]
@@ -460,16 +399,34 @@ def fmg_solve(
         rhs_levels.append(restrict(rhs_levels[-1]))
         dx_levels.append(2.0 * dx_levels[-1])
 
-    # 2) Solve at the coarsest level with heavy smoothing.
-    phi = jnp.zeros_like(rhs_levels[-1])
-    phi = rbgs_smoother(phi, rhs_levels[-1], dx_levels[-1], halo_fn, n_coarsest)
+    # 2-4) Coarsest heavy smooth, then prolong + V-cycle up the ladder.
+    return _fmg_ladder(
+        rhs_levels, dx_levels, [halo_fn] * n_levels, None,
+        n_pre, n_post, n_coarsest, n_vcycles_per_level,
+    )
 
-    # 3,4) Walk up: prolong (with halo-aware boundary) + V-cycle at each finer level.
+
+def _fmg_ladder(rhs_levels, dx_levels, halo_tops, halo_inner,
+                n_pre, n_post, n_coarsest, n_vcycles_per_level):
+    """Shared FMG walk-up: heavy smooth at the coarsest level, then
+    prolong + n_vcycles_per_level V-cycles at each finer level.
+
+    `halo_tops[L]` smooths level L; `halo_inner` (or None → `halo_tops[L]`)
+    handles prolongation and the V-cycles' error subproblems (the
+    isolated-BC split; the standard path passes one halo everywhere).
+    """
+    n_levels = len(rhs_levels)
+    phi = jnp.zeros_like(rhs_levels[-1])
+    phi = rbgs_smoother(phi, rhs_levels[-1], dx_levels[-1], halo_tops[-1], n_coarsest)
+
     for L in range(n_levels - 2, -1, -1):
-        phi = prolong(phi, halo_fn=halo_fn)
+        phi = prolong(phi, halo_fn=halo_tops[L] if halo_inner is None else halo_inner)
         depth = (n_levels - 1) - L  # remaining levels below = V-cycle depth
         for _ in range(n_vcycles_per_level):
-            phi = vcycle(phi, rhs_levels[L], dx_levels[L], halo_fn, depth, n_pre, n_post, n_coarsest)
+            phi = vcycle(
+                phi, rhs_levels[L], dx_levels[L], halo_tops[L], depth,
+                n_pre, n_post, n_coarsest, halo_inner=halo_inner,
+            )
 
     return phi
 
@@ -493,9 +450,7 @@ def solve_poisson_fmg(
     n_extra_vcycles: after the FMG walk-up, run this many additional
     V-cycles at the finest level (cheap insurance for harder problems).
     """
-    Nx = rho.shape[0]
-    if n_levels is None:
-        n_levels = _max_levels(Nx)
+    n_levels = _resolve_n_levels(rho, n_levels)
 
     # Isolated BC (Guillet-Teyssier-style): top-level Dirichlet halo from a
     # multipole expansion of ρ; coarse error-correction subproblems use
@@ -515,51 +470,21 @@ def solve_poisson_fmg(
     for _ in range(n_extra_vcycles):
         phi = vcycle(phi, rhs, dx, halo_fn, n_levels - 1, n_pre, n_post, n_coarsest)
 
-    if return_residual:
-        r_norm = jnp.max(jnp.abs(residual(phi, rhs, dx, halo_fn)))
-        return phi, r_norm
-    return phi
+    return _finish(phi, rhs, dx, halo_fn, return_residual)
 
 
 # ---------------------------------------------------------------------------
 # Isolated-BC FMG (Guillet & Teyssier 2011 style: multipole Dirichlet at top
-# of each V-cycle, zero Dirichlet for coarse error-correction subproblems)
+# of each V-cycle, zero Dirichlet for coarse error-correction subproblems —
+# the split lives in vcycle's `halo_inner` argument)
 # ---------------------------------------------------------------------------
-def _vcycle_isolated(phi, rhs, dx, halo_top, halo_inner, level,
-                     n_pre, n_post, n_coarsest):
-    """V-cycle with split halos: halo_top at this level (Dirichlet from
-    multipole), halo_inner (zero Dirichlet) for the recursive error
-    subproblem. Restrict / prolong use halo_inner because they operate on
-    error, not the solution."""
-    if level == 0:
-        return rbgs_smoother(phi, rhs, dx, halo_top, n_coarsest)
-    phi = rbgs_smoother(phi, rhs, dx, halo_top, n_pre)
-    r = residual(phi, rhs, dx, halo_top)
-    r_c = restrict(r)
-    e_c = _vcycle_isolated(
-        jnp.zeros_like(r_c), r_c, 2.0 * dx,
-        halo_inner, halo_inner, level - 1,
-        n_pre, n_post, n_coarsest,
-    )
-    phi = phi + prolong(e_c, halo_fn=halo_inner)
-    phi = rbgs_smoother(phi, rhs, dx, halo_top, n_post)
-    return phi
-
-
 def _solve_poisson_fmg_isolated(
     rho, dx, fourpiG, n_levels, n_vcycles_per_level, n_extra_vcycles,
     n_pre, n_post, n_coarsest, return_residual,
 ):
-    """FMG with isolated BC, Guillet-Teyssier 2011 face-centred recipe.
-
-    At each FMG ladder level we build:
-      • Φ_face values from a multipole expansion of that level's ρ,
-        evaluated at the box face positions (not ghost cell centres).
-      • A halo factory that sets ghost = 2·Φ_face − Φ_first_interior
-        — the 2nd-order linear-extrapolation Dirichlet BC.
-    Coarse-level error subproblems use zero-Dirichlet (no boundary
-    contribution from the error).
-    """
+    """FMG with isolated BC (Guillet-Teyssier face-centred recipe): each
+    ladder level gets a multipole-Dirichlet halo from its own restricted ρ;
+    coarse error subproblems use zero-Dirichlet."""
     from gravity.poisson_bc import (
         make_zero_dirichlet_halo_3d,
         make_linear_extrap_dirichlet_halo_3d,
@@ -583,31 +508,18 @@ def _solve_poisson_fmg_isolated(
         for L in range(n_levels)
     ]
 
-    # Coarsest level: heavy smooth with this level's Dirichlet halo.
-    phi = jnp.zeros_like(rhs_levels[-1])
-    phi = rbgs_smoother(phi, rhs_levels[-1], dx_levels[-1], halo_tops[-1], n_coarsest)
-
-    # Walk up: prolong to next finer (using halo_inner for the correction-like
-    # transfer), then V-cycle with this level's Dirichlet halo at top + zero
-    # Dirichlet at coarser sub-levels.
-    for L in range(n_levels - 2, -1, -1):
-        phi = prolong(phi, halo_fn=halo_inner)
-        depth = (n_levels - 1) - L
-        for _ in range(n_vcycles_per_level):
-            phi = _vcycle_isolated(
-                phi, rhs_levels[L], dx_levels[L],
-                halo_tops[L], halo_inner, depth,
-                n_pre, n_post, n_coarsest,
-            )
+    # Coarsest heavy smooth + walk-up with the top/inner halo split:
+    # prolong and error subproblems use halo_inner (zero Dirichlet), each
+    # level's own smoothing uses its multipole-Dirichlet halo.
+    phi = _fmg_ladder(
+        rhs_levels, dx_levels, halo_tops, halo_inner,
+        n_pre, n_post, n_coarsest, n_vcycles_per_level,
+    )
 
     for _ in range(n_extra_vcycles):
-        phi = _vcycle_isolated(
-            phi, rhs_levels[0], dx_levels[0],
-            halo_tops[0], halo_inner, n_levels - 1,
-            n_pre, n_post, n_coarsest,
+        phi = vcycle(
+            phi, rhs_levels[0], dx_levels[0], halo_tops[0], n_levels - 1,
+            n_pre, n_post, n_coarsest, halo_inner=halo_inner,
         )
 
-    if return_residual:
-        r_norm = jnp.max(jnp.abs(residual(phi, rhs_levels[0], dx, halo_tops[0])))
-        return phi, r_norm
-    return phi
+    return _finish(phi, rhs_levels[0], dx, halo_tops[0], return_residual)

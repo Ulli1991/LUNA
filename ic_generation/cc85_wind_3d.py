@@ -1,24 +1,9 @@
-"""CC85-style starburst wind (M82-nuclear-region parameters).
+"""CC85-style starburst wind (M82 parameters). Ref: Schneider, Robertson &
+Thompson 2018.
 
-Setup follows Schneider, Robertson, Thompson 2018 ("Production of Cool Gas in
-Thermally Driven Outflows") with M82 loading factors:
-
-    SFR        = 12 Msun/yr   (M82 nuclear starburst)
-    eta_M      = 1            (mass loading)
-    eta_E      = 0.6          (energy loading)
-    => Mdot   = eta_M * SFR                       = 12 Msun/yr
-    => Edot   = eta_E * (SFR / 100 Msun) * 1e51 erg / yr ~ 2.28e42 erg/s
-    => v_inf  = sqrt(2*Edot/Mdot)                 ~ 776 km/s
-
-Injection region: uniform mass/energy deposition inside a sphere of radius
-R_* (here 300 pc).
-
-This IC just sets up the AMBIENT medium and the injection-region book-keeping
-(the central source term is applied at every step in the runner — see the
-cc85_source machinery elsewhere). The injected gas itself appears only via
-the operator-split source, not as initial mass inside R_*.
-
-Ambient: low-density hot CGM ~ (n = 1e-4 cm^-3, T = 1e6 K).
+This IC only sets up the hot-CGM ambient medium; the wind is injected every
+step by the runner's cc85_source term, not as initial mass. Requires cfg.units
+enabled.
 """
 
 import jax.numpy as jnp

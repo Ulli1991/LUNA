@@ -13,9 +13,10 @@ A high-performance JAX-based hydrodynamics simulation code for solving the Euler
 - Cosmology: super-comoving integration, PM dark matter, coupled gas+DM boxes from MUSIC ICs
 - Block-structured **AMR** (dimension-generic, Berger-Oliger subcycling, machine-precision conservation)
 
-The full **results & validation gallery** (shock tubes, KH, Sedov, scaling,
-autodiff showcases, science applications) lives in
-[docs/GALLERY.md](docs/GALLERY.md).
+**New to the code?** Start with the guided tour + glossary in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The full **results & validation
+gallery** (shock tubes, KH, Sedov, scaling, autodiff showcases, science
+applications) lives in [docs/GALLERY.md](docs/GALLERY.md).
 
 ---
 

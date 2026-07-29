@@ -1,14 +1,7 @@
 """
 MUSCL-Hancock time-step factory for LUNA (sole supported integrator).
-
-Pattern:
-- The user-facing step function is NOT @jax.jit decorated.
-- Individual operations are small @jax.jit functions called in sequence.
-- Halo exchanges live inside the JITs so JAX can overlap their collectives
-  with the surrounding compute.
-
-The primitive halo exchange (apply_halo_exchange_prim) saves one cons→prim
-on the padded array per step versus the conservative halo path.
+Halo exchanges live inside the JIT'd step so XLA can overlap their
+collectives with the surrounding compute.
 """
 
 import jax
@@ -77,23 +70,10 @@ def create_muscl_hancock_modular_step(
     use_shardmap=False,
     mesh=None,
 ):
-    """MUSCL-Hancock stepper with MODULAR JIT compilation.
-
-    Returns (compute_dt_fn, step_fn) where
-        compute_dt_fn(U) -> dt_cfl  (pure CFL, no t_end or snapshot clamping)
-        step_fn(U, dt)   -> U_new   (pure step using caller-supplied dt)
-
-    When `use_shardmap=True` the step body is wrapped in
-    `jax.experimental.shard_map.shard_map` so each device runs the full
-    pipeline (cons_to_prim → halo → MUSCL → update) on its own shard,
-    with halos exchanged via explicit `jax.lax.ppermute` inside
-    `pad_halo_fn`. This sidesteps XLA's auto-sharding scratch blow-up
-    at small device counts. Requires `mesh` to be supplied so the
-    shard_map can construct PartitionSpecs.
-
-    The runner is responsible for all time-target arithmetic. Physics
-    (predictor + reconstruct + flux divergence) lives in hydro/muscl_hancock.py.
-    """
+    """MUSCL-Hancock stepper factory. Returns (compute_dt_fn, step_fn):
+    compute_dt_fn(U) -> dt_cfl (pure CFL, no time-target clamping);
+    step_fn(U, dt) -> U_new. `use_shardmap=True` wraps the step body in
+    shard_map (halos via ppermute inside `pad_halo_fn`) and requires `mesh`."""
     compute_dt_fn = _make_compute_dt_fn(gamma, CFL, spatial_dim, dx, dy, dz)
 
     from hydro.muscl_hancock import muscl_hancock_divergence

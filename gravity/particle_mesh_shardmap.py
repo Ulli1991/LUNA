@@ -1,29 +1,11 @@
-"""Grid-sharded Particle-Mesh primitives for the cosmological DM N-body, built
-for grids beyond what a single device can hold (>~512^3).
+"""Grid-sharded Particle-Mesh primitives for the cosmological DM N-body:
+1-D slab decomposition along x on a ``(ndev, 1, 1)`` mesh over ("x","y","z").
 
-Decomposition: a 1-D slab decomposition along x. The device mesh is 3-D,
-``(ndev, 1, 1)`` over axes ``("x", "y", "z")``, so the *grid* shards along x
-only and the y/z halo ppermutes inside `solve_poisson_fmg_shardmap` collapse to
-identity (size-1 axes). This is what lets us reuse the gas shard_map multigrid
-solver completely unchanged, while keeping the *particle* bookkeeping 1-D: a
-particle ever only crosses into the adjacent (ring) slab in one step, so the
-drift-time exchange is a single left/right ppermute rather than a 26-neighbour
-problem.
-
-Invariant maintained across the whole run: the global particle buffer has shape
-``(ndev * C, ...)`` sharded ``P("x", ...)``, and device d's local chunk holds
-exactly the particles whose comoving x lies in slab d (``[d*nx_loc, (d+1)*nx_loc)``
-cells), padded out to capacity C with inactive slots. Every primitive here
-relies on that invariant via ``jax.lax.axis_index("x")``.
-
-Primitives (each wraps its own shard_map; compose on globally-sharded arrays):
-  * cic_deposit_slab   particles -> local rho slab, +1-cell x-ghost add (ppermute)
-  * grad_phi_slab      phi slab -> -grad(phi) slab (2-cell x-halo, 4th order)
-  * gather_accel_slab  force slabs + particles -> accel at particles (1-cell halo)
-  * exchange_particles_slab   redistribute particles to their owning slab
-
-All y/z indexing is periodic (modulo Ny/Nz); x periodicity is carried by the
-ppermute ring. dx is assumed cubic (dx=dy=dz), as in the rest of the PM code.
+INVARIANT: the global particle buffer is ``(ndev * C, ...)`` sharded
+``P("x", ...)``, and device d's chunk holds exactly the particles whose
+comoving x lies in slab d, padded to capacity C with inactive slots — every
+primitive relies on this. y/z indexing is periodic; x periodicity rides the
+ppermute ring. dx assumed cubic.
 """
 from functools import lru_cache, partial
 
@@ -44,14 +26,9 @@ def make_slab_mesh(devices):
 
 def decompose_to_slabs(pos, vel, mass, Nx, ndev, dx, box, capacity_factor=1.5):
     """Host-side: bucket particles into per-slab fixed-capacity buffers.
-
-    Returns (pos_g, vel_g, mass_g, active_g, C) as numpy arrays of global shape
-    (ndev*C, ...), laid out so device d's contiguous chunk [d*C:(d+1)*C] holds
-    exactly the slab-d particles followed by inactive padding. `vel` carries
-    whatever per-particle vector travels with the position (e.g. canonical
-    momentum); pass None to skip. Capacity C = ceil(capacity_factor * N/ndev),
-    rounded so ndev*C buffers every slab with headroom for clustering.
-    """
+    Returns (pos_g, vel_g, mass_g, active_g, C), numpy arrays of shape
+    (ndev*C, ...) with chunk d = slab-d particles + inactive padding;
+    ``vel=None`` skips the vector."""
     n = pos.shape[0]
     nx_loc = Nx // ndev
     slab_w = nx_loc * dx
@@ -77,18 +54,11 @@ def decompose_to_slabs(pos, vel, mass, Nx, ndev, dx, box, capacity_factor=1.5):
 
 def assemble_slab_from_chunk(local_arrays, specs, N_total, ndev, mesh,
                              capacity_factor=1.15):
-    """Multi-PROCESS IC assembly (one GPU per process). Each process passes only
-    its OWN index-chunk of particles -- which, by MUSIC's x-major Lagrangian
-    ordering, is already ~its x-slab at z_init -- as host arrays in `local_arrays`
-    (each (n_local, ...)), with matching `specs` (PartitionSpecs). Pads each to the
-    per-slab capacity C = ceil(capacity_factor * N_total / ndev), places it on this
-    process's single local device, and stitches the global (ndev*C, ...) sharded
-    jax arrays via make_array_from_single_device_arrays -- so NO full (ndev*C)
-    host array is ever built and NO full-array device_put is issued (that pattern
-    deadlocks multi-process). Returns (sharded_arrays, active_sharded, C). A
-    drift exchange_particles_slab afterwards settles the sub-cell boundary
-    crossers into their owning slab.
-    """
+    """Multi-PROCESS IC assembly (one GPU per process): each process passes
+    only its own chunk; the global (ndev*C, ...) sharded arrays are stitched
+    via make_array_from_single_device_arrays -- no full host array, no
+    full-array device_put (which deadlocks multi-process).
+    Returns (sharded_arrays, active_sharded, C)."""
     from jax.sharding import NamedSharding
     C = int(np.ceil(capacity_factor * N_total / ndev))
     n_local = int(local_arrays[0].shape[0])
@@ -121,13 +91,9 @@ def _ring_perms(ndev):
 # CIC deposit  (particles -> grid density), slab-local with x-ghost exchange
 # ---------------------------------------------------------------------------
 def cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh):
-    """Deposit particle masses to a grid density, sharded as x-slabs.
-
-    `pos`/`mass`/`active` are globally sharded P("x",None)/P("x"). Returns the
-    global density (Nx,Ny,Nz) sharded P("x",None,None). Each device deposits its
-    own (in-slab) particles into a ghosted (nx_loc+2, Ny, Nz) block, then
-    ppermute-adds the two x-ghost planes onto the neighbour slabs' edge cells.
-    """
+    """CIC-deposit particle masses to a grid density sharded as x-slabs:
+    inputs sharded P("x", ...); returns (Nx, Ny, Nz) sharded P("x", None,
+    None), x-ghost planes ppermute-added onto neighbour slabs."""
     ndev = int(mesh.shape["x"])
     nx_loc = Nx // ndev
     to_right, to_left = _ring_perms(ndev)
@@ -322,16 +288,29 @@ def _build_exchange_body(Nx, dx, box, mesh):
         pRr = jax.lax.ppermute(p_l, "x", to_right)
         mRr = jax.lax.ppermute(mass_l, "x", to_right)
         kRr = jax.lax.ppermute(go_right.astype(jnp.float32), "x", to_right) > 0
-        posLl = jax.lax.ppermute(pos_l, "x", to_left)
-        pLl = jax.lax.ppermute(p_l, "x", to_left)
-        mLl = jax.lax.ppermute(mass_l, "x", to_left)
-        kLl = jax.lax.ppermute(go_left.astype(jnp.float32), "x", to_left) > 0
 
-        # merge stay + arrivals-from-left(d-1 went right) + arrivals-from-right(d+1 went left)
-        pos_all = jnp.concatenate([pos_l, posRr, posLl], axis=0)
-        p_all = jnp.concatenate([p_l, pRr, pLl], axis=0)
-        mass_all = jnp.concatenate([mass_l, mRr, mLl], axis=0)
-        act_all = jnp.concatenate([stay, kRr, kLl], axis=0)
+        if ndev == 2:
+            # Degenerate ring: the left and right neighbour are the SAME device
+            # (to_left == to_right), so the second ppermute would deliver an
+            # identical copy of the same buffer, and every mover carries
+            # keep=True in both (diff == 1 == ndev-1). Merging both duplicated
+            # every mover (mass inflation, test_pm_shardmap 2-device failure).
+            # One neighbour -> one arrival buffer, movers inserted exactly once.
+            pos_all = jnp.concatenate([pos_l, posRr], axis=0)
+            p_all = jnp.concatenate([p_l, pRr], axis=0)
+            mass_all = jnp.concatenate([mass_l, mRr], axis=0)
+            act_all = jnp.concatenate([stay, kRr], axis=0)
+        else:
+            posLl = jax.lax.ppermute(pos_l, "x", to_left)
+            pLl = jax.lax.ppermute(p_l, "x", to_left)
+            mLl = jax.lax.ppermute(mass_l, "x", to_left)
+            kLl = jax.lax.ppermute(go_left.astype(jnp.float32), "x", to_left) > 0
+
+            # merge stay + arrivals-from-left(d-1 went right) + arrivals-from-right(d+1 went left)
+            pos_all = jnp.concatenate([pos_l, posRr, posLl], axis=0)
+            p_all = jnp.concatenate([p_l, pRr, pLl], axis=0)
+            mass_all = jnp.concatenate([mass_l, mRr, mLl], axis=0)
+            act_all = jnp.concatenate([stay, kRr, kLl], axis=0)
         # O(C) stable compaction (replaces the O(3C log 3C) argsort): the running
         # active-count is each active particle's destination slot; scatter into a
         # zero buffer, dropping inactive (slot via False) and any >C overflow.
@@ -364,16 +343,9 @@ def _build_exchange_body(Nx, dx, box, mesh):
 
 
 def exchange_particles_slab(pos, p, mass, active, Nx, dx, box, mesh):
-    """Redistribute particles to their owning x-slab after a drift.
-
-    Each device classifies its active particles as stay / go-left / go-right by
-    comparing wrapped x against its slab bounds, ships the leavers to the ring
-    neighbour via ppermute (fixed-capacity, masked), and compacts the merged set
-    (stay + arrivals) back into its capacity-C buffer. Returns the redistributed
-    (pos,p,mass,active) plus diagnostics (n_out_of_slab_after, max_occupancy).
-
-    Assumes a particle crosses at most one slab boundary per call (true for a
-    CFL/acceleration-limited step with slabs many cells wide). Residual
-    out-of-slab particles are reported so the caller can catch a violation. The
-    jitted kernel is built once and cached (see _build_exchange_body)."""
+    """Redistribute particles to their owning x-slab after a drift (ppermute
+    to ring neighbours, compacted into the capacity-C buffer). ASSUMES a
+    particle crosses at most one slab boundary per call. Returns the
+    redistributed (pos, p, mass, active) plus diagnostics
+    (n_out_of_slab_after, max_occupancy)."""
     return _build_exchange_body(Nx, dx, box, mesh)(pos, p, mass, active)

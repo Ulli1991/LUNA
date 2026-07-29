@@ -1,16 +1,8 @@
-"""Runner-side wiring for the self-gravity source term.
-
-Each step:
-  1. Solve ∇²Φ = 4πGρ on the current density via multigrid V-cycle.
-  2. Compute g = -∇Φ (centred difference, halo-exchanged).
-  3. Apply momentum kick: ρv ← ρv + dt · ρ · g
-  4. Apply energy kick:  E  ← E  + dt · (ρv)_mid · g
-
-Mirrors the API of setup_external_gravity but with Φ computed at each
-step instead of baked from a static potential.
-
-Phase 1: single-process, periodic + Neumann BC. shard_map variant in
-Phase 2.
+"""Runner-side wiring for the self-gravity source term: each step solves
+∇²Φ = 4πGρ via multigrid FMG/V-cycle, takes g = -∇Φ (centred difference),
+then kicks momentum (ρv += dt·ρ·g) and energy (E += dt·(ρv)_mid·g).
+Mirrors the setup_external_gravity API; auto-selects the shard_map path
+when the mesh spans more than one device.
 """
 
 import jax

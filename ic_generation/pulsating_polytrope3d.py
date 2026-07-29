@@ -1,28 +1,8 @@
-"""Pulsating polytrope — Lane–Emden equilibrium + small radial velocity
-perturbation at the expected fundamental mode shape.
+"""Pulsating polytrope: Lane–Emden equilibrium plus a small radial velocity
+perturbation v_r(r) = ε·v_max·(r/R) approximating the fundamental mode.
 
-The linear adiabatic radial mode for an n=1.5 polytrope has a known
-dimensionless eigenfrequency. We seed an approximate fundamental-mode
-velocity field
-
-    v_r(r) = ε · v_max · (r/R)
-
-(linear in r — the dominant fundamental-mode component is a uniform
-expansion/contraction at small amplitudes), with ε = 0.01.
-
-The simulation should oscillate at the fundamental frequency. The
-analytic n=1.5 fundamental mode period (after Cox, *Theory of Stellar
-Pulsation*) is
-
-    T_1 = 2π · √( I / (4 R⁵ (3γ - 4) GM (some integral) ) )
-
-The simple useful check: the system oscillates *at all* (no decay,
-no run-away) and the period is consistent with the polytrope's
-free-fall time scale.
-
-Config knobs (reuses Lane-Emden):
-    lane_n, lane_rho_c, lane_R, lane_rho_ambient (from lane_emden3d.py)
-    pulse_amp  : velocity perturbation amplitude (default 0.01)
+Check: the system oscillates (no decay, no run-away) with a period consistent
+with the polytrope's free-fall time. Reuses the lane_* config knobs.
 """
 
 import jax.numpy as jnp

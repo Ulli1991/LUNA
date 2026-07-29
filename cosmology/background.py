@@ -1,24 +1,9 @@
-"""Background cosmology for LUNA's comoving (cosmological) integration mode.
-
-Pure functions of the scale factor ``a`` for a flat FLRW model -- no JAX, no
-sharding, no solver state -- so the whole module is trivially unit-testable.
-The comoving hydro layer (source terms, CFL, ``a``-stepping behind
-``cfg.CosmologicalIntegration``) consumes these.
-
-Conventions
------------
-* Flat FLRW with ``a`` normalised to ``a0 = 1`` today (``z = 0``); ``Omega_k``
-  closes the energy budget.
-* ``E(a) = H(a)/H0`` is *dimensionless*, so the algebraic functions are
-  unit-agnostic; ``H0`` (in whatever code units the run uses) is supplied by the
-  caller. This keeps the units question -- which is a solver/timestepping
-  decision -- out of this module.
-* The arithmetic-only methods (``E``, ``Omega_m_a``, ``adot``, ...) use plain
-  ``**`` / ``sqrt`` and so accept floats *or* arrays and lift to ``jnp``
-  unchanged -- they can be reused inside the JIT time loop. ``growth_factor`` /
-  ``growth_rate`` use a numpy quadrature and are initial-condition-time helpers
-  only (never called inside the hot loop).
-* Defaults: the CAMELS / IllustrisTNG fiducial cosmology.
+"""Background cosmology: pure functions of the scale factor ``a`` for a flat
+FLRW model (``a0 = 1`` today) -- no JAX, no solver state. ``E(a) = H/H0`` is
+dimensionless; ``H0`` (in the run's code units) is supplied by the caller.
+The arithmetic-only methods accept floats or arrays and may run inside the JIT
+time loop; ``growth_factor``/``growth_rate`` use numpy quadrature and are
+IC-time helpers only. Defaults: CAMELS / IllustrisTNG fiducial cosmology.
 """
 from __future__ import annotations
 

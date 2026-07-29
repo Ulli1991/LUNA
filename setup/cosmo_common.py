@@ -47,6 +47,15 @@ class CosmoClock:
         """Clamp dtau so tau + dtau stays inside the a(tau) table."""
         return min(dtau, float(self.tau_tab[-1]) - tau)
 
+    def tau_of_a(self, a):
+        """Super-comoving time at scale factor a (inverse of a_of_tau)."""
+        return float(np.interp(a, self.a_tab, self.tau_tab))
+
+    def cap_to_target(self, dtau, tau, a_target):
+        """Clamp dtau so the step lands exactly on a_target, never past it
+        (the comoving analog of the dense runner's t_end/snapshot clamp)."""
+        return min(dtau, self.tau_of_a(a_target) - tau)
+
 
 def dtau_accel(eta, eps_soft, gmax):
     """Gravitational acceleration timestep: dtau ~ eta * sqrt(eps / |g|_max).

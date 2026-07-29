@@ -2,26 +2,8 @@ import jax.numpy as jnp
 
 
 def sod_shock(cfg, x_slice=None):
-    """
-    Sod shock tube test problem (1D).
-
-    Classic Riemann problem with a discontinuity at x=0.5*Lx.
-    Left state: rho=1.0, p=1.0, u=0.0
-    Right state: rho=0.125, p=0.1, u=0.0
-
-    Generates a shock wave, contact discontinuity, and rarefaction wave.
-
-    Parameters
-    ----------
-    cfg : Config
-        Configuration object containing Nx, Lx, gamma
-    x_slice : tuple (x_start, x_end), optional
-        Generate only this x-range for distributed initialization
-
-    Returns
-    -------
-    U : jax.numpy.ndarray
-        Conservative variables [rho, rho*u, E] with shape (3, Nx_local)
+    """1D Sod shock tube: discontinuity at 0.5*Lx, L=(1, 0, 1), R=(0.125, 0, 0.1).
+    Returns U = [rho, rho*u, E], shape (3, Nx_local).
     """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma

@@ -13,27 +13,9 @@ BOLTZMANN_CGS = 1.380649e-16
 
 
 def sedov_blast_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
-    """
-    Sedov-Taylor blast wave in 3D.
-
-    Two modes, chosen by cfg.units.is_enabled:
-
-    - Physical-units mode (cfg.units enabled): SN-style injection.
-      Uniform background at N_AMBIENT_CGS particles/cm^3 and T_AMBIENT_K
-      with E_INJECT_ERG deposited into a single central cell.
-
-    - Dimensionless mode (no units): legacy top-hat sphere of radius 6*dx
-      with total energy 0.5 in code units (keeps existing test reproducible).
-
-    Parameters
-    ----------
-    cfg : Config
-    x_slice, y_slice, z_slice : tuple (start, end), optional
-        Per-process slice for distributed initialization.
-
-    Returns
-    -------
-    U : (5, Nx_local, Ny_local, Nz_local) array of conservatives.
+    """3D Sedov-Taylor blast. cfg.units enabled: SN-style 1e51 erg injection into
+    a central 2x2x2 cube on a warm-ISM background; units off: legacy top-hat
+    sphere (r=6dx, E=0.5 code units). Returns (5, Nx_l, Ny_l, Nz_l) conservatives.
     """
     Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
     Lx, Ly, Lz = cfg.Lx, cfg.Ly, cfg.Lz

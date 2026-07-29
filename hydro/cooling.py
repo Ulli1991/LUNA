@@ -1,27 +1,8 @@
-"""
-ISM-style radiative cooling + heating, integrated by explicit forward-Euler
-sub-cycling (Schneider, Robertson & Thompson 2018, Cholla/CGOLS).
-
-Provides two cooling functions out of the box, optionally combined:
-
-  * Koyama & Inutsuka (2002, ApJ 564 L97): analytic two-phase fit valid for
-    T ~ 30 K - 10^4 K with a constant photoelectric heating rate
-        Gamma_KI = 2e-26 erg / s
-        Lambda_KI(T) / Gamma_KI = 10^7 * exp(-118400 / (T + 1000))
-                                + 14   * sqrt(T) * exp(-92 / T)
-    so Lambda has units erg cm^3 / s.
-
-  * Sutherland & Dopita (1993): collisional ionization equilibrium cooling
-    above ~10^4 K. Embedded as a compact log T - log Lambda table at solar
-    metallicity. For production runs swap in a higher-resolution table.
-
-Cooling is operator-split after the hydro update and advanced with n_sub
-forward-Euler sub-steps and a temperature floor. The smooth log-log
-Lambda(T) interpolant keeps the whole step differentiable.
-
-For one zone at fixed density (rho constant during the cooling step):
-    de_int/dt = -n_e n_H Lambda(T) + n_H Gamma               (cgs)
-    T         = (gamma - 1) mu m_p e_int / (k_B rho)
+"""ISM-style radiative cooling + heating (Schneider+2018 Cholla/CGOLS style):
+Koyama-Inutsuka (T ~ 30 K - 1e4 K, constant photoelectric heating) and
+Sutherland-Dopita CIE (> ~1e4 K) tables, optionally combined. Operator-split
+after the hydro update, n_sub forward-Euler sub-steps with a temperature
+floor; the smooth log-log Lambda(T) interpolant keeps the step differentiable.
 """
 
 from dataclasses import dataclass
@@ -143,6 +124,7 @@ _SD93_SOLAR_LOG_L = np.array(
 
 
 def sutherland_dopita_cie(metallicity: str = "solar") -> CoolingTable:
+    """Sutherland & Dopita (1993) CIE cooling table (solar metallicity only)."""
     if metallicity != "solar":
         raise NotImplementedError(
             "Only solar metallicity is embedded; load your own table for other Z"
@@ -173,13 +155,9 @@ def combine(
 # ---------------------------------------------------------------------------
 @dataclass
 class ExplicitCoolingSolver:
-    """Forward-Euler sub-cycled radiative cooling, following Schneider,
-    Robertson & Thompson (2018, Cholla/CGOLS): operator-split, explicit
-    forward Euler on the cooling ODE with sub-cycling and a temperature
-    floor. The cooling curve Lambda(T) is a SMOOTH log-log interpolant of
-    the table -> fully differentiable (no Townsend piecewise inversion,
-    which was a reverse-mode gradient minefield: searchsorted + power-law
-    root + clamps each inject masked NaNs)."""
+    """Forward-Euler sub-cycled radiative cooling (Schneider+2018 style) with
+    a temperature floor; the smooth log-log Lambda(T) interpolant keeps it
+    fully differentiable."""
 
     table: CoolingTable
     mu: float = 0.6
@@ -202,14 +180,8 @@ class ExplicitCoolingSolver:
 # ---------------------------------------------------------------------------
 def _uniform_interp(x, xs, ys):
     """Linear interp on a UNIFORM grid ``xs`` by index arithmetic — NO
-    searchsorted. Both cooling tables are built on ``linspace`` log-T grids, so
-    the bin index is ``(x - xs[0]) / dx``: two gathers + a lerp. This exists
-    because ROCm's searchsorted kernel (used by ``jnp.interp``) takes async
-    GPU memory-access faults inside the cooling scan — first seen in the
-    reverse-mode VJP at >=64^3 (autodiff campaign), then in FORWARD mode on
-    multi-NODE runs (SN cooling hero: ranks segfault at first step; adiabatic
-    twin is stable; HIP_LAUNCH_BLOCKING unusable multi-node). Clamped ends
-    reproduce jnp.interp's flat extrapolation."""
+    searchsorted (ROCm's searchsorted kernel faults inside the cooling scan).
+    Clamped ends reproduce jnp.interp's flat extrapolation."""
     n = xs.shape[0]
     dx = (xs[-1] - xs[0]) / (n - 1)
     f = jnp.clip((x - xs[0]) / dx, 0.0, n - 1.0)
@@ -243,13 +215,9 @@ _cooling_lambda.defvjp(_cooling_lambda_fwd, _cooling_lambda_bwd)
 
 
 def apply_cooling(U, dt_code, cfg, solver: ExplicitCoolingSolver):
-    """Apply explicit sub-cycled radiative cooling (+ optional heating) to U
-    for one hydro step (Schneider+2018 / Cholla style).
-
-    rho, momentum, kinetic energy unchanged. Only total energy E (cell 4) is
-    updated. The cooling ODE du/dt = -n_e n_H Lambda(T) + n_H Gamma is
-    advanced with n_sub forward-Euler sub-steps and a temperature floor.
-    """
+    """Apply explicit sub-cycled cooling (+ heating) for one hydro step: only
+    total energy E changes, via du/dt = -n_e n_H Lambda(T) + n_H Gamma with
+    n_sub forward-Euler sub-steps and a temperature floor."""
     if not cfg.units.is_enabled:
         raise ValueError("apply_cooling requires cfg.units enabled (cgs scales)")
 

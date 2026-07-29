@@ -1,23 +1,8 @@
-"""Grey M1 radiation transport: first-order Godunov + GLF, RSLA, exp damping.
-
-The 3D generalization of Ulli's 1D M1 notebook (Levermore closure, global
-Lax-Friedrichs face flux, opacity damping), the RAMSES-RT recipe (Rosdahl et
-al. 2013) in grey (frequency-integrated) form:
-
-    d_t E   + div F           = 0          (transport; sources separate)
-    d_t F_i + c^2 d_j P_ij    = -c kappa F (flux damping by opacity)
-    P_ij = E [ (1-chi)/2 delta_ij + (3chi-1)/2 n_i n_j ],  n = F/|F|
-    chi(f) = (3 + 4 f^2) / (5 + 2 sqrt(4 - 3 f^2)),  f = |F| / (c E)
-
-c here is the REDUCED speed of light c_hat (RSLA); the caller picks it
-(>~ 10x max signal speed). The damping is applied as the exact integral
-F *= exp(-c kappa dt): unconditionally stable at any optical depth, unlike
-the notebook's explicit form. State R has shape (4, Nx[, Ny[, Nz]]):
-(E, F_x[, F_y[, F_z]]) -- the module is dimension-agnostic like the hydro.
-
-First-order in space by design (standard for M1; the closure's own diffusion
-dominates any reconstruction gain) => single ghost cell, GLF dissipation
-|jump| * c_hat / 2.
+"""Grey M1 radiation transport (Levermore closure, Godunov + GLF face flux,
+RAMSES-RT-style RSLA). State R has shape (1+ndim, N...): (E, F_x[, F_y[, F_z]])
+-- dimension-agnostic like the hydro. c everywhere is the REDUCED speed of
+light c_hat (caller picks it, >~ 10x max signal speed). Opacity damping is the
+exact integral F *= exp(-c kappa dt): unconditionally stable at any optical depth.
 """
 from __future__ import annotations
 
@@ -66,13 +51,9 @@ def _minmod(a, b):
 
 
 def m1_transport_step(R, dt, dx, *, chat, boundary=0, order=2):
-    """One explicit GLF transport step of the grey M1 system.
-
-    R: (1+ndim, N...) = (E, F...). Requires the RT CFL dt <= CFL * dx / chat.
-    order=1: donor cell. order=2: minmod-MUSCL face reconstruction -- kills
-    the O(chat*dx) GLF diffusion floor that otherwise swamps the physical
-    D = chat/(3 kappa) whenever kappa*dx is not << 1.
-    """
+    """One explicit GLF transport step. R: (1+ndim, N...) = (E, F...);
+    requires the RT CFL dt <= CFL * dx / chat. order=1: donor cell;
+    order=2: minmod-MUSCL (kills the O(chat*dx) GLF diffusion floor)."""
     ndim = R.ndim - 1
     g = 2 if order == 2 else 1
     mode = "wrap" if boundary == 0 else "edge"

@@ -1,41 +1,10 @@
-"""Hydro-on-blocks: graft LUNA's MUSCL-Hancock solver onto AMR blocks.
+"""Hydro-on-blocks: LUNA's MUSCL-Hancock solver applied per AMR block via ``vmap``.
 
-The block layer is the AMR analogue of ``shard_map``'s shards: each block holds
-its interior cells plus a ghost halo filled from neighbours (same-level), from a
-prolonged coarse parent (coarse-fine faces), or from a physical BC. We therefore
-reuse :func:`hydro.muscl_hancock.muscl_hancock_divergence` *verbatim*, once per
-block via ``vmap``, in exactly the mode LUNA already runs across shard seams:
-
-  * ``exact_wrap=False`` (3D) / ``boundary != 0`` (2D) so the solver takes its
-    block-boundary face state from the **ghost cell** rather than self-wrapping.
-    All boundary physics thus lives in the halo fill, never in the solver.
-
-LUNA's production stepper pads with a **single** ghost cell and accepts a
-half-order, non-telescoping flux at that outer face (see the shard-seam comment
-in ``hydro/muscl_hancock.py``). The block solver inherits the identical
-contract: it consumes a 1-ghost ``W_pad`` sliced from the (wider) block halo, so
-the inner ghost is the neighbour's edge cell — the per-block analogue of the
-``ppermute`` halo exchange. The slope and face-BC helpers only read axis-aligned
-face ghosts (their transverse indices are ``1:-1``), never the corner cells that
-:func:`amr.halo.fill_ghost_same_level` leaves NaN, so the wider halo's unfilled
-corners are safe.
-
-The plain ghost-based path (:func:`block_divergence`) has each block compute its
-own flux at a shared face (from its reconstructed edge state vs. the ghost), so
-conserved quantities do *not* telescope across block seams — the same seam
-non-conservation LUNA tolerates at shard boundaries, now at every block face.
-This is resolved by two mechanisms, both implemented here / in :mod:`amr.reflux`:
-
-  * **same-level seams**: :func:`conservative_block_divergence` /
-    :func:`advance_blocks_conservative` share ONE Riemann flux per block-block
-    face (this block's ``R_d`` + the neighbour's ``L_d``, exchanged on the slot
-    axis), so mass and energy telescope to machine precision on a level.
-  * **coarse-fine seams**: Berger-Colella reflux (:mod:`amr.reflux`, default on
-    in the driver) corrects the coarse cell outside a fine patch by the
-    transverse-averaged fine subface flux.
-
-Faces with no same-level neighbour keep the ghost-based flux and rely on reflux
-(coarse-fine) or the physical BC (domain edge).
+Each block consumes a 1-ghost ``W_pad`` sliced from the wider halo; all boundary
+physics lives in the halo fill (``boundary=1`` / ``exact_wrap=False``), and the
+solver never reads the NaN corner ghosts. The plain ghost-based path does not
+telescope across block seams: :func:`conservative_block_divergence` fixes
+same-level seams, :mod:`amr.reflux` fixes coarse-fine faces.
 """
 
 from __future__ import annotations
@@ -63,6 +32,17 @@ def _inner_ghost_index(ndim, g):
     return (slice(None), slice(None)) + (sl,) * ndim
 
 
+def inv_kw(cfg, level):
+    """``dict(inv_dx=..., inv_dy=..., inv_dz=...)`` from ``cfg.level_dx(level)``
+    (1.0 for axes beyond ``cfg.ndim``) -- the kwargs every LUNA solver entry
+    point takes."""
+    dx = cfg.level_dx(level)
+    ndim = cfg.ndim
+    return dict(inv_dx=1.0 / dx[0],
+                inv_dy=1.0 / dx[1] if ndim >= 2 else 1.0,
+                inv_dz=1.0 / dx[2] if ndim == 3 else 1.0)
+
+
 def cons_to_prim_blocks(U_blocks, gamma):
     """Per-block conservative -> primitive. ``U_blocks`` is
     ``(n_slots, n_vars, *block_shape)``; the NaN sentinel slot maps to NaN."""
@@ -85,30 +65,14 @@ def block_divergence(
     riemann_solver="hllc",
     order=2,
 ):
-    """Per-block hydro flux divergence ``dU/dt = -div.F`` from a ghost-filled
-    primitive halo.
-
-    Parameters
-    ----------
-    W_ghosted : (n_slots, n_vars, *(block_shape + 2*n_ghost))
-        Primitive blocks with ghosts already filled (same-level + coarse + BC).
-    dt : scalar
-        Time step (enters the MUSCL-Hancock predictor only).
-    level : int
-        Refinement level; sets ``inv_dx`` via ``cfg.level_dx(level)``.
-
-    Returns
-    -------
-    (n_slots, n_vars, *block_shape) flux divergence per block.
-    """
+    """Per-block hydro flux divergence ``dU/dt = -div.F`` from ghost-filled
+    primitive blocks ``W_ghosted`` (n_slots, n_vars, *(block_shape + 2*n_ghost));
+    ``dt`` enters the MUSCL-Hancock predictor only, ``level`` sets dx. Returns
+    (n_slots, n_vars, *block_shape)."""
     ndim = cfg.ndim
     g = cfg.n_ghost
     W_pad = W_ghosted[_inner_ghost_index(ndim, g)]      # interior + 1 ghost
-
-    dx = cfg.level_dx(level)
-    inv_dx = 1.0 / dx[0]
-    inv_dy = 1.0 / dx[1] if ndim >= 2 else 1.0
-    inv_dz = 1.0 / dx[2] if ndim == 3 else 1.0          # unused when ndim==2
+    ik = inv_kw(cfg, level)
 
     def one_block(Wp):
         return muscl_hancock_divergence(
@@ -118,9 +82,7 @@ def block_divergence(
             limiter=limiter,
             riemann_solver=riemann_solver,
             spatial_dim=ndim,
-            inv_dx=inv_dx,
-            inv_dy=inv_dy,
-            inv_dz=inv_dz,
+            **ik,
             # boundary != 0 so the 2D path reads the ghost face rather than
             # self-wrapping; exact_wrap stays False so the 3D path does too.
             boundary=1,
@@ -141,53 +103,37 @@ def block_face_fluxes(
     limiter=1,
     riemann_solver="hllc",
 ):
-    """Per-block MUSCL-Hancock face fluxes (for coarse-fine reflux).
-
-    Same 1-ghost slice + per-block ``vmap`` as :func:`block_divergence`, but
-    returns the per-axis face-flux arrays instead of the divergence. Output is a
-    tuple ``(Fx, Fy[, Fz])`` with ``Fd`` of shape
-    ``(n_slots, n_vars, ..., block_shape[d] + 1, ...)``. The block-boundary
-    faces (``Fd[:, :, 0]`` / ``Fd[:, :, -1]``) are the coarse-fine interface
-    fluxes consumed by :mod:`amr.reflux`.
-    """
+    """Per-block MUSCL-Hancock face fluxes: like :func:`block_divergence` but
+    returns the per-axis tuple ``(Fx, Fy[, Fz])``, each
+    ``(n_slots, n_vars, ..., block_shape[d] + 1, ...)``; the block-boundary
+    faces are the coarse-fine interface fluxes consumed by :mod:`amr.reflux`."""
     ndim = cfg.ndim
     g = cfg.n_ghost
     W_pad = W_ghosted[_inner_ghost_index(ndim, g)]
-
-    dx = cfg.level_dx(level)
-    inv_dx = 1.0 / dx[0]
-    inv_dy = 1.0 / dx[1] if ndim >= 2 else 1.0
-    inv_dz = 1.0 / dx[2] if ndim == 3 else 1.0
+    ik = inv_kw(cfg, level)
 
     def one_block(Wp):
         return muscl_hancock_face_fluxes(
             Wp, dt, gamma=gamma, limiter=limiter, riemann_solver=riemann_solver,
-            spatial_dim=ndim, inv_dx=inv_dx, inv_dy=inv_dy, inv_dz=inv_dz,
-            boundary=1, exact_wrap=False,
+            spatial_dim=ndim, **ik, boundary=1, exact_wrap=False,
         )
 
     return jax.vmap(one_block)(W_pad)
 
 
 def block_boundary_states(W_ghosted, dt, level, cfg, *, gamma, limiter=1):
-    """Per-block reconstructed boundary face states (for same-level seam fluxes).
-
-    Returns a per-axis tuple ``((L_0, R_0), ...)`` with each slab stacked over
-    blocks: ``(n_slots, n_vars, *transverse)``. ``L_d`` / ``R_d`` are the left /
-    right reconstructions at the block's first / last interior cell along axis
-    ``d`` (see :func:`hydro.muscl_hancock.muscl_hancock_boundary_states`)."""
+    """Per-block reconstructed boundary face states for same-level seam fluxes:
+    per-axis tuple ``((L_0, R_0), ...)``, each ``(n_slots, n_vars, *transverse)``
+    -- the left/right reconstructions at the block's first/last interior cell
+    (see :func:`hydro.muscl_hancock.muscl_hancock_boundary_states`)."""
     ndim = cfg.ndim
     g = cfg.n_ghost
     W_pad = W_ghosted[_inner_ghost_index(ndim, g)]
-    dx = cfg.level_dx(level)
-    inv_dx = 1.0 / dx[0]
-    inv_dy = 1.0 / dx[1] if ndim >= 2 else 1.0
-    inv_dz = 1.0 / dx[2] if ndim == 3 else 1.0
+    ik = inv_kw(cfg, level)
 
     def one_block(Wp):
         return muscl_hancock_boundary_states(
-            Wp, dt, gamma=gamma, limiter=limiter, spatial_dim=ndim,
-            inv_dx=inv_dx, inv_dy=inv_dy, inv_dz=inv_dz,
+            Wp, dt, gamma=gamma, limiter=limiter, spatial_dim=ndim, **ik,
         )
 
     return jax.vmap(one_block)(W_pad)
@@ -219,26 +165,14 @@ def conservative_block_divergence(
     return_face_fluxes=False,
     coords=None,
 ):
-    """Per-block flux divergence with **consistent same-level seam fluxes**.
-
-    Each block-block face shares ONE Riemann flux, computed from both blocks'
-    boundary reconstructions (this block's ``R_d`` and the neighbour's ``L_d``),
-    so the flux that leaves one block equals the flux that enters its neighbour
-    and the conserved variables telescope across the seam (machine-precision
-    conservation on a single multi-block level). Faces with no same-level
-    neighbour (coarse-fine interfaces) keep the ghost-based boundary flux from
-    :func:`block_face_fluxes` — coarse-fine conservation is restored separately
-    by :mod:`amr.reflux`.
-
-    PHYSICAL (outflow) domain faces are special-cased when ``coords`` is given
-    and ``cfg.boundary == 1``: the ghost-based flux there pairs the interior's
-    half-step PREDICTED state against the ghost's UN-predicted copy (with 2
-    ghost layers the predictor cannot be evaluated on the outermost ghost), an
-    O(dt) inconsistency that pumps mass through the wall (Sod AMR benchmark:
-    F_y[rho] = 2.3e-3 through a v=0 boundary; drho/rho ~ 5e-3 by t=0.2). The
-    consistent zero-gradient flux applies the BC at the predicted-state level:
-    flux = HLLC(pred, pred) = f(pred) — exactly zero mass flux when the
-    predicted normal velocity vanishes."""
+    """Per-block flux divergence with **consistent same-level seam fluxes**:
+    each block-block face shares ONE Riemann flux (this block's ``R_d`` vs the
+    neighbour's ``L_d``), so conserved variables telescope across the seam to
+    machine precision. Coarse-fine faces keep the ghost-based flux (fixed by
+    :mod:`amr.reflux`). With ``coords`` and ``cfg.boundary == 1``, outflow
+    domain faces use flux = HLLC(pred, pred) = f(pred) — the BC applied at the
+    predicted-state level, avoiding the O(dt) wall mass pump of the ghost-based
+    flux (Sod AMR benchmark: drho/rho ~ 5e-3 by t=0.2)."""
     ndim = cfg.ndim
     n_slots = neighbors.shape[0]
     sentinel = n_slots - 1
@@ -277,16 +211,11 @@ def conservative_block_divergence(
             F_d = _set_boundary_face(F_d, d, 0, _seam(Ld, Ld, d), at_lo, ndim)
         fluxes[d] = F_d
 
-    dx = cfg.level_dx(level)
-    inv_dx = 1.0 / dx[0]
-    inv_dy = 1.0 / dx[1] if ndim >= 2 else 1.0
-    inv_dz = 1.0 / dx[2] if ndim == 3 else 1.0
+    ik = inv_kw(cfg, level)
 
     # fluxes carry a leading block axis; assemble the divergence per block.
     def _div(*fs):
-        return divergence_from_face_fluxes(
-            fs, spatial_dim=ndim, inv_dx=inv_dx, inv_dy=inv_dy, inv_dz=inv_dz
-        )
+        return divergence_from_face_fluxes(fs, spatial_dim=ndim, **ik)
 
     dU = jax.vmap(_div)(*fluxes)
     if return_face_fluxes:
@@ -333,13 +262,8 @@ def advance_blocks(
 ):
     """Advance conservative blocks one step: ``U <- U + dt * dU``.
 
-    ``fill_ghosts(W_blocks) -> W_ghosted`` is supplied by the caller and encodes
-    the level's halo policy (same-level only for the base level; same-level +
-    coarse-parent + BC for refined levels). Keeping it a callback lets this core
-    advance stay agnostic to the level's neighbour/parent context.
-
-    The NaN sentinel slot advances to NaN and is meant to be ignored downstream.
-    """
+    ``fill_ghosts(W_blocks) -> W_ghosted`` encodes the level's halo policy.
+    The NaN sentinel slot advances to NaN and is ignored downstream."""
     W_blocks = cons_to_prim_blocks(U_blocks, gamma)
     W_ghosted = fill_ghosts(W_blocks)
     dU = block_divergence(

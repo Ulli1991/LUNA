@@ -1,24 +1,9 @@
-"""AMR physics benchmark #1: Sedov-Taylor blast vs the ANALYTIC solution.
+"""AMR benchmark #1: Sedov blast, AMR vs uniform vs Kamm (2000) analytic.
 
-Compares three solutions of the identical dimensionless Sedov IC
-(rho0=1, E0=0.5 top-hat of radius 6*dx_base, gamma=5/3):
-
-  * AMR      : base Nx^3 + L refinement levels (dynamic pressure regrid),
-               dense composite snapshot at the finest resolution
-  * uniform  : the SAME setup with amr_levels=0 (pure base grid) -- the
-               only difference from the AMR run is refinement
-  * analytic : Kamm (2000) closed form (scripts/validation/sedov_analytic)
-
-Metrics (printed as a table + JSON next to the figure):
-  * shock radius error |R_num - R_ana| / R_ana  (peak of the radial profile)
-  * L1 density-profile error vs analytic over r in (r_core, 1.15 R_ana),
-    excluding the finite-size injection core (r_core = 8*dx_base)
-  * mass / total-energy conservation drift between first and last snapshot
-  * VERDICT: AMR must beat the uniform base run on the L1 profile error
-    (the "refinement adds accuracy" claim) and conserve to near machine eps.
-
-Env: AMR_DIR, UNI_DIR (snapshot dirs), BENCH_E0 (0.5), BENCH_TAG.
-"""
+Same IC three ways (AMR composite, amr_levels=0 uniform, analytic); reports
+shock-radius error, L1 density-profile error (injection core excluded), and
+conservation drift. VERDICT: AMR must beat uniform on L1 and conserve to
+~machine eps. Env: AMR_DIR, UNI_DIR, BENCH_E0, BENCH_TAG."""
 import glob
 import json
 import os

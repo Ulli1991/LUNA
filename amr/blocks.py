@@ -1,19 +1,10 @@
 """Block topology: refinement flags, Morton-based neighbour finding, and
-child-block generation. Dimension-generic (one path for 2D/3D).
+child-block generation (dimension-generic 2D/3D).
 
-Conventions
------------
-* A *level* holds a fixed-size array of block slots; the **last slot is the NaN
-  sentinel** (invalid-ghost source). Inactive slots also hold NaN data and
-  ``coords = -1``.
-* Face-neighbour order is canonical: for axis ``d`` in ``range(ndim)`` the pair
-  ``[+d, -d]``. So 2D = ``[+x,-x,+y,-y]``; 3D appends ``[+z,-z]``. A missing
-  neighbour maps to the NaN-sentinel slot (``n_slots-1``) so downstream gathers
-  need no masking — pulling a missing neighbour yields NaN, exactly the upstream
-  ``-1 -> last block`` trick, but explicit.
-* Block identity is the Morton code of integer block-coords (see geometry). All
-  matching is O(N log N) via sort + ``searchsorted`` (upstream used an O(N^2)
-  pairwise compare).
+Conventions: the LAST slot of a level is the NaN sentinel; inactive slots hold
+NaN data and ``coords = -1``. Face-neighbour order per axis ``d`` is ``[+d,
+-d]``; a missing neighbour maps to the sentinel slot so gathers need no
+masking. Block identity is the Morton code of the integer block-coords.
 """
 
 from __future__ import annotations
@@ -39,11 +30,7 @@ def _offset_table(ndim):
 @partial(jax.jit, static_argnums=(1,))
 def refinement_block_mask(grid_mask, ndim):
     """Per-block refine flag: True if the block holds any flagged cell.
-
-    grid_mask : (n_blocks, *block_shape) of 0/1 (from geometry.refinement_grid_mask)
-    returns   : (n_blocks,) bool. Whole-block refinement -> a flagged block is
-                split into 2**ndim children.
-    """
+    ``grid_mask`` is (n_blocks, *block_shape) 0/1; returns (n_blocks,) bool."""
     axes = tuple(range(1, ndim + 1))
     return grid_mask.sum(axis=axes) > 0
 
@@ -53,23 +40,8 @@ def refinement_block_mask(grid_mask, ndim):
 # ---------------------------------------------------------------------------
 def find_face_neighbors(coords, n_active, level, cfg, periodic=False):
     """Slot id of each block's 2*ndim face neighbours at the same level.
-
-    Parameters
-    ----------
-    coords : int array (n_slots, ndim)
-        Integer block-coords; inactive/sentinel slots may hold anything (they
-        are excluded via ``n_active``).
-    n_active : int (scalar, traced ok)
-        Number of leading active slots. Slots ``>= n_active`` are inactive.
-    periodic : bool
-        Wrap neighbour coords modulo ``n_blocks_per_dim`` (base level under
-        periodic cosmology). Non-base/refined levels use ``False``.
-
-    Returns
-    -------
-    int array (n_slots, 2*ndim) of neighbour slot ids; missing -> ``n_slots-1``
-    (the NaN-sentinel slot).
-    """
+    ``periodic`` wraps neighbour coords modulo the level's block count.
+    Returns (n_slots, 2*ndim) int; missing -> ``n_slots-1`` (sentinel)."""
     ndim = cfg.ndim
     n_slots = coords.shape[0]
     nan_slot = n_slots - 1
@@ -108,16 +80,9 @@ def find_face_neighbors(coords, n_active, level, cfg, periodic=False):
 
 
 def find_parent_slots(fine_coords, coarse_coords, coarse_n_active, cfg):
-    """Slot id, in the coarse-level array, of each fine block's parent.
-
-    The parent of a fine block at coords ``cf`` is the coarse block at
-    ``cf // 2`` (whole-block refinement: children coords are ``2*parent + {0,1}``).
-    O(N log N) Morton sort + ``searchsorted``, same machinery as
-    :func:`find_face_neighbors`. A fine block whose parent is absent (should not
-    happen under proper nesting) maps to the coarse NaN-sentinel slot.
-
-    Returns int array ``(n_fine_slots,)`` of coarse slot ids.
-    """
+    """Slot id, in the coarse-level array, of each fine block's parent
+    (``cf // 2``); an absent parent maps to the coarse sentinel.
+    Returns (n_fine_slots,) int."""
     ndim = cfg.ndim
     n_coarse = coarse_coords.shape[0]
     sentinel = n_coarse - 1
@@ -143,26 +108,11 @@ def find_parent_slots(fine_coords, coarse_coords, coarse_n_active, cfg):
 # ---------------------------------------------------------------------------
 def build_children(parent_coords, parent_data, flags, level, cfg, max_parents,
                    parent_ghosted=None):
-    """Refine flagged parent blocks into child blocks at ``level+1``.
-
-    Each flagged parent emits ``2**ndim`` children; child ``o`` covers the
-    parent's spatial half selected by offset ``o in {0,1}**ndim`` and is the
-    conservative prolongation of that half.
-
-    ``parent_ghosted`` (optional, ``(n_slots, n_vars, *(bs + 2*g))`` with any halo
-    width ``g >= 1``, NaN-clamped at missing neighbours) makes the prolongation
-    GHOST-AWARE: the parent block's OUTER-face slopes are taken from the halo
-    (same-level neighbours) instead of clamping to one-sided/PC, so child
-    initialization is 2nd order at block boundaries too (bare-block prolongation
-    is 1st order there -- the residual after the centered-limiter fix). When
-    ``None`` the bare parent block is prolonged (backward-compatible).
-
-    Returns
-    -------
-    child_coords : (max_parents * 2**ndim, ndim) int  (last slot = sentinel -1)
-    child_data   : (max_parents * 2**ndim, n_vars, *block_shape)  (last = NaN)
-    n_active     : int scalar = min(#flagged, max_parents - 1) * 2**ndim
-    """
+    """Refine flagged parent blocks into 2**ndim conservative-prolongation
+    children each at ``level+1``. ``parent_ghosted`` (optional halo-padded
+    parent data) makes the prolongation ghost-aware (2nd order at block
+    boundaries). Returns (child_coords, child_data, n_active) with
+    ``max_parents * 2**ndim`` slots, last slot = sentinel (-1 / NaN)."""
     ndim = cfg.ndim
     C = cfg.children_per_block
     bs = cfg.block_shape
@@ -259,12 +209,8 @@ def build_children(parent_coords, parent_data, flags, level, cfg, max_parents,
 # Preserve unaltered blocks across re-adaptation (Morton set-diff, O(N log N))
 # ---------------------------------------------------------------------------
 def match_blocks(new_coords, new_n_active, old_coords, old_n_active, ndim):
-    """For each new block slot, the old slot holding the same coords, else -1.
-
-    Morton sort + searchsorted, replacing upstream's O(N^2) ``compare_coords``.
-    Used to carry already-computed data for blocks that exist in both the old
-    and the re-adapted hierarchy (no need to re-prolong them).
-    """
+    """For each new block slot, the old slot holding the same coords, else -1
+    (used to carry data for blocks that survive a regrid)."""
     code_dtype, _ = _morton_params(ndim)
     invalid = jnp.array(jnp.iinfo(code_dtype).max, dtype=code_dtype)
 
@@ -296,14 +242,9 @@ def preserve_unaltered(new_data, old_slot, old_data):
 # Cross-block buffer dilation (extend the refine margin across block faces)
 # ---------------------------------------------------------------------------
 def cross_block_dilate(grid_mask, neighbors, cfg, buffer=None):
-    """Grow the per-cell refine mask by ``buffer`` cells, INCLUDING across block
-    faces, using same-level neighbour data.
-
-    Composes the existing same-level halo fill (treating the 0/1 mask as a
-    1-variable block field, missing neighbours -> 0) with the box dilation, then
-    crops back to block interiors. This makes the refine margin correct at block
-    boundaries (upstream did this with a bespoke ``get_ghost_mask``).
-    """
+    """Grow the per-cell refine mask by ``buffer`` cells, including across
+    block faces (missing neighbours contribute 0). ``buffer`` must not exceed
+    the ghost width."""
     from amr.geometry import _dilate
     from amr.halo import fill_ghost_same_level
 

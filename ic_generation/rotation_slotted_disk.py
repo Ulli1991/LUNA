@@ -2,26 +2,9 @@ import jax.numpy as jnp
 
 
 def rotation_slotted_disk(cfg, x_slice=None, y_slice=None):
-    """
-    Rotating slotted disk test problem (2D).
-
-    Annular disk with a vertical slot rotating rigidly about the center.
-    Classic test for advection schemes - tests preservation of sharp
-    discontinuities under solid body rotation.
-
-    Parameters
-    ----------
-    cfg : Config
-        Configuration object containing Nx, Ny, Lx, Ly, gamma
-    x_slice : tuple (x_start, x_end), optional
-        Generate only this x-range for distributed initialization
-    y_slice : tuple (y_start, y_end), optional
-        Generate only this y-range for distributed initialization
-
-    Returns
-    -------
-    U : jax.numpy.ndarray
-        Conservative variables [rho, rho*ux, rho*uy, E] with shape (4, Nx_local, Ny_local)
+    """2D Zalesak slotted disk in rigid rotation (advection of sharp features).
+    Uses a normalized [0,1]^2 domain regardless of Lx/Ly.
+    Returns U = [rho, rho*ux, rho*uy, E], shape (4, Nx_local, Ny_local).
     """
     Nx, Ny, Lx, Ly = cfg.Nx, cfg.Ny, cfg.Lx, cfg.Ly
     gamma = cfg.gamma

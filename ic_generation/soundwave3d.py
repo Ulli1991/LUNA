@@ -2,28 +2,9 @@ import jax.numpy as jnp
 
 
 def soundwave_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
-    """
-    Linear sound wave in 3D.
-
-    Small-amplitude sinusoidal perturbation propagating diagonally
-    through a uniform medium. Tests numerical dissipation, convergence,
-    and that the 3D pipeline preserves the wave correctly.
-
-    Very lightweight: runs at 32^3 on a single GPU.
-    Periodic boundaries required.
-
-    Parameters
-    ----------
-    cfg : Config
-        Configuration object containing Nx, Ny, Nz, Lx, Ly, Lz, gamma.
-    x_slice, y_slice, z_slice : tuple (start, end), optional
-        Generate only this range for distributed initialization
-
-    Returns
-    -------
-    U : jax.numpy.ndarray
-        Conservative variables [rho, rho*vx, rho*vy, rho*vz, E]
-        with shape (5, Nx_local, Ny_local, Nz_local)
+    """3D linear sound wave: small diagonal sinusoidal perturbation on a uniform
+    medium, v=0 (standing wave). Periodic boundaries required.
+    Returns U = [rho, rho*vx, rho*vy, rho*vz, E], shape (5, Nx_l, Ny_l, Nz_l).
     """
     Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
     Lx, Ly, Lz = cfg.Lx, cfg.Ly, cfg.Lz

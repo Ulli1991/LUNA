@@ -1,8 +1,10 @@
 # LUNA block-structured AMR — design note
 
-Status: **active**, branch `amr`. This is the LUNA-native, dimension-generic
-block-AMR layer. We cherry-pick ideas from JAX-AMR (vendored read-only under
-`third_party/jaxamr/`, MIT) but own all the code here.
+Status: **active** (merged to main). This is the LUNA-native, dimension-generic
+block-AMR layer. The working core of JAX-AMR (vendored read-only under
+`third_party/jaxamr/`, MIT) was extracted and reworked here — LUNA owns and
+maintains all shipped AMR code; the vendored original is attribution + the
+cross-validation reference for the geometry tests, not a dependency.
 
 ## Locked decisions
 

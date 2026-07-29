@@ -2,26 +2,9 @@ import jax.numpy as jnp
 
 
 def kelvin_helmholtz(cfg, x_slice=None, y_slice=None):
-    """
-    Kelvin-Helmholtz instability test problem (2D).
-
-    Sets up two fluid layers with different velocities and densities.
-    Small sinusoidal perturbations seed the instability, leading to
-    characteristic vortex roll-up along the shear interface.
-
-    Parameters
-    ----------
-    cfg : Config
-        Configuration object containing Nx, Ny, Lx, Ly, gamma
-    x_slice : tuple (x_start, x_end), optional
-        Generate only this x-range for distributed initialization
-    y_slice : tuple (y_start, y_end), optional
-        Generate only this y-range for distributed initialization
-
-    Returns
-    -------
-    U : jax.numpy.ndarray
-        Conservative variables [rho, rho*ux, rho*uy, E] with shape (4, Nx_local, Ny_local)
+    """2D Kelvin-Helmholtz instability: two shearing layers seeded with a sin mode
+    (or broadband noise if LUNA_KH_NOISE>0).
+    Returns U = [rho, rho*ux, rho*uy, E], shape (4, Nx_local, Ny_local).
     """
     Nx, Ny = cfg.Nx, cfg.Ny
     Lx, Ly = cfg.Lx, cfg.Ly

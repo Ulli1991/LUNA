@@ -9,13 +9,9 @@ from hydro.cooling import (ExplicitCoolingSolver, sutherland_dopita_cie,
 
 
 def setup_cooling(cfg, is_main_process: bool = True):
-    """Return the ExplicitCoolingSolver or None when disabled.
-
-    Tables: "sd93_solar" (Sutherland-Dopita CIE, T>1e4 K, no heating),
-    "koyama_inutsuka"/"ki" (KI 2002 two-phase ISM cooling + photoelectric
-    heating, for the cold/warm ISM), and "combined" (KI below 1.5e4 K, SD
-    above — full two-phase-to-hot coverage).
-    """
+    """Return the ExplicitCoolingSolver or None when disabled. Tables:
+    "sd93_solar" (SD CIE, T>1e4 K), "koyama_inutsuka"/"ki" (two-phase ISM),
+    "combined" (KI below 1.5e4 K, SD above)."""
     if not getattr(cfg, "cooling_enabled", False):
         return None
     if not cfg.units.is_enabled:

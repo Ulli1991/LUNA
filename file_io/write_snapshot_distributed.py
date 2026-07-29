@@ -1,3 +1,5 @@
+"""Distributed HDF5 snapshot writer: one file per shard under
+snapdir_NNN/, no gather; stitched back by file_io/read_snapshot.py."""
 import os
 import jax
 import h5py
@@ -7,29 +9,9 @@ from utils.distributed import compute_local_slice, create_device_mesh
 
 
 def write_snapshot_distributed(U_sharded, cfg, t, step, mesh=None):
-    """
-    Save the simulation state from sharded arrays to HDF5 files.
-    Each process writes its own shard to a separate file.
-
-    This avoids expensive gather operations that can cause hangs.
-    Post-processing can stitch these files together if needed.
-
-    Filename format: {base_name}_{step:03d}.{process_id}.hdf5
-    Example: snap_000.0.hdf5, snap_000.1.hdf5, snap_000.2.hdf5, snap_000.3.hdf5
-
-    Parameters
-    ----------
-    U_sharded : sharded array
-        Distributed array across devices
-    cfg : Config
-        Configuration object
-    t : float
-        Current simulation time
-    step : int
-        Snapshot number
-    mesh : Mesh, optional
-        JAX mesh object (will be reconstructed if not provided)
-    """
+    """Write one HDF5 file per addressable shard to
+    snapdir_{step:03d}/{base_name}_{step:03d}.{global_shard_id}.hdf5,
+    storing primitives + conservatives with x/y/z_start placement attrs."""
     # Get process info
     process_id = jax.process_index()
     process_count = jax.process_count()

@@ -2,29 +2,9 @@ import jax.numpy as jnp
 
 
 def sod_shock_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
-    """
-    Sod shock tube test problem in 3D.
-
-    Shock propagates in x-direction, uniform in y and z directions.
-    Automatically computes Ly, Lz, Ny, Nz to maintain cubic cells (dx = dy = dz)
-    with transverse dimensions close to 0.1.
-
-    Parameters
-    ----------
-    cfg : Config
-        Configuration object containing Nx, Lx, gamma.
-        Note: Ny, Nz, Ly, Lz are modified by this function.
-    x_slice : tuple (x_start, x_end), optional
-        Generate only this x-range for distributed initialization
-    y_slice : tuple (y_start, y_end), optional
-        Generate only this y-range for distributed initialization
-    z_slice : tuple (z_start, z_end), optional
-        Generate only this z-range for distributed initialization
-
-    Returns
-    -------
-    U : jax.numpy.ndarray
-        Conservative variables [rho, rho*vx, rho*vy, rho*vz, E] with shape (5, Nx_local, Ny_local, Nz_local)
+    """3D Sod shock tube: shock along x, uniform in y/z.
+    Mutates cfg.Ny/Nz/Ly/Lz to keep cubic cells with transverse size ~0.1.
+    Returns U = [rho, rho*vx, rho*vy, rho*vz, E], shape (5, Nx_l, Ny_l, Nz_l).
     """
     Nx = cfg.Nx
     Lx = cfg.Lx

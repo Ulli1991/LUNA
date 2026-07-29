@@ -106,7 +106,7 @@ def main_run():
         x = fin["x"]
         os.makedirs("figures", exist_ok=True)
         # save the plot data so the figure can be restyled without re-running
-        np.savez("figures/zeldovich_pancake_data.npz",
+        np.savez("code_paper_figs/zeldovich_pancake_data.npz",
                  x=x, rho_ana=fin["rho_ana"], rho_num=fin["rho_num"],
                  v_ana=fin["v_ana"], v_num=fin["v_num"],
                  z=z_arr, l1r=l1r, l1v=l1v)

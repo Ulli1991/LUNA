@@ -1,23 +1,8 @@
-"""Cosmological (super-comoving) hooks for the block-AMR runner. Gas-only
-Phase 1 of the cosmo-AMR port.
-
-Super-comoving variables (Martel & Shapiro 1998) make the gamma=5/3 Euler
-equations form-invariant, so the block hydro advance is reused UNCHANGED.
-Cosmology enters through exactly three hooks, all ported cell-faithfully from
-the dense driver (setup/runner_cosmo_hydro):
-
-  1. conformal time: dtau = dt/a^2, a(tau) from a precomputed lookup table,
-     with the expansion step cap  dtau <= dloga_max / (a^2 H(a));
-  2. gravity: lap(phi~) = 1.5 Omega_m H0^2 a * delta  -- fed to the AMR
-     level-by-level Dirichlet MG as an a-dependent (traced) coefficient;
-  3. the floor stack: pressure/temperature floor, Jeans-Truelove floor,
-     buffered density floor with momentum zeroing, velocity ceiling and
-     temperature ceiling -- applied per level (the Jeans floor uses each
-     level's own dx).
-
-Not ported yet (asserted off): Bryan+1995 dual-energy. DM particles are
-Phase 2 (RAMSES-style: particles never split; CIC deposit at the finest
-covering level, refinement on mass-per-cell).
+"""Cosmological (super-comoving, Martel & Shapiro 1998) hooks for the
+block-AMR runner: conformal time / a(tau) lookup with expansion cap, the
+a-dependent Poisson coefficient (lap(phi~) = 1.5 Omega_m H0^2 a delta), and
+the per-level floor stack. The block hydro advance is reused unchanged.
+Dual-energy is NOT ported (asserted off).
 """
 
 from __future__ import annotations
@@ -27,15 +12,10 @@ import numpy as np
 
 
 def make_cosmo_amr(cfg, acfg, rho_bar, *, is_main_process=True):
-    """Build the AMR runner's cosmology kit (or raise for unsupported knobs).
-
-    Returns a dict:
-      a_tab, tau_tab : jnp lookup arrays, a = interp(tau)
-      a_start, a_end : floats
-      dtau_cap(a)    : traced expansion cap  dloga_max / (a^2 H(a))
-      coeff(a)       : traced Poisson coefficient for a (rho - <rho>) source
-      floors(levels, a) -> levels : the full floor stack, per level
-    """
+    """Build the AMR runner's cosmology kit (or raise for unsupported knobs):
+    a dict with ``a_tab``/``tau_tab`` lookup arrays, ``a_start``/``a_end``,
+    ``dtau_cap(a)``, ``coeff(a)`` (Poisson coefficient for a (rho - <rho>)
+    source), and ``floors(levels, a) -> levels``."""
     from cosmology import Cosmology
 
     if getattr(cfg, "DualEnergy", False):

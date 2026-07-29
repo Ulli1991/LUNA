@@ -1,20 +1,10 @@
-"""Particles on the block-AMR hierarchy (DM phase of the cosmo port).
+"""Particles on the block-AMR hierarchy (DM).
 
-Design contract (verified against the block/patch-AMR literature -- Enzo,
-Bryan+2014 / Passy & Bryan 2014 -- see memory note project-amr-dm-design):
-
-  * particles are NEVER split or refined; the MESH refines (per-cell mass
-    flags, whole-block granularity, Athena++-MeshBlock-style);
-  * each particle is OWNED by the finest active block covering its position;
-  * mass deposits by CIC at the owning level's dx into a GHOSTED per-block
-    buffer whose ghost bands are folded back into same-level neighbours /
-    the coarse parent (Enzo's oversized GravitatingMassField);
-  * forces gather by inverse-CIC from the owning block's ghosted phi.
-
-This module: kernel 1 -- the particle -> block map. Pure jnp, O(N log N)
-per level (Morton sort + searchsorted, the same machinery as
-blocks.find_face_neighbors), vectorised over particles, jit/scan-safe
-(static level count, fixed particle count).
+Particles are NEVER split; the mesh refines. Each particle is OWNED by the
+finest active block covering its position; mass deposits by CIC at the owning
+level's dx into a ghosted per-block buffer (ghost bands folded back), and
+forces gather by inverse-CIC from the owning block's ghosted phi.
+jit/scan-safe (static level count, fixed particle count).
 """
 
 from __future__ import annotations
@@ -32,20 +22,9 @@ def _level_block_width(cfg, level):
 
 
 def locate_particles(pos, levels, cfg):
-    """Finest active block covering each particle.
-
-    Parameters
-    ----------
-    pos : (n_p, ndim) positions in the domain (periodic-wrapped internally).
-    levels : hierarchy tuple of Level namedtuples (coords, n_active, ...).
-    cfg : AMRConfig.
-
-    Returns
-    -------
-    lev  : (n_p,) int32 -- owning level index (finest covering; 0 = base,
-           which always covers, so every particle is owned).
-    slot : (n_p,) int32 -- block slot in that level's arrays.
-    """
+    """Finest active block covering each particle (positions are
+    periodic-wrapped internally). Returns ``(lev, slot)``, each (n_p,) int32;
+    level 0 always covers, so every particle is owned."""
     ndim = cfg.ndim
     n_p = pos.shape[0]
 
@@ -86,13 +65,9 @@ def locate_particles(pos, levels, cfg):
 
 
 def accel_blocks(phi_ghosted, level, cfg):
-    """Per-block acceleration -grad(phi) from a GHOSTED scalar phi.
-
-    Input  (n_slots, 1, *(bs+2g)); output (n_slots, ndim, *(bs+2)) -- the
-    2nd-order central difference is valid on the interior PLUS one ghost layer
-    (with g=2 the ghosted phi has exactly the extra cell the edge diff needs),
-    which is precisely the extent the CIC gather touches for a particle
-    anywhere inside the block (i0 in [-1, bs-1])."""
+    """Per-block acceleration -grad(phi) from a GHOSTED scalar phi:
+    (n_slots, 1, *(bs+2g)) -> (n_slots, ndim, *(bs+2)), the central difference
+    on the interior plus one ghost layer (the extent the CIC gather touches)."""
     ndim = cfg.ndim
     g = cfg.n_ghost
     bs = cfg.block_shape
@@ -112,17 +87,11 @@ def accel_blocks(phi_ghosted, level, cfg):
 
 
 def gather_cic(fields, levels, pos, lev, slot, cfg):
-    """Inverse-CIC: sample per-level block fields at particle positions.
-
-    ``fields[L]`` is ``(n_slots, n_comp, *(bs+2))`` -- interior plus ONE ghost
-    layer per side (:func:`accel_blocks` output). Each particle samples its
-    OWNING block (from :func:`locate_particles`) with the standard cell-centred
-    trilinear weights (matching gravity.particle_mesh._interp_one: cell centres
-    at (i+0.5)dx). The 2**ndim corner gather is a static loop of fancy gathers
-    -- O(n_p) memory, no per-particle block materialisation.
-
-    Returns (n_p, n_comp).
-    """
+    """Inverse-CIC: sample per-level block fields ``fields[L]``
+    ``(n_slots, n_comp, *(bs+2))`` (interior + ONE ghost layer,
+    :func:`accel_blocks` output) at particle positions; each particle reads its
+    OWNING block with cell-centred trilinear weights (matches
+    gravity.particle_mesh._interp_one). Returns (n_p, n_comp)."""
     import itertools
 
     ndim = cfg.ndim
@@ -138,13 +107,7 @@ def gather_cic(fields, levels, pos, lev, slot, cfg):
         sel = lev == L
         s = jnp.where(sel, slot, 0)
         cb = jnp.maximum(lvl.coords[s], 0)                # (n_p, ndim)
-        i0 = []
-        t = []
-        for d in range(ndim):
-            gl = p[:, d] / dx[d] - 0.5 - cb[:, d] * bs[d]
-            i = jnp.clip(jnp.floor(gl).astype(jnp.int32), -1, bs[d] - 1)
-            i0.append(i)
-            t.append(jnp.clip(gl - i, 0.0, 1.0))
+        i0, t = _cic_fractions(p, dx, cb, bs, ndim)
         acc = jnp.zeros((n_p, n_comp), dtype=fields[0].dtype)
         for off in itertools.product((0, 1), repeat=ndim):
             w = jnp.ones((n_p,), dtype=fields[0].dtype)
@@ -204,15 +167,10 @@ def _deposit_ghosted(p, mass, lvl, level, lev, slot, cfg):
 
 
 def _fold_same_level(buf, neighbors, cfg):
-    """Stage (b): fold ghost bands into face neighbours -- the TRANSPOSE of the
-    sequential corner-filling ghost sweep. Each axis pass moves the FULL-EXTENT
-    ghost slab (transverse ghost corners included) into the neighbour's GHOSTED
-    buffer edge; corner mass thereby cascades through neighbours across passes,
-    exactly mirroring how the fill sweep propagates corner ghosts (an
-    interior-extent fold silently DROPPED corner deposits -- measured as a 1.4%
-    mass leak). Returns the interior density ``(n_slots, 1, *bs)`` and the
-    swept buffer, whose remaining ghost mass sits only at faces with no
-    same-level neighbour (coarse-fine / domain), for stage (c)."""
+    """Stage (b): fold ghost bands into face neighbours (full-extent slabs so
+    corner mass cascades across passes). Returns the interior density
+    ``(n_slots, 1, *bs)`` and the swept buffer, whose remaining ghost mass
+    sits only at faces with no same-level neighbour (for stage (c))."""
     ndim = cfg.ndim
     n_slots = neighbors.shape[0]
     sentinel = n_slots - 1

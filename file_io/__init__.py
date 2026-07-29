@@ -1,1 +1,1 @@
-# file_io package
+"""Snapshot and checkpoint I/O for LUNA (HDF5, serial and distributed)."""

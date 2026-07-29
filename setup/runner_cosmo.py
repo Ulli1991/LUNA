@@ -93,16 +93,30 @@ def run_simulation_cosmo(U, cfg, step_fn, compute_dt_fn,
               f"p_floor={p_floor:.2e}")
         print(f"[cosmo] {'step':>6} {'a':>9} {'z':>9} {'dloga':>9} {'rho~max':>10}")
 
+    # Gravity-kick time centering (measured on the Zel'dovich pancake,
+    # scaling/repro/zel_probe.py): the legacy end-of-step full kick is 1st
+    # order in dtau and dominated the velocity error at production dloga;
+    # Strang makes the time error negligible (velocity L1 = pure spatial floor).
+    #   "strang" -- half-kick @a, hydro, half-kick @a_next (default; 2 FMG/step)
+    #   "half"   -- hydro, then one full kick with the coeff at the MIDPOINT
+    #   "end"    -- hydro, then one full kick with the coeff at a_next (legacy)
+    kick_scheme = str(getattr(cfg, "cosmo_kick_scheme", "strang"))
+
     while a < a_end - 1e-12:
         dtau = float(compute_dt_fn(U))                          # CFL on (rho~,v~,P~)
         dtau = clock.cap_expansion(dtau, a, dloga_max)
-        dtau = clock.cap_to_table(dtau, tau)
+        dtau = clock.cap_to_target(dtau, tau, a_end)            # land exactly on a_end
         a_next = clock.a_of_tau(tau + dtau)
         dloga = np.log(a_next / a)
-        # LUNA scheme: hydro flux update, THEN the gravity source term applied
-        # once (operator split, not a leapfrog / KDK), then the pressure floor.
-        U = step_fn(U, dtau)
-        U = apply_gravity_source(U, cosmo.poisson_coeff(a_next), dtau)
+        if kick_scheme == "strang":
+            U = apply_gravity_source(U, cosmo.poisson_coeff(a), 0.5 * dtau)
+            U = step_fn(U, dtau)
+            U = apply_gravity_source(U, cosmo.poisson_coeff(a_next), 0.5 * dtau)
+        else:
+            U = step_fn(U, dtau)
+            a_kick = (clock.a_of_tau(tau + 0.5 * dtau)
+                      if kick_scheme == "half" else a_next)
+            U = apply_gravity_source(U, cosmo.poisson_coeff(a_kick), dtau)
         if p_floor > 0.0:
             U = floor_pressure(U)
         tau += dtau

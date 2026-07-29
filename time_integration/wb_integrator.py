@@ -1,27 +1,9 @@
-"""Well-balanced MUSCL-Hancock integrator for stratified low-Mach flows.
-
-Based on Velasco-Romero & Teyssier 2025 (MNRAS 537, 2387), adapted to FV2.
-Supports 2D and 3D. Convention: "vertical" is the LAST spatial axis (y in
-2D, z in 3D). Gravity is along that axis with magnitude `gravity_z` (the
-field is named gravity_z for both dims for backward compat; negative =
-downward).
-
-Algorithm (per step):
-  1) primitives:        W   = cons_to_prim(U)
-                        W'  = W - W_eq                      (perturbation)
-  2) slopes on W' only: dW' = slope_limiter(W'_neighbour - W'_center)
-  3) MUSCL-Hancock predictor using Jacobian at FULL state:
-        W'_half = W'_c - (dt/2) * A(W_c) · ∇W'
-  4) face values:       W_L = W_eq(face) + (W'_half + ½·dW')
-                        W_R = W_eq(face) + (W'_half - ½·dW')
-     For non-vertical faces W_eq(face) = W_eq(cell); for vertical faces it's
-     averaged from adjacent cells.
-  5) Riemann flux F at full face state (HLLC or L-HLLC).
-  6) Equilibrium-flux subtraction: F -= p_eq · δ_normal on the normal-
-     momentum slot of each face flux.
-  7) Gravity source on the perturbation:
-        d(ρ v_vert) += ρ' · g · dt
-        d E          += ρ v_vert · g · dt
+"""Well-balanced MUSCL-Hancock integrator for stratified low-Mach flows
+(Velasco-Romero & Teyssier 2025, adapted to FV2). Slopes and predictor act on
+the perturbation W' = W - W_eq; the equilibrium pressure is subtracted from the
+normal-momentum slot of each face flux, and the gravity source uses ρ' only.
+2D/3D. Convention: "vertical" is the LAST spatial axis, gravity along it with
+magnitude `gravity_z` (field named gravity_z in both dims; negative = downward).
 """
 
 import jax
@@ -47,11 +29,13 @@ def create_wb_muscl_hancock_step(
     sharding=None,
     riemann_solver="hllc",
 ):
+    """Well-balanced MUSCL-Hancock stepper factory; returns (compute_dt_fn, step_fn)."""
     if spatial_dim not in (2, 3):
         raise NotImplementedError("Well-balanced integrator supports 2D and 3D only.")
 
     from hydro.conversions import cons_to_prim
     from hydro.slopes import compute_slopes_from_padded
+    from time_integration.integrators import _make_compute_dt_fn
 
     if riemann_solver == "lhllc":
         from hydro.fluxes_lhllc import lhllc_flux_primitive as flux_fn
@@ -82,25 +66,8 @@ def create_wb_muscl_hancock_step(
         p_idx = 4
         vert_vel_idx = 3  # vz
 
-    @jax.jit
-    def compute_dt_fn(U):
-        W = cons_to_prim(U, gamma)
-        rho = W[0]
-        P = W[p_idx]
-        cs = jnp.sqrt(gamma * P / rho)
-        if spatial_dim == 2:
-            vx = W[1]
-            vy = W[2]
-            dt_local = CFL * jnp.minimum(dx / (jnp.abs(vx) + cs), dy / (jnp.abs(vy) + cs))
-        else:
-            vx = W[1]
-            vy = W[2]
-            vz = W[3]
-            dt_local = CFL * jnp.minimum(
-                jnp.minimum(dx / (jnp.abs(vx) + cs), dy / (jnp.abs(vy) + cs)),
-                dz / (jnp.abs(vz) + cs),
-            )
-        return jnp.min(dt_local)
+    # Same CFL condition as the standard integrator — share its factory.
+    compute_dt_fn = _make_compute_dt_fn(gamma, CFL, spatial_dim, dx, dy, dz)
 
     @jax.jit
     def step_fn(U, dt):

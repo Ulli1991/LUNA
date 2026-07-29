@@ -1,23 +1,8 @@
-"""
-Ornstein-Uhlenbeck turbulent driving (Federrath/Schmidt 2010 style).
-
-Design choices for sharded JAX:
-- A small set of low-k driving modes is enumerated once at setup.
-- Each mode carries a complex 3-vector amplitude evolved in time as an
-  Ornstein-Uhlenbeck process.
-- The real-space force F(x) is reconstructed by direct plane-wave
-  summation: F(x) = 2 Re sum_k a_k exp(i k . x). No FFT, so no global
-  communication when U is sharded across devices.
-
-The driver returns a force field with the same shape as the velocity field
-and integrates as a momentum source:
-    (rho v)_new = (rho v)_old + rho F dt
-    E_new       = E_old + (rho v) . F dt + 0.5 rho |F|^2 dt^2
-
-References
-----------
-Federrath, Roman-Duval, Klessen, Schmidt, Mac Low (2010) A&A 512, A81.
-Schmidt, Federrath, Klessen (2008) PRL 101, 194505.
+"""Ornstein-Uhlenbeck turbulent driving (Federrath+2010 style): a few low-k
+modes with OU-evolved complex amplitudes, reconstructed by direct plane-wave
+summation F(x) = 2 Re sum_k a_k exp(i k . x) — no FFT, so no global
+communication when sharded. Integrates as a momentum source with the
+consistent 0.5 rho |F|^2 dt^2 energy term.
 """
 
 from dataclasses import dataclass, field
@@ -51,19 +36,9 @@ class OUDriverConfig:
 
 
 def _enumerate_modes(cfg: OUDriverConfig):
-    """Enumerate integer wavevectors with k_min <= |n| <= k_max.
-
-    We keep only a half-space (lexicographic n_z>0, or n_z=0 and n_y>0, or
-    n_z=n_y=0 and n_x>0) so the reconstructed real-space field is real:
-        F(x) = 2 Re sum_{k in H} a_k exp(i k . x)
-
-    Returns
-    -------
-    n_vec : (M, 3) integer array of mode triples
-    k_vec : (M, 3) physical wavenumbers (2 pi n / L)
-    k_mag : (M,) magnitudes |k|
-    weight : (M,) spectral weight (parabolic or flat in |n|)
-    """
+    """Enumerate integer wavevectors with k_min <= |n| <= k_max, keeping only
+    a lexicographic half-space so the reconstructed field is real. Returns
+    (n_vec (M,3), k_vec (M,3), k_mag (M,), weight (M,))."""
     k_min_n = cfg.k_min
     k_max_n = cfg.k_max
     n_ceil = int(np.ceil(k_max_n))
@@ -202,18 +177,10 @@ class OUDriver:
     def force_field(
         self, a: jax.Array, X: jax.Array, Y: jax.Array, Z: jax.Array
     ) -> Tuple[jax.Array, jax.Array, jax.Array]:
-        """Evaluate F(x) = 2 Re sum_k a_k exp(i k . x).
-
-        X, Y, Z : real-space coordinates with the same shape (typically the
-                  cell centers of the *local* shard).
-
-        Returns Fx, Fy, Fz with that same shape.
-
-        Memory-friendly: scan over modes so the per-rank peak is just three
-        spatial arrays + the scalar phase, never (M, *spatial). At 1024^3 /
-        8 GPUs with ~30 modes the old materialised-phase version asked for
-        ~32 GB per rank, which is the OOM we kept hitting.
-        """
+        """Evaluate F(x) = 2 Re sum_k a_k exp(i k . x) at coordinates X, Y, Z
+        (same shape, typically the local shard's cell centers); returns
+        (Fx, Fy, Fz). Scans over modes so the peak is O(spatial), not
+        (M, *spatial)."""
         ar = jnp.real(a)  # (M, 3)
         ai = jnp.imag(a)
 

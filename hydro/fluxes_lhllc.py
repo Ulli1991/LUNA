@@ -1,36 +1,19 @@
-"""Low-Mach HLLC (L-HLLC) Riemann solver.
-
-Based on Velasco-Romero & Teyssier 2025 (MNRAS 537, 2387), appendix A.
-
-The standard HLLC contact pressure (Toro 10.71) contains a velocity-difference
-dissipation term proportional to (v_L - v_R). At low Mach numbers this term is
-small in magnitude but still dominates the truncation error in the acoustic
-modes, washing out subsonic flow features. L-HLLC multiplies just that term
-by a Mach-dependent factor
-
-    chi = min(1, max(|v_n_L|, |v_n_R|) / max(c_L, c_R))
-    phi = chi * (2 - chi)
-
-so that phi -> 0 in the low-Mach limit (no spurious dissipation) and phi -> 1
-in the sonic / supersonic limit (standard HLLC, full upwinding).
-
-Same input/output signature as hydro.fluxes.hllc_flux_primitive so the
-modular integrator can swap solvers via cfg.riemann_solver.
+"""Low-Mach HLLC (L-HLLC) Riemann solver (Velasco-Romero & Teyssier 2025,
+appendix A): the contact-pressure dissipation term is scaled by
+phi = chi(2 - chi), chi = min(1, max|v_n|/max c), so it vanishes in the
+low-Mach limit and recovers standard HLLC at sonic speeds. Same signature as
+hydro.fluxes.hllc_flux_primitive (swap via cfg.riemann_solver).
 """
 
 import jax.numpy as jnp
 
+from hydro.fluxes import solve_in_normal_frame
+
 
 def _lhllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R, vt1_L, vt1_R, vt2_L, vt2_R, gamma):
-    """Compute L-HLLC numerical flux for one face direction.
-
-    All inputs are JAX arrays of identical shape (the face grid).
-    Returns a stack of conservative-form flux components:
-      (rho v_n, rho v_n^2 + P, rho v_n v_t1, rho v_n v_t2, (E+P) v_n)
-
-    The caller pads vt1, vt2 with zeros for missing tangential directions
-    (1D: both zero; 2D: vt2 zero).
-    """
+    """L-HLLC flux for one face direction: returns the conservative stack
+    (rho v_n, rho v_n^2 + P, rho v_n v_t1, rho v_n v_t2, (E+P) v_n);
+    the caller zero-pads missing tangential velocities."""
     gm1 = gamma - 1.0
 
     c_L = jnp.sqrt(gamma * P_L / rho_L)
@@ -109,63 +92,22 @@ def _lhllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R, vt1_L, vt1_R, vt2_L, vt2_R, 
 
 def lhllc_flux_primitive_1d(W_L, W_R, axis, gamma):
     """1D L-HLLC. axis ignored (signature compat). W = (rho, vx, P)."""
-    rho_L, vx_L, P_L = W_L
-    rho_R, vx_R, P_R = W_R
-    zeros = jnp.zeros_like(rho_L)
-    F = _lhllc_core(rho_L, rho_R, vx_L, vx_R, P_L, P_R, zeros, zeros, zeros, zeros, gamma)
-    return jnp.stack([F[0], F[1], F[4]])
+    return solve_in_normal_frame(_lhllc_core, W_L, W_R, axis, gamma)
 
 
 def lhllc_flux_primitive_2d(W_L, W_R, axis, gamma):
     """2D L-HLLC. W = (rho, vx, vy, P). axis 0 -> x flux, 1 -> y flux."""
-    rho_L, vx_L, vy_L, P_L = W_L
-    rho_R, vx_R, vy_R, P_R = W_R
-    zeros = jnp.zeros_like(rho_L)
-    if axis == 0:
-        vn_L, vt_L = vx_L, vy_L
-        vn_R, vt_R = vx_R, vy_R
-    else:
-        vn_L, vt_L = vy_L, vx_L
-        vn_R, vt_R = vy_R, vx_R
-    F = _lhllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R, vt_L, vt_R, zeros, zeros, gamma)
-    # Unpack: F[0]=mass, F[1]=normal momentum, F[2]=vt mom, F[4]=energy
-    if axis == 0:
-        return jnp.stack([F[0], F[1], F[2], F[4]])
-    else:
-        return jnp.stack([F[0], F[2], F[1], F[4]])
+    return solve_in_normal_frame(_lhllc_core, W_L, W_R, axis, gamma)
 
 
 def lhllc_flux_primitive_3d(W_L, W_R, axis, gamma):
     """3D L-HLLC. W = (rho, vx, vy, vz, P). axis 0/1/2 -> x/y/z flux."""
-    rho_L, vx_L, vy_L, vz_L, P_L = W_L
-    rho_R, vx_R, vy_R, vz_R, P_R = W_R
-    if axis == 0:
-        vn_L, vt1_L, vt2_L = vx_L, vy_L, vz_L
-        vn_R, vt1_R, vt2_R = vx_R, vy_R, vz_R
-    elif axis == 1:
-        vn_L, vt1_L, vt2_L = vy_L, vx_L, vz_L
-        vn_R, vt1_R, vt2_R = vy_R, vx_R, vz_R
-    else:
-        vn_L, vt1_L, vt2_L = vz_L, vx_L, vy_L
-        vn_R, vt1_R, vt2_R = vz_R, vx_R, vy_R
-    F = _lhllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R, vt1_L, vt1_R, vt2_L, vt2_R, gamma)
-    # Reorder back to (rho, mvx, mvy, mvz, E)
-    if axis == 0:
-        return jnp.stack([F[0], F[1], F[2], F[3], F[4]])
-    elif axis == 1:
-        return jnp.stack([F[0], F[2], F[1], F[3], F[4]])
-    else:
-        return jnp.stack([F[0], F[2], F[3], F[1], F[4]])
+    return solve_in_normal_frame(_lhllc_core, W_L, W_R, axis, gamma)
 
 
 def lhllc_flux_primitive(W_L, W_R, axis, gamma):
     """Dispatcher for L-HLLC, matching hllc_flux_primitive's signature."""
     Nvar = W_L.shape[0]
-    if Nvar == 3:
-        return lhllc_flux_primitive_1d(W_L, W_R, axis, gamma)
-    elif Nvar == 4:
-        return lhllc_flux_primitive_2d(W_L, W_R, axis, gamma)
-    elif Nvar == 5:
-        return lhllc_flux_primitive_3d(W_L, W_R, axis, gamma)
-    else:
+    if Nvar not in (3, 4, 5):
         raise ValueError(f"lhllc_flux_primitive supports 1D/2D/3D, got Nvar={Nvar}")
+    return solve_in_normal_frame(_lhllc_core, W_L, W_R, axis, gamma)

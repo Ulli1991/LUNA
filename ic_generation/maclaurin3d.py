@@ -1,26 +1,9 @@
-"""Maclaurin spheroid — uniform-density self-gravitating ellipsoid in
-rigid-body rotation.
+"""Maclaurin spheroid: uniform-density self-gravitating oblate ellipsoid in
+rigid-body rotation at the Chandrasekhar equilibrium Ω²(e). Ref: Chandrasekhar
+1969, eq. 32a.
 
-A homogeneous-density oblate spheroid with semi-major axis a (equatorial)
-and semi-minor axis c (polar), eccentricity e = √(1 - c²/a²), in
-solid-body rotation Ω², satisfies the Maclaurin equilibrium
-
-    Ω² / (πGρ) = (2 √(1 - e²) / e³) · (3 - 2e²) sin⁻¹ e − 6 (1 - e²) / e²
-
-(Chandrasekhar 1969, *Ellipsoidal Figures of Equilibrium*, eq. 32a).
-
-The interior pressure follows from hydrostatic equilibrium in the
-rotating frame: P(x,y,z) = P_c · (1 − (x² + y²)/a² − z²/c²).
-
-Test: the spheroid should preserve its shape under self-gravity +
-rotation. A drift in axis ratio or non-zero radial velocity buildup
-indicates an issue.
-
-Config knobs:
-    mac_e         : eccentricity (default 0.5 → moderately oblate)
-    mac_a         : equatorial semi-major axis (default 1.0)
-    mac_rho       : interior density (default 1.0)
-    mac_rho_ambient : low-density background (default 1e-3 * mac_rho)
+Test criterion: the spheroid should preserve its shape — axis-ratio drift or
+radial velocity buildup indicates an issue.
 """
 
 import jax.numpy as jnp

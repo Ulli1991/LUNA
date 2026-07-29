@@ -1,28 +1,9 @@
-"""Sedov-Taylor self-similar blast wave: analytic solution.
+"""Sedov-Taylor blast wave: closed-form analytic solution.
 
-Closed-form parametric solution transcribed EXACTLY from Kamm (2000),
-"Evaluation of the Sedov-von Neumann-Taylor Blast Wave Solution",
-LA-UR-00-6055 (eqs. 29-47), for the STANDARD case with uniform ambient
-density (omega = 0): a point explosion of energy E0 into a uniform medium
-rho0 with adiabatic index gamma, spherical geometry j = 3.
-
-    R_s(t) = (E0 / (alpha * rho0))^(1/(j+2)) * t^(2/(j+2))
-
-where alpha is the dimensionless energy constant, evaluated here by direct
-quadrature of the energy integral over the closed-form profiles (validated:
-alpha(gamma=1.4, j=3) = 0.8511 -> xi_0 = 1.033; gamma=5/3 -> xi_0 ~ 1.15).
-
-The interior profiles follow the parametric solution in the similarity
-variable V in [V0, V2]:
-    x1 = a V,  x2 = b (c V - 1),  x3 = d (1 - e V),  x4 = b (1 - (c/gamma) V)
-    lambda = x1^-alpha0 * x2^-alpha2 * x3^-alpha1        (= r / R_s)
-    f      = x1 * lambda                                  (= v / v2)
-    g      = x2^alpha3 * x3^alpha4 * x4^alpha5            (= rho / rho2)
-    h      = x1^(alpha0 j) * x3^(alpha4 - 2 alpha1) * x4^(1 + alpha5)  (= p / p2)
-with strong-shock post-shock values
-    v2 = 2 U / (gamma+1),  rho2 = rho0 (gamma+1)/(gamma-1),
-    p2 = 2 rho0 U^2 / (gamma+1),  U = dR_s/dt = 2 R_s / ((j+2) t).
-"""
+Transcribed from Kamm (2000), LA-UR-00-6055 eqs. 29-47 (uniform ambient,
+omega=0, spherical j=3): R_s(t) = (E0/(alpha rho0))^(1/5) t^(2/5) plus the
+interior rho/v/P profiles. alpha self-check: 0.8511 (gamma=1.4),
+xi_0 ~ 1.15 (gamma=5/3)."""
 import numpy as np
 
 

@@ -2,25 +2,9 @@ import jax.numpy as jnp
 
 
 def kelvin_helmholtz_3d(cfg, x_slice=None, y_slice=None, z_slice=None):
-    """
-    Kelvin-Helmholtz instability in 3D.
-
-    Extends the 2D KH setup with a uniform z-direction and
-    an additional z-perturbation to seed 3D structure.
-    Periodic in all directions. Works well at 64^3 to 256^3.
-
-    Parameters
-    ----------
-    cfg : Config
-        Configuration object containing Nx, Ny, Nz, Lx, Ly, Lz, gamma.
-    x_slice, y_slice, z_slice : tuple (start, end), optional
-        Generate only this range for distributed initialization
-
-    Returns
-    -------
-    U : jax.numpy.ndarray
-        Conservative variables [rho, rho*vx, rho*vy, rho*vz, E]
-        with shape (5, Nx_local, Ny_local, Nz_local)
+    """3D Kelvin-Helmholtz: 2D KH plus a z-perturbation; periodic all directions.
+    Overwrites cfg.Nz/cfg.Lz with an auto thin z-slab (16 cells, dz ≈ dx).
+    Returns U = [rho, rho*vx, rho*vy, rho*vz, E], shape (5, Nx_l, Ny_l, Nz_l).
     """
     Nx, Ny = cfg.Nx, cfg.Ny
     Lx, Ly = cfg.Lx, cfg.Ly

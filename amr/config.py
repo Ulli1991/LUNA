@@ -1,12 +1,6 @@
-"""Immutable AMR configuration.
-
-Replaces upstream JAX-AMR's global mutable module state (``set_amr`` setting
-``Lx, Ly, n_block, ...`` as module globals). A frozen, hashable dataclass can be
-passed as a ``static_argnames`` argument to ``jax.jit`` and closed over by
-``shard_map`` without aliasing hazards across multiple configs.
-
-All physical geometry is derived from three things: the domain ``box``, the base
-grid ``base_grid``, and the fixed ``block_shape``. Refinement ratio is 2.
+"""Immutable AMR configuration: a frozen, hashable dataclass usable as a jit
+static argument. All geometry derives from ``box``, ``base_grid`` and
+``block_shape``; refinement ratio is 2.
 """
 
 from __future__ import annotations
@@ -17,27 +11,9 @@ from functools import cached_property
 
 @dataclass(frozen=True)
 class AMRConfig:
-    """Static AMR geometry.
-
-    Parameters
-    ----------
-    ndim : int
-        2 or 3. One code path serves both.
-    box : tuple[float, ...]
-        Physical domain extent per dim, length ``ndim`` (e.g. ``(L, L)`` /
-        ``(L, L, L)``).
-    base_grid : tuple[int, ...]
-        Base (level-0) cell count per dim, length ``ndim``.
-    block_shape : tuple[int, ...]
-        Fixed cell count per block per dim, length ``ndim``. Same at every level
-        (finer levels have smaller dx, not more cells). Must divide
-        ``base_grid``.
-    max_levels : int
-        Number of refinement levels above the base (0 = uniform base grid only).
-    n_ghost : int
-        Ghost-cell halo width per face. Must cover the hydro stencil
-        (MUSCL-Hancock slopes need 2).
-    """
+    """Static AMR geometry. ``block_shape`` is the same at every level (finer
+    levels have smaller dx, not more cells) and must divide ``base_grid``;
+    ``n_ghost`` must cover the hydro stencil (MUSCL-Hancock slopes need 2)."""
 
     ndim: int
     box: tuple[float, ...]

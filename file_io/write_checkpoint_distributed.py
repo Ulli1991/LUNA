@@ -23,37 +23,9 @@ def write_checkpoint_distributed(
     checkpoint_dir: str = "checkpoints",
     mesh: Optional[Mesh] = None,
 ) -> Optional[str]:
-    """
-    Write distributed checkpoint - each process writes its own shard.
-
-    This avoids the memory-intensive gather operation by having each process
-    write its local shard to a separate file. On restart, each process reads
-    its own shard back.
-
-    Filename format: checkpoint_{step:06d}.{process_id}.hdf5
-    Example: checkpoint_000100.0.hdf5, checkpoint_000100.1.hdf5, etc.
-
-    Parameters
-    ----------
-    U_sharded : Array
-        Distributed conserved variables array
-    cfg : Config
-        Configuration object
-    t : float
-        Current simulation time
-    step : int
-        Current step number
-    checkpoint_dir : str, optional
-        Directory to save checkpoints (default: "checkpoints")
-    mesh : Mesh, optional
-        JAX mesh object (will be reconstructed if not provided)
-
-    Returns
-    -------
-    checkpoint_filename : str or None
-        Path to the checkpoint file written by this process,
-        or None if this process has no addressable shards
-    """
+    """Each process writes its local shard to
+    checkpoint_{step:06d}.{process_id}.hdf5 (no gather). Returns this
+    process's file path, or None if it has no addressable shards."""
     # Get process info
     process_id = jax.process_index()
     process_count = jax.process_count()

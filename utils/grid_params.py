@@ -1,33 +1,13 @@
-"""
-Grid parameters dataclass.
-
-This module defines a frozen dataclass that bundles all grid-related parameters
-and pre-computed constants for efficient parameter passing and memory usage.
-"""
+"""Frozen dataclass bundling grid dimensions, spacings, and pre-computed
+constants for cheap parameter passing."""
 
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class GridParams:
-    """
-    Immutable container for grid parameters and pre-computed constants.
-
-    Attributes
-    ----------
-    Nx, Ny, Nz : int
-        Grid dimensions
-    Lx, Ly, Lz : float
-        Domain sizes
-    dx, dy, dz : float
-        Grid spacings
-    inv_dx, inv_dy, inv_dz : float
-        Inverse grid spacings (for fast multiplication instead of division)
-    spatial_dimension : int
-        Number of spatial dimensions (1, 2, or 3)
-    total_cells : int
-        Total number of cells in the grid
-    """
+    """Immutable container for grid dimensions, domain sizes, spacings
+    (plus pre-computed inverses), spatial_dimension, and total_cells."""
 
     # Grid dimensions
     Nx: int
@@ -55,19 +35,7 @@ class GridParams:
 
     @classmethod
     def from_config(cls, cfg):
-        """
-        Create GridParams from a Config object.
-
-        Parameters
-        ----------
-        cfg : Config
-            Configuration object
-
-        Returns
-        -------
-        GridParams
-            Initialized grid parameters
-        """
+        """Create GridParams from a Config object, deriving spacings and totals."""
         # Compute grid spacings
         dx = cfg.Lx / cfg.Nx
         dy = cfg.Ly / cfg.Ny

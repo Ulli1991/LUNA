@@ -135,19 +135,9 @@ def equilibrium_state(cfg, x_slice=None, y_slice=None, z_slice=None):
 
 
 def initial_conditions(cfg, x_slice=None, y_slice=None, z_slice=None):
-    """
-    Build initial conditions for cfg.test_problem.
-
-    If x_slice / y_slice / z_slice are provided, the underlying IC function
-    returns only the local portion of the global domain — used for
-    distributed/sharded initialization. Slices beyond the problem's
-    dimensionality are ignored.
-
-    Returns the conservative state U with shape:
-        (3, Nx)            for 1D
-        (4, Nx, Ny)        for 2D
-        (5, Nx, Ny, Nz)    for 3D
-    or the corresponding local-slice shape when slices are passed.
+    """Build initial conditions for cfg.test_problem; slices give the local shard
+    (extra slices beyond the problem's dimensionality are ignored).
+    Returns U shaped (3, Nx) 1D / (4, Nx, Ny) 2D / (5, Nx, Ny, Nz) 3D.
     """
     if cfg.test_problem not in _IC_REGISTRY:
         raise ValueError(

@@ -48,7 +48,8 @@ py-modules = ["main", "units", "template_config"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["hydro*", "ic_generation*", "setup*", "time_integration*",
-           "file_io*", "utils*", "gravity*", "sources*", "cosmology*", "amr*"]
+           "file_io*", "utils*", "gravity*", "sources*", "cosmology*", "amr*",
+           "radiation*"]
 exclude = ["tests*", "scripts*"]
 
 [tool.pytest.ini_options]

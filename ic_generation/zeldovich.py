@@ -1,20 +1,7 @@
-"""Zel'dovich pancake initial condition, in super-comoving variables.
-
-A single sinusoidal mode along x, Zel'dovich-displaced, uniform in y and z -- a
-thin 3D box so the run exercises the 3D multigrid Poisson solver. Built in
-super-comoving variables (rho~ = a^3 rho, v~ = a v_pec, P~ = a^5 P) at the
-initial scale factor a_init, so the comoving runner (setup/runner_cosmo.py)
-integrates the plain Euler equations plus the (3/2) Omega_m a gravity source.
-
-The Zel'dovich solution is exact for 1D pressureless collapse before shell
-crossing; the gas is initialised cold so it tracks it until the caustic at
-a = zel_a_caustic.
-
-Config knobs:
-    cosmo_Omega_m, cosmo_Omega_L, cosmo_H0 : background cosmology
-    a_init        : initial scale factor (start redshift)
-    zel_a_caustic : scale factor of first shell crossing (sets the amplitude)
-    zel_cs_frac   : initial sound speed / peak peculiar velocity (keep gas cold)
+"""Zel'dovich pancake IC: single Zel'dovich-displaced sinusoidal mode along x,
+uniform in y/z, built in super-comoving variables (rho~ = a^3 rho, v~ = a v_pec,
+P~ = a^5 P) at a_init — requires the comoving runner (setup/runner_cosmo.py).
+Cold gas tracks the exact solution until the caustic at a = zel_a_caustic.
 """
 import jax.numpy as jnp
 

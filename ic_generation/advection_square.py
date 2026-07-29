@@ -2,25 +2,10 @@ import jax.numpy as jnp
 
 
 def advection_square(cfg, x_slice=None, y_slice=None):
-    """
-    Square advection test problem (2D).
+    """2D square advection test: square density region advected diagonally (u=v=1).
 
-    Square density region advected diagonally with uniform velocity (u=v=1).
-    Tests the scheme's ability to preserve sharp discontinuities during advection.
-
-    Parameters
-    ----------
-    cfg : Config
-        Configuration object containing Nx, Ny, Lx, Ly, gamma
-    x_slice : tuple (x_start, x_end), optional
-        Generate only this x-range for distributed initialization
-    y_slice : tuple (y_start, y_end), optional
-        Generate only this y-range for distributed initialization
-
-    Returns
-    -------
-    U : jax.numpy.ndarray
-        Conservative variables [rho, rho*ux, rho*uy, E] with shape (4, Nx_local, Ny_local)
+    Optional x_slice/y_slice tuples generate only that index range (distributed init).
+    Returns U = [rho, rho*ux, rho*uy, E], shape (4, Nx_local, Ny_local).
     """
     Nx, Ny, Lx, Ly = cfg.Nx, cfg.Ny, cfg.Lx, cfg.Ly
     gamma = cfg.gamma

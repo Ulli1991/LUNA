@@ -119,6 +119,6 @@ fig.tight_layout()
 out2 = f"figures/pm_self_force_Nx{Nx}.png"
 fig.savefig(out2, dpi=130); plt.close(fig); print(f"  wrote {out2}", flush=True)
 
-np.savez(f"figures/pm_force_test_Nx{Nx}.npz", r_dx=r_dx, f_pm=f_pm, f_newt=f_newt,
+np.savez(f"code_paper_figs/pm_force_test_Nx{Nx}.npz", r_dx=r_dx, f_pm=f_pm, f_newt=f_newt,
          self_offsets=offs, self_force=self_f, self_rand=self_rand, f_cell=f_cell)
 print("=== done ===", flush=True)

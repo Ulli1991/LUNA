@@ -1,29 +1,10 @@
 """Multi-level block-AMR hydro driver (dimension-generic 2D/3D).
 
-A hierarchy of block levels: level 0 fully tiles the domain; levels >= 1 are
-sparse refined blocks. Two integrators share the same per-level machinery:
-
-  * :func:`advance` — synchronized: every level advances with the SAME dt.
-  * :func:`advance_subcycle` — Berger-Oliger subcycling (r=2): level L takes
-    ``dt_base / 2**L`` and each finer level sub-steps under ``lax.scan`` with
-    time-interpolated coarse-fine ghosts.
-
-Each step: (1) fill ghosts coarse->fine (same-level seam halo, then sparse
-coarse-fine ghosts from the parent, :mod:`amr.halo`); (2) advance each level
-with conservative same-level seam fluxes (:func:`amr.hydro.conservative_block_
-divergence`), capturing face fluxes; (3) **coarse-fine reflux** (Berger-Colella;
-default ``reflux=True`` — conserves mass at C/F seams to machine precision;
-time-accumulated in the subcycle path); (4) restrict fine results into the
-covered coarse cells (fine is authoritative).
-
-Topology (which blocks exist, neighbours, parent slots) is fixed between
-regrids, so the hierarchy is a static-shape pytree and both advances jit.
-Refinement is dynamic: :func:`regrid` re-flags on the live solution every
-``regrid_interval`` steps (eight criteria: density/pressure gradient,
-vorticity, overdensity, Truelove/Jeans, Löhner, static). The sharded
-multi-GPU driver lives in :mod:`amr.shard` (single process, N local devices;
-multi-process is a follow-up). Gravity (:mod:`amr.poisson`) and DM particles
-(:mod:`amr.particles`) plug in as per-level hooks.
+Level 0 fully tiles the domain; levels >= 1 are sparse refined blocks.
+:func:`advance` steps every level with the same dt; :func:`advance_subcycle`
+is Berger-Oliger subcycling (r=2). Topology is fixed between regrids, so both
+advances jit; :func:`regrid` re-flags on the live solution eagerly. Sharded
+driver: :mod:`amr.shard`; gravity/particles plug in as per-level hooks.
 """
 
 from __future__ import annotations
@@ -35,6 +16,7 @@ import jax.numpy as jnp
 
 from amr.blocks import (
     build_children,
+    cross_block_dilate,
     find_face_neighbors,
     find_parent_slots,
     match_blocks,
@@ -76,12 +58,45 @@ class Level(NamedTuple):
 # ---------------------------------------------------------------------------
 # Refinement flagging
 # ---------------------------------------------------------------------------
+def _pm_slices(d, g, bs, ndim):
+    """(hi, lo, center) index tuples for a central difference along spatial axis
+    ``d`` of a ghosted ``(n_slots, n_vars, *(bs+2g))`` block array."""
+    c = [slice(None), slice(None)] + [slice(g, g + bs[k]) for k in range(ndim)]
+    hi = list(c)
+    lo = list(c)
+    hi[2 + d] = slice(g + 1, g + 1 + bs[d])
+    lo[2 + d] = slice(g - 1, g - 1 + bs[d])
+    return tuple(hi), tuple(lo), tuple(c)
+
+
+def _finish_flags(cell_flag, neighbors, n_active, cfg, buffer):
+    """Shared tail of every flag_* criterion: cross-block buffer dilation,
+    any-cell-flagged block mask, gate to active slots. Returns (n_slots,) bool."""
+    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
+    flagged = refinement_block_mask(cell_flag, cfg.ndim)
+    active = jnp.arange(cell_flag.shape[0]) < n_active
+    return flagged & active
+
+
+def _relgrad_flag(field, neighbors, cfg, threshold):
+    """Per-cell relative central jump |du| / (|u_hi| + |u_lo|), summed over axes
+    on the ghost-filled field; True where the sum exceeds ``threshold``."""
+    ndim, g, bs = cfg.ndim, cfg.n_ghost, cfg.block_shape
+    gh = fill_ghost_same_level(field, neighbors, cfg)
+    grad = jnp.zeros((field.shape[0], 1) + tuple(bs))
+    for d in range(ndim):
+        sl_hi, sl_lo, _ = _pm_slices(d, g, bs, ndim)
+        hi = gh[sl_hi]
+        lo = gh[sl_lo]
+        diff = hi - lo
+        rel = jnp.abs(diff) / (jnp.abs(hi) + jnp.abs(lo) + 1e-30)
+        grad = grad + jnp.where(jnp.isnan(diff), 0.0, rel)
+    return grad[:, 0] > threshold
+
+
 def flag_density_gradient(data, neighbors, n_active, cfg, threshold, buffer=None):
-    """Flag a block when any cell's density gradient magnitude exceeds
-    ``threshold``, computed on **ghost-filled** density so cells at a block edge
-    see across the boundary. A cross-block buffer dilation refines a margin around
-    the feature. Returns (n_slots,) bool.
-    """
+    """Flag blocks whose ghost-filled density-gradient magnitude exceeds
+    ``threshold`` anywhere; buffer-dilated. Returns (n_slots,) bool."""
     ndim = cfg.ndim
     g = cfg.n_ghost
     bs = cfg.block_shape
@@ -90,32 +105,19 @@ def flag_density_gradient(data, neighbors, n_active, cfg, threshold, buffer=None
 
     grad = jnp.zeros((data.shape[0], 1) + tuple(bs))
     for d in range(ndim):
-        sl_hi = [slice(None), slice(None)] + [slice(g, g + bs[k]) for k in range(ndim)]
-        sl_lo = list(sl_hi)
-        sl_hi[2 + d] = slice(g + 1, g + 1 + bs[d])
-        sl_lo[2 + d] = slice(g - 1, g - 1 + bs[d])
-        diff = gh[tuple(sl_hi)] - gh[tuple(sl_lo)]
+        sl_hi, sl_lo, _ = _pm_slices(d, g, bs, ndim)
+        diff = gh[sl_hi] - gh[sl_lo]
         grad = grad + jnp.where(jnp.isnan(diff), 0.0, jnp.abs(diff))
 
     cell_flag = (grad[:, 0] > threshold).astype(jnp.float32)   # (n_slots, *bs)
-    from amr.blocks import cross_block_dilate
-    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
-    flagged = refinement_block_mask(cell_flag, ndim)
-    active = jnp.arange(data.shape[0]) < n_active
-    return flagged & active
+    return _finish_flags(cell_flag, neighbors, n_active, cfg, buffer)
 
 
 def flag_vorticity(data, neighbors, n_active, cfg, threshold, level, buffer=None):
-    """Flag a block when the **physical vorticity** |omega| = |dvy/dx - dvx/dy|
-    (2D) exceeds ``threshold`` anywhere in it. Unlike the density gradient, the
-    /dx makes this a true physical quantity (rotation rate), so it is
-    **resolution-independent**: a vortex core has the same |omega| at any base
-    resolution, so KH refines even from a well-resolved (GPU-saturating) base and
-    keeps refining deeper levels instead of de-refining. Computed on ghost-filled
-    velocity; cross-block dilation adds a margin. Dimension-generic: 2D uses the
-    scalar out-of-plane curl |dvy/dx - dvx/dy|; 3D uses the full vorticity-vector
-    magnitude |curl v| = sqrt(wx^2 + wy^2 + wz^2). Returns (n_slots,) bool.
-    """
+    """Flag blocks where the physical vorticity magnitude |curl v| (2D: the
+    scalar out-of-plane curl) exceeds ``threshold``. The /dx makes it a true
+    rotation rate, hence resolution-INDEPENDENT — KH keeps refining from any
+    base resolution. Ghost-filled velocity; returns (n_slots,) bool."""
     ndim = cfg.ndim
     if ndim not in (2, 3):
         raise NotImplementedError("vorticity criterion needs ndim in {2, 3}")
@@ -128,11 +130,8 @@ def flag_vorticity(data, neighbors, n_active, cfg, threshold, level, buffer=None
     dx = cfg.level_dx(level)
 
     def cdiff(arr, d):
-        hi = [slice(None), slice(None)] + [slice(g, g + bs[k]) for k in range(ndim)]
-        lo = list(hi)
-        hi[2 + d] = slice(g + 1, g + 1 + bs[d])
-        lo[2 + d] = slice(g - 1, g - 1 + bs[d])
-        return (arr[tuple(hi)] - arr[tuple(lo)]) / (2.0 * dx[d])
+        hi, lo, _ = _pm_slices(d, g, bs, ndim)
+        return (arr[hi] - arr[lo]) / (2.0 * dx[d])
 
     if ndim == 2:
         omega_sq = (cdiff(v[1], 0) - cdiff(v[0], 1)) ** 2         # (n_slots,1,*bs)
@@ -144,79 +143,31 @@ def flag_vorticity(data, neighbors, n_active, cfg, threshold, level, buffer=None
         omega_sq = wx ** 2 + wy ** 2 + wz ** 2
     omega = jnp.sqrt(jnp.where(jnp.isnan(omega_sq), 0.0, omega_sq))
     cell_flag = (omega[:, 0] > threshold).astype(jnp.float32)
-    from amr.blocks import cross_block_dilate
-    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
-    flagged = refinement_block_mask(cell_flag, ndim)
-    active = jnp.arange(data.shape[0]) < n_active
-    return flagged & active
+    return _finish_flags(cell_flag, neighbors, n_active, cfg, buffer)
 
 
 def flag_pressure_gradient(data, neighbors, n_active, cfg, threshold, buffer=None):
-    """Flag on the RELATIVE pressure jump |dP|/P (per cell, summed over axes).
-
-    Uses the internal-energy density e_int = E - 0.5*|mom|^2/rho (= P/(gamma-1));
-    the (gamma-1) cancels in the ratio, so this is exactly |dP|/P -- dimensionless
-    and scale-invariant. A smooth but high-pressure interior (e.g. a Sedov hot
-    bubble) has a small fractional gradient and de-refines; sharp fronts -- the
-    shock, and the t=0 injection spike (uniform rho, peaked pressure) -- have an
-    O(1) fractional jump and flag. (The earlier absolute |dP| flagged the whole
-    bubble because e_int is large there.) ``threshold`` is now a dimensionless
-    fraction (~0.2-0.5). Ghost-filled so edge cells see across the block boundary;
-    cross-block dilation adds a margin. Returns (n_slots,) bool.
-    """
+    """Flag on the RELATIVE pressure jump |dP|/P (via e_int; the (gamma-1)
+    cancels) -- dimensionless and scale-invariant, so smooth hot interiors
+    (e.g. a Sedov bubble) de-refine while sharp fronts have an O(1) jump.
+    ``threshold`` is a fraction (~0.2-0.5). Returns (n_slots,) bool."""
     ndim = cfg.ndim
-    g = cfg.n_ghost
-    bs = cfg.block_shape
     rho = data[:, 0:1]                                  # (n_slots, 1, *bs)
     mom = data[:, 1:1 + ndim]                           # (n_slots, ndim, *bs)
     E = data[:, -1:]                                    # total energy (last var)
     eint = E - 0.5 * jnp.sum(mom * mom, axis=1, keepdims=True) / rho   # ~ P/(gamma-1)
-    gh = fill_ghost_same_level(eint, neighbors, cfg)    # (n_slots, 1, *(bs+2g))
-
-    grad = jnp.zeros((data.shape[0], 1) + tuple(bs))
-    for d in range(ndim):
-        sl_hi = [slice(None), slice(None)] + [slice(g, g + bs[k]) for k in range(ndim)]
-        sl_lo = list(sl_hi)
-        sl_hi[2 + d] = slice(g + 1, g + 1 + bs[d])
-        sl_lo[2 + d] = slice(g - 1, g - 1 + bs[d])
-        hi = gh[tuple(sl_hi)]
-        lo = gh[tuple(sl_lo)]
-        diff = hi - lo
-        # RELATIVE jump |dP|/P (dimensionless, scale-invariant): a smooth but
-        # high-pressure interior (e.g. a Sedov hot bubble) has a small fractional
-        # gradient and de-refines, while sharp fronts -- the shock and the t=0
-        # injection spike -- have an O(1) fractional jump and flag. The absolute
-        # |dP| used before flagged the whole bubble because eint is large there.
-        rel = jnp.abs(diff) / (jnp.abs(hi) + jnp.abs(lo) + 1e-30)
-        grad = grad + jnp.where(jnp.isnan(diff), 0.0, rel)
-
-    cell_flag = (grad[:, 0] > threshold).astype(jnp.float32)
-    from amr.blocks import cross_block_dilate
-    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
-    flagged = refinement_block_mask(cell_flag, ndim)
-    active = jnp.arange(data.shape[0]) < n_active
-    return flagged & active
+    cell_flag = _relgrad_flag(eint, neighbors, cfg, threshold).astype(jnp.float32)
+    return _finish_flags(cell_flag, neighbors, n_active, cfg, buffer)
 
 
 def flag_pressure_density(data, neighbors, n_active, cfg, threshold, buffer=None,
                           rho_ref=None, overdensity=1.2):
-    """Combined flag: refine where the relative pressure jump |dP|/P exceeds
-    ``threshold``, OR the relative density jump |drho|/rho does AND the gas is
-    overdense (rho > overdensity * rho_ref).
-
-    The pressure term locks onto the shock (and the t=0 injection spike, where
-    density is still uniform). The density term adds the compressed shell body --
-    but gated by overdensity, because relative gradients are evaluated at each
-    level's OWN dx: a blast interior spanning decades of density gives O(0.3)
-    per-cell jumps on coarse levels even where the profile is smooth, which
-    un-gated would cascade refinement across the whole bubble. The low-density
-    interior (rho << rho_ref) drops out of the gate at every level, so the
-    refinement hugs the shell. ``rho_ref`` defaults to the mean of this level's
-    own active cells; pass the level-0 domain mean for a stable reference.
-    """
+    """Combined flag: relative pressure jump |dP|/P > ``threshold`` (locks onto
+    the shock) OR relative density jump in OVERDENSE gas (rho > overdensity *
+    rho_ref; the gate keeps smooth blast interiors from cascading refinement, so
+    it hugs the shell). ``rho_ref`` defaults to this level's active-cell mean;
+    pass the level-0 domain mean for a stable reference."""
     ndim = cfg.ndim
-    g = cfg.n_ghost
-    bs = cfg.block_shape
     rho = data[:, 0:1]
     mom = data[:, 1:1 + ndim]
     E = data[:, -1:]
@@ -224,70 +175,32 @@ def flag_pressure_density(data, neighbors, n_active, cfg, threshold, buffer=None
     if rho_ref is None:
         rho_ref = jnp.nanmean(rho)                       # sentinel slots are NaN
 
-    def relgrad_flag(field):
-        gh = fill_ghost_same_level(field, neighbors, cfg)
-        grad = jnp.zeros((data.shape[0], 1) + tuple(bs))
-        for d in range(ndim):
-            sl_hi = [slice(None), slice(None)] + [slice(g, g + bs[k]) for k in range(ndim)]
-            sl_lo = list(sl_hi)
-            sl_hi[2 + d] = slice(g + 1, g + 1 + bs[d])
-            sl_lo[2 + d] = slice(g - 1, g - 1 + bs[d])
-            hi = gh[tuple(sl_hi)]
-            lo = gh[tuple(sl_lo)]
-            diff = hi - lo
-            rel = jnp.abs(diff) / (jnp.abs(hi) + jnp.abs(lo) + 1e-30)
-            grad = grad + jnp.where(jnp.isnan(diff), 0.0, rel)
-        return grad[:, 0] > threshold
-
     # density term gated by overdensity (NaN sentinel cells compare False)
     dense = rho[:, 0] > overdensity * rho_ref
-    cell_flag = (relgrad_flag(eint) | (relgrad_flag(rho) & dense)).astype(jnp.float32)
-    from amr.blocks import cross_block_dilate
-    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
-    flagged = refinement_block_mask(cell_flag, ndim)
-    active = jnp.arange(data.shape[0]) < n_active
-    return flagged & active
+    cell_flag = (_relgrad_flag(eint, neighbors, cfg, threshold)
+                 | (_relgrad_flag(rho, neighbors, cfg, threshold) & dense)
+                 ).astype(jnp.float32)
+    return _finish_flags(cell_flag, neighbors, n_active, cfg, buffer)
 
 
 def flag_overdensity(data, neighbors, n_active, cfg, threshold, buffer=None,
                      rho_ref=None):
-    """Quasi-Lagrangian refinement: flag cells with rho > threshold * rho_ref.
-
-    The RAMSES-style constant-mass-per-cell criterion for cosmology: with
-    per-level thresholds ~ 2**(ndim*(L+1)) each refinement level keeps roughly
-    the same mass per cell, so resolution tracks collapsing structures (haloes,
-    pancakes) into the nonlinear regime. ``rho_ref`` is the level-0 domain mean
-    (in super-comoving variables it is conserved), so the threshold is an
-    overdensity 1+delta. NaN sentinel cells compare False and never flag."""
-    ndim = cfg.ndim
+    """Quasi-Lagrangian (RAMSES constant-mass-per-cell) criterion: flag cells
+    with rho > threshold * rho_ref; per-level thresholds ~ 2**(ndim*(L+1)) keep
+    roughly constant mass per cell, tracking collapse. ``rho_ref`` is the
+    level-0 domain mean (threshold = overdensity 1+delta); NaN never flags."""
     rho = data[:, 0:1]
     if rho_ref is None:
         rho_ref = jnp.nanmean(rho)
     cell_flag = (rho[:, 0] > threshold * rho_ref).astype(jnp.float32)
-    from amr.blocks import cross_block_dilate
-    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
-    flagged = refinement_block_mask(cell_flag, ndim)
-    active = jnp.arange(data.shape[0]) < n_active
-    return flagged & active
+    return _finish_flags(cell_flag, neighbors, n_active, cfg, buffer)
 
 
 def flag_jeans(data, neighbors, n_active, cfg, threshold, level, buffer=None):
-    """Truelove refinement: flag cells that under-resolve the local Jeans length.
-
-    The Jeans length ``lambda_J = sqrt(pi gamma P / (G rho^2))`` (isothermal
-    sound speed generalised, c_s^2 = gamma P / rho). Truelove et al. (1997)
-    showed a self-gravitating grid must resolve lambda_J by >= 4 cells or it
-    fragments artificially; refine wherever ``lambda_J < threshold * dx``
-    (``threshold`` = the Jeans number N_J, default caller passes 4). Rearranged
-    to avoid the sqrt and stay robust at rho->0 / P->0:
-
-        lambda_J < N_J dx   <=>   pi gamma (gamma-1) e_int  <  G rho^2 (N_J dx)^2
-
-    with e_int = E - 1/2 rho v^2 = P/(gamma-1). gamma and G come from the config
-    (``AMRConfig.gamma`` / ``AMRConfig.grav_G``). NaN sentinel cells compare
-    False and never flag. This is the criterion established self-gravity codes
-    (RAMSES, Enzo, FLASH) use for collapse; it is what makes an AMR collapse
-    result defensible rather than resolution-dependent."""
+    """Truelove (1997) refinement: flag cells that under-resolve the local Jeans
+    length, ``lambda_J < N_J dx`` (``threshold`` = Jeans number N_J, typ. 4),
+    rearranged sqrt-free as ``pi gamma (gamma-1) e_int < G rho^2 (N_J dx)^2``.
+    gamma / G come from ``AMRConfig``; NaN sentinel cells never flag."""
     ndim = cfg.ndim
     rho = data[:, 0:1]
     mom = data[:, 1:1 + ndim]
@@ -297,34 +210,16 @@ def flag_jeans(data, neighbors, n_active, cfg, threshold, level, buffer=None):
     lhs = jnp.pi * cfg.gamma * (cfg.gamma - 1.0) * eint          # pi gamma P
     rhs = cfg.grav_G * rho * rho * (threshold * dx) ** 2         # G rho^2 (N_J dx)^2
     cell_flag = (lhs[:, 0] < rhs[:, 0]).astype(jnp.float32)      # NaN -> False
-    from amr.blocks import cross_block_dilate
-    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
-    flagged = refinement_block_mask(cell_flag, ndim)
-    active = jnp.arange(data.shape[0]) < n_active
-    return flagged & active
+    return _finish_flags(cell_flag, neighbors, n_active, cfg, buffer)
 
 
 def flag_lohner(data, neighbors, n_active, cfg, threshold, buffer=None):
-    """Löhner (1987) normalized second-derivative refinement estimator — the
-    dimensionless indicator RAMSES / FLASH / Enzo use. Per direction ``d`` the
-    switch on variable ``u`` is
-
-        E_d = |u_{i+1} - 2 u_i + u_{i-1}|
-              / (|u_{i+1}-u_i| + |u_i-u_{i-1}| + eps(|u_{i+1}| + 2|u_i| + |u_{i-1}|))
-
-    combined across directions in quadrature ``E = sqrt(Σ_d num_d^2 / Σ_d den_d^2)``.
-    The ``eps`` term (default 0.01) is a noise filter: it caps ``E`` where the
-    curvature is just discretisation ripple, so refinement tracks genuine features
-    (shocks, contact discontinuities, steep bumps) rather than smooth gradients or
-    round-off. ``E`` is ~O(1) at a sharp feature and ->0 in smooth flow (2nd
-    derivative vanishes on a linear ramp), so ``threshold`` is a resolution-
-    INDEPENDENT fraction (typ. 0.2-0.8) -- unlike the raw-gradient criteria, whose
-    threshold has physical units and must be retuned per problem/resolution.
-
-    Computed on ghost-filled variable ``cfg.lohner_var`` (default 0 = density) so
-    block-edge cells see across the boundary; a missing (coarse-fine / domain)
-    neighbour contributes 0 to that direction. Cross-block dilation adds a margin.
-    Returns (n_slots,) bool."""
+    """Löhner (1987) normalized second-derivative estimator (RAMSES/FLASH/Enzo)
+    on ghost-filled variable ``cfg.lohner_var`` (default density): per-axis
+    |d2u| over the gradient sum plus an ``eps`` noise filter (``cfg.lohner_eps``,
+    default 0.01), combined in quadrature. ~O(1) at sharp features, ->0 in smooth
+    flow, so ``threshold`` is a resolution-INDEPENDENT fraction (typ. 0.2-0.8).
+    A missing neighbour contributes 0. Returns (n_slots,) bool."""
     ndim = cfg.ndim
     g = cfg.n_ghost
     bs = cfg.block_shape
@@ -336,11 +231,8 @@ def flag_lohner(data, neighbors, n_active, cfg, threshold, buffer=None):
     num2 = jnp.zeros((data.shape[0], 1) + tuple(bs))
     den2 = jnp.zeros((data.shape[0], 1) + tuple(bs))
     for d in range(ndim):
-        c = [slice(None), slice(None)] + [slice(g, g + bs[k]) for k in range(ndim)]
-        hi = list(c); lo = list(c)
-        hi[2 + d] = slice(g + 1, g + 1 + bs[d])
-        lo[2 + d] = slice(g - 1, g - 1 + bs[d])
-        uc = gh[tuple(c)]; uh = gh[tuple(hi)]; ul = gh[tuple(lo)]
+        hi, lo, c = _pm_slices(d, g, bs, ndim)
+        uc = gh[c]; uh = gh[hi]; ul = gh[lo]
         num = uh - 2.0 * uc + ul
         den = (jnp.abs(uh - uc) + jnp.abs(uc - ul)
                + eps * (jnp.abs(uh) + 2.0 * jnp.abs(uc) + jnp.abs(ul)))
@@ -351,20 +243,13 @@ def flag_lohner(data, neighbors, n_active, cfg, threshold, buffer=None):
     E = jnp.sqrt(num2 / (den2 + 1e-30))
 
     cell_flag = (E[:, 0] > threshold).astype(jnp.float32)
-    from amr.blocks import cross_block_dilate
-    cell_flag = cross_block_dilate(cell_flag, neighbors, cfg, buffer=buffer)
-    flagged = refinement_block_mask(cell_flag, ndim)
-    active = jnp.arange(data.shape[0]) < n_active
-    return flagged & active
+    return _finish_flags(cell_flag, neighbors, n_active, cfg, buffer)
 
 
 def flag_static(parent, cfg, level):
     """Static (geometric) refinement: flag blocks whose CENTER lies inside
-    ``cfg.static_region`` = ``((lo, hi), ...)`` in box-fraction coords [0, 1] per
-    axis (None -> central half on every axis). Solution-INDEPENDENT, so the
-    coarse-fine boundary is FIXED at the same physical location across resolutions
-    -- the setup for SMR convergence-order tests across refinement interfaces.
-    Block center fraction along axis d is ``(coord_d + 0.5) / n_blocks_d(level)``."""
+    ``cfg.static_region`` = ``((lo, hi), ...)`` in box-fraction coords [0, 1]
+    per axis (None -> central half on every axis). Solution-independent."""
     ndim = cfg.ndim
     coords = parent.coords
     region = cfg.static_region
@@ -381,14 +266,9 @@ def flag_static(parent, cfg, level):
 
 
 def _nested_flags(flags, parent, cfg, level):
-    """Enforce PROPER 2:1 NESTING: a level-``level`` block on the INTERIOR edge
-    of its level's patch (a missing same-level face neighbour that is NOT a
-    physical domain face) may not host children. Otherwise the child patch edge
-    coincides with the parent patch edge — a level-skip C/F face whose
-    Berger-Colella reflux target (the parent's same-level neighbour) does not
-    exist, so the flux correction is silently dropped and mass leaks (Sod AMR
-    benchmark: exponential dM once the shock approached the flush edge at
-    x=0.75). Level 0 tiles the domain, so every L0 block is interior."""
+    """Enforce PROPER 2:1 nesting: a block on the interior edge of its level's
+    patch may not host children — a flush child edge creates a level-skip C/F
+    face with no reflux target, silently leaking mass."""
     if level == 0:
         return flags
     sentinel = parent.neighbors.shape[0] - 1
@@ -410,11 +290,9 @@ def _nested_flags(flags, parent, cfg, level):
 
 
 def _flag_blocks(parent, cfg, threshold, level, criterion, rho_ref=None):
-    """Dispatch to the chosen refinement criterion (used by build_hierarchy/regrid).
-    ``rho_ref`` (level-0 domain mean density) feeds the overdensity gate of the
-    combined pressure+density criterion and the quasi-Lagrangian overdensity
-    criterion. Flags are post-filtered by :func:`_nested_flags` (proper 2:1
-    nesting -- no child patch flush against an interior parent-patch edge)."""
+    """Dispatch to the chosen refinement criterion; flags are post-filtered by
+    :func:`_nested_flags`. ``rho_ref`` (level-0 domain mean density) feeds the
+    overdensity-gated criteria."""
     if criterion == "overdensity":
         flags = flag_overdensity(parent.data, parent.neighbors, parent.n_active,
                                  cfg, threshold, rho_ref=rho_ref)
@@ -445,11 +323,9 @@ _flag_blocks = jax.jit(_flag_blocks, static_argnames=("cfg", "level", "criterion
 # Build a (statically refined) hierarchy
 # ---------------------------------------------------------------------------
 def _pad_blocks(data, coords, pad_to):
-    """Pad the block axis of (data, coords) up to a multiple of ``pad_to`` (the
-    device count) so the level can be evenly sharded. Padding slots are inactive
-    (coords -1, NaN data). Topology (neighbours / parent slots) is computed
-    *after* this on the padded coords, so the NaN sentinel lands at the new last
-    slot and every 'missing' gather resolves to it consistently."""
+    """Pad the block axis up to a multiple of ``pad_to`` (device count) with
+    inactive slots (coords -1, NaN data). Topology must be computed AFTER this
+    so the NaN sentinel lands at the padded last slot."""
     n = data.shape[0]
     if pad_to <= 1 or n % pad_to == 0:
         return data, coords
@@ -460,33 +336,12 @@ def _pad_blocks(data, coords, pad_to):
 
 
 def _sized_parents(flags, cpb, bucket, floor=0, cap=0, shrink=True):
-    """Number of parent slots to allocate for a refined level: the exact flagged
-    count (+1 for sentinel headroom). With ``bucket`` set, rounded UP onto the
-    geometric ladder ``bucket * 2**k`` and clamped to at least ``floor`` (the
-    level's current allocation, in parent units). Geometric growth + never-shrink
-    means the jitted ``advance`` recompiles at most ~log2(peak/bucket) times over
-    a dynamic run (a linear bucket recompiled on every ``bucket``-crossing --
-    dozens of multi-second XLA compiles for a growing Sedov shell) and never
-    recompiles on shrink. Padding waste is bounded at 2x the active count.
-    ``bucket`` in (None, 0, 1) means exact (no rounding).
-
-    ``cap`` (parent units, 0 = unlimited) is a HARD ceiling on the allocation:
-    the memory guard for deep hierarchies, where a blanket-refining criterion x
-    the pow2 ladder otherwise requests device-breaking arrays (measured: 41 GiB
-    at 5 levels on Sedov). When flagged > cap the excess parents are simply not
-    refined this regrid (``_children_j`` takes the first ``max_parents`` flagged
-    slots -> deterministic slot/Morton order); the caller logs the shortfall.
-    The never-shrink floor is capped too, so a once-capped level stays capped.
-
-    ``shrink`` (default True; env ``LUNA_AMR_NO_SHRINK=1`` disables): hysteretic
-    ONE-RUNG capacity shrink. The pure never-shrink floor leaves the PEAK
-    allocation (NaN padding) resident forever after refinement recedes -- e.g. a
-    Sedov shell that left the box keeps its peak-level block arrays (~40% of AMR
-    memory in receding-feature runs). When the (bucket-rounded) need falls to
-    <= floor/4, the floor drops by ONE factor of 2 per regrid: the 4x margin
-    prevents grow/shrink thrash at a bucket boundary, and the one-rung rate
-    bounds recompiles -- a full collapse from peak P costs <= log2(P/bucket)
-    regrids, the same ladder the growth already paid."""
+    """Parent-slot allocation for a refined level: exact flagged count (+1
+    sentinel), or with ``bucket`` set rounded UP onto a pow2 ladder and clamped
+    to ``floor`` (bounds jit recompiles). ``cap`` (parent units, 0 = unlimited)
+    is a HARD ceiling: excess parents are simply not refined this regrid.
+    ``shrink`` enables a hysteretic one-rung capacity drop when the need falls
+    to <= floor/4 (env ``LUNA_AMR_NO_SHRINK=1`` disables)."""
     import os as _os
     n = int(jnp.sum(flags)) + 1
     if cap and cap > 0:
@@ -510,13 +365,8 @@ def _sized_parents(flags, cpb, bucket, floor=0, cap=0, shrink=True):
 
 
 def _ghosted_parent(parent, cfg):
-    """1-cell halo of the parent level's CONSERVED data for GHOST-AWARE child
-    prolongation (``build_children(parent_ghosted=...)``): the same-level halo
-    lets a refined block's outer faces get 2nd-order slopes from its neighbours
-    instead of a 1st-order one-sided/PC fallback. Periodicity is already encoded
-    in ``parent.neighbors``; a missing neighbour (refined-region / domain edge)
-    clamps to the block's own edge (the old one-sided behaviour there). A cheap
-    1-ghost slice keeps the prolongation temporary small (OOM-sensitive)."""
+    """1-cell conserved halo of the parent level for ghost-aware child
+    prolongation; a missing neighbour clamps to the block's own edge."""
     g, ndim, bs = cfg.n_ghost, cfg.ndim, cfg.block_shape
     gh = fill_ghost_same_level(parent.data, parent.neighbors, cfg)   # (n_slots, nv, *(bs+2g))
     edge = jnp.pad(parent.data, [(0, 0), (0, 0)] + [(g, g)] * ndim, mode="edge")
@@ -525,16 +375,30 @@ def _ghosted_parent(parent, cfg):
     return gh[sl]                                                    # (n_slots, nv, *(bs+2))
 
 
+def _make_child_level(parent, flags, L, cfg, max_parents, pad_to, periodic,
+                      old_child=None):
+    """Construct level L+1 from the flagged ``parent`` blocks: ghost-aware
+    prolongation (``build_children``), optionally carry evolved data of blocks
+    that persist across a regrid (``old_child``; match/preserve), pad for even
+    sharding, then topology (same-level neighbours + parent slots)."""
+    cc, cd, na = _children_j(parent.coords, parent.data, flags, level=L, cfg=cfg,
+                             max_parents=max_parents,
+                             parent_ghosted=_ghosted_parent(parent, cfg))
+    if old_child is not None:
+        old_slot = _match_blocks_j(cc, na, old_child.coords, old_child.n_active, cfg.ndim)
+        cd = _preserve_j(cd, old_slot, old_child.data)
+    cd, cc = _pad_blocks(cd, cc, pad_to)
+    nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=periodic)
+    pslots = _parent_slots_j(cc, parent.coords, parent.n_active, cfg)
+    return Level(data=cd, coords=cc, neighbors=nbrs, parent_slots=pslots, n_active=na)
+
+
 def build_hierarchy(U0, cfg, *, thresholds, capacities=None, periodic=True, bucket=None,
                     pad_to=1, criterion="density", max_blocks=0):
-    """Construct the level hierarchy from a uniform field.
-
-    thresholds : sequence length ``max_levels`` — density-gradient flag threshold
-        to go from level L to L+1.
-    capacities : sequence length ``max_levels`` or None — max child blocks per
-        refined level (static shapes). None (default) sizes each level to the
-        EXACT flagged count (zero NaN padding); set it only to reserve headroom.
-    """
+    """Construct the level hierarchy from a uniform field. ``thresholds`` (len
+    ``max_levels``) is the per-level flag threshold; ``capacities`` (optional,
+    len ``max_levels``) reserves a fixed child-block count per refined level
+    instead of the default exact (zero-padding) sizing."""
     base = build_base_level(U0, cfg)
     # pad coords+data BEFORE topology so the NaN sentinel lands at the padded
     # last slot and find_* resolve every 'missing' to it consistently.
@@ -557,33 +421,19 @@ def build_hierarchy(U0, cfg, *, thresholds, capacities=None, periodic=True, buck
             # (exact, or bucketed for shape stability under dynamic regridding).
             max_parents = _sized_parents(flags, cpb, bucket,
                                          cap=max_blocks // cpb if max_blocks else 0)
-        cc, cd, na = _children_j(parent.coords, parent.data, flags, level=L, cfg=cfg,
-                                 max_parents=max_parents,
-                                 parent_ghosted=_ghosted_parent(parent, cfg))
-        cd, cc = _pad_blocks(cd, cc, pad_to)
-        nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=periodic)
-        pslots = _parent_slots_j(cc, parent.coords, parent.n_active, cfg)
-        levels.append(Level(data=cd, coords=cc, neighbors=nbrs, parent_slots=pslots, n_active=na))
+        levels.append(_make_child_level(parent, flags, L, cfg, max_parents,
+                                        pad_to, periodic))
 
     return tuple(levels)
 
 
 def regrid(levels, cfg, *, thresholds, periodic=True, bucket=None, pad_to=1,
            criterion="density", max_blocks=0):
-    """Re-evaluate the refinement criterion on the CURRENT solution and rebuild
-    every refined level — the adaptive heart of AMR.
-
-    For each level, the same density-gradient flag (`flag_density_gradient`) is
-    re-run on the *live* data: features that have sharpened get newly flagged,
-    regions that have smoothed drop out. Blocks that persist across the regrid
-    carry their evolved data forward (`match_blocks`/`preserve_unaltered`);
-    newly-refined blocks get their parent's prolongation (from `build_children`);
-    de-refined blocks are dropped — no information lost because `advance` already
-    restricted fine results into the coarse level every step.
-
-    Runs eagerly (block counts change, so the jitted `advance` recompiles for the
-    new shapes — amortized over the regrid interval). Returns a new hierarchy.
-    """
+    """Re-flag on the CURRENT solution and rebuild every refined level — the
+    adaptive heart of AMR. Persisting blocks carry their evolved data forward,
+    new blocks get their parent's prolongation, de-refined blocks drop (already
+    restricted into the coarse level every step). Runs eagerly (block counts
+    change, so the jitted `advance` recompiles). Returns a new hierarchy."""
     new = [levels[0]]                                  # level 0 always fully tiles
     rho0 = jnp.nanmean(levels[0].data[:, 0])           # level-0 domain mean density
     for L in range(cfg.max_levels):
@@ -598,15 +448,8 @@ def regrid(levels, cfg, *, thresholds, periodic=True, bucket=None, pad_to=1,
                                      floor=prev_parents,
                                      cap=max_blocks // cfg.children_per_block
                                      if max_blocks else 0)
-        cc, cd, na = _children_j(parent.coords, parent.data, flags, level=L, cfg=cfg,
-                                 max_parents=max_parents,
-                                 parent_ghosted=_ghosted_parent(parent, cfg))
-        old_slot = _match_blocks_j(cc, na, old_child.coords, old_child.n_active, cfg.ndim)
-        cd = _preserve_j(cd, old_slot, old_child.data)
-        cd, cc = _pad_blocks(cd, cc, pad_to)
-        nbrs = _neighbors_j(cc, na, L + 1, cfg, periodic=periodic)
-        pslots = _parent_slots_j(cc, parent.coords, parent.n_active, cfg)
-        new.append(Level(data=cd, coords=cc, neighbors=nbrs, parent_slots=pslots, n_active=na))
+        new.append(_make_child_level(parent, flags, L, cfg, max_parents,
+                                     pad_to, periodic, old_child=old_child))
     return tuple(new)
 
 
@@ -620,7 +463,13 @@ def _fill_ghosts(levels, cfg, gamma):
     no-op for periodic runs, whose same-level halo wraps)."""
     ghosted = []
     for L, lvl in enumerate(levels):
-        W = cons_to_prim_blocks(lvl.data, gamma)
+        # AD-safe conversion: cons_to_prim on NaN sentinel lanes has NaN
+        # partials (1/rho, -m/rho^2) that poison reverse-mode even under zero
+        # cotangents. Convert on sanitized data, then re-mark sentinel lanes
+        # through a where (non-differentiable predicate -> the NaN constant
+        # branch carries no gradient). Forward W is bit-identical.
+        W = cons_to_prim_blocks(jnp.nan_to_num(lvl.data, nan=1.0), gamma)
+        W = jnp.where(jnp.isnan(lvl.data[:, :1]), jnp.nan, W)
         gw = fill_ghost_same_level(W, lvl.neighbors, cfg)
         # physical DOMAIN bands first (zero-gradient of the FINE data, coords-
         # gated): the coarse underlay must never fill wall ghosts -- its
@@ -631,19 +480,19 @@ def _fill_ghosts(levels, cfg, gamma):
             gw = fill_ghost_from_coarse_sparse(gw, lvl.coords, lvl.parent_slots, ghosted[L - 1], cfg,
                                                interp="linear")
         gw = fill_ghost_physical(gw, W, cfg)
+        # AD barrier: every ghost a real block reads is filled by now; only the
+        # NaN-sentinel / padding lanes still hold NaN. Sanitize them (rho=v=P=1,
+        # forward values of active blocks unchanged) so reverse-mode never sees
+        # a NaN partial — 0-cotangent x NaN would poison the whole gradient
+        # (upstream jaxamr does the same nan_to_num before its solver).
+        gw = jnp.nan_to_num(gw, nan=1.0)
         ghosted.append(gw)
     return ghosted
 
 
 def _restrict_into_parent(coarse_data, fine, cfg):
     """Overwrite covered coarse cells with restrict(fine), fine authoritative.
-
-    Single parallel scatter: every fine block restricts to ``(n_vars, *h)`` and
-    writes a disjoint quadrant of its parent coarse block (children of one parent
-    occupy distinct quadrants; different parents are distinct slots), so there are
-    no write conflicts. Inactive slots are redirected to the NaN sentinel slot
-    (harmless trash). Replaces the old serial per-slot ``scan`` -> O(1) launches.
-    """
+    Single parallel scatter; inactive slots are redirected to the NaN sentinel."""
     ndim = cfg.ndim
     h = tuple(s // 2 for s in cfg.block_shape)
     n_coarse, n_vars = coarse_data.shape[0], coarse_data.shape[1]
@@ -708,35 +557,12 @@ def advance(levels, dt, cfg, *, gamma, limiter=1, riemann_solver="hllc",
 def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="hllc",
                      divergence_fn=None, gravity=None, reflux=True, t0=0.0,
                      reflux_fn=None, fill_fn=None):
-    """Berger-Oliger subcycled step (ratio r=2): level L advances by
-    ``dt_base / r**L``. The coarse level steps once; each finer level then takes
-    ``r`` sub-steps of half the dt, its coarse-fine ghosts gathered from the
-    parent level **fully ghosted** (same-level + the parent's own coarse fill) and
-    linearly interpolated in time between the parent's pre- and post-step states.
-    After the sub-steps the fine level is restricted back into the parent.
-
-    This is the point of AMR in *time*: coarse cells (most of the domain) step
-    only once per base step instead of paying the finest timestep everywhere
-    (the synchronized :func:`advance`), so total work tracks the refined region.
-    Recursion depth is the static ``max_levels`` -> the whole thing jits.
-
-    Optional hooks make it the *full* AMR advance, not hydro-only:
-
-    * ``gravity``: ``(L, lvl, parent_phig, dt, t_sub) -> (new_data, child_phig)``.
-      Called per level per sub-step AFTER the hydro update: it solves Poisson on
-      level L with the parent's ghosted phi as Dirichlet (``parent_phig``; None at
-      L0 -> dense FMG), applies the kick + any floors, and returns the kicked
-      conserved data plus level-L's *own* ghosted phi to pass down as the
-      children's Dirichlet boundary. ``t_sub`` is the absolute (conformal) time at
-      the start of this sub-step -> lets the callable evaluate a(t) per sub-step.
-      The elliptic L0 solve thus runs ONCE per base step, not r**Lmax times: the
-      subcycling win extends to gravity.
-    * ``reflux``: Berger-Colella flux correction, time-accumulated across the r
-      sub-steps. Each level captures its own face fluxes; a parent corrects its
-      coarse cells with ``coarse_flux - mean_over_substeps(fine_flux)`` so
-      conserved quantities telescope across the coarse-fine interface to machine
-      precision even though the two sides stepped at different dt.
-    """
+    """Berger-Oliger subcycled step (r=2): level L advances by ``dt_base/r**L``,
+    coarse-fine ghosts linearly time-interpolated between the parent's pre/post
+    states, then fine restricted into the parent. Recursion depth is the static
+    ``max_levels`` -> jits. ``gravity`` hook ``(L, lvl, parent_phig, dt, t_sub)
+    -> (new_data, child_phig)`` runs per level per sub-step after the hydro
+    update; ``reflux`` is Berger-Colella, time-accumulated over sub-steps."""
     r = cfg.refinement_ratio
     n = len(levels)
     if reflux and reflux_fn is None:
@@ -755,34 +581,28 @@ def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="
                 coords=levels[level].coords)
 
     def ghost_prim(L, data, parent_gprim):
-        """Level-L fully-ghosted primitives: same-level halo + (L>0) the
-        coarse-fine underlay from the fully-ghosted parent (so a grandchild
-        never gathers an unfilled parent edge ghost). PC (const) C/F ghosts on
-        purpose: the subcycle scheme's C/F fluxes telescope exactly against
-        restriction with piecewise-constant ghosts (the conservation test
-        asserts this); the synchronized path uses interp="linear" for accuracy.
-        Reflux reconciles both when on. ``fill_fn`` (shard path) substitutes a
-        distributed same-level + coarse-underlay fill so the big ghosted array is
-        born sharded; it must match this replicated fill bit-for-bit."""
+        """Level-L fully-ghosted primitives: same-level halo + (L>0) coarse
+        underlay from the fully-ghosted parent. Piecewise-constant C/F ghosts
+        on purpose (subcycle C/F fluxes telescope exactly against restriction);
+        ``fill_fn`` (shard path) must match this replicated fill bit-for-bit."""
         if fill_fn is not None:
             return fill_fn(L, data, parent_gprim)
         lvl = levels[L]
-        W = cons_to_prim_blocks(data, gamma)
+        # AD-safe conversion + post-fill barrier, mirroring _fill_ghosts:
+        # sentinel lanes must never contribute NaN partials to reverse-mode.
+        W = cons_to_prim_blocks(jnp.nan_to_num(data, nan=1.0), gamma)
+        W = jnp.where(jnp.isnan(data[:, :1]), jnp.nan, W)
         gw = fill_ghost_same_level(W, lvl.neighbors, cfg)
         if L > 0:
             gw = fill_ghost_from_coarse_sparse(gw, lvl.coords, lvl.parent_slots,
                                                parent_gprim, cfg)
         gw = fill_ghost_physical(gw, W, cfg)   # domain-edge BC (no-op if periodic)
-        return gw
+        return jnp.nan_to_num(gw, nan=1.0)
 
     def step_level(L, datas, dt, t_sub, parent_gprim, parent_phig):
-        """Advance levels L..n-1 by one level-L step of ``dt``. ``datas`` is the
-        tuple of data arrays for levels L..n-1; returns (new datas, level-L flux).
-        Pure in its carries, so the r sub-steps of the child subtree run under
-        ``lax.scan`` instead of being unrolled: the traced graph is O(n levels),
-        not O(r**n) -- the unrolled version took minutes of XLA compile at 3
-        levels (measured 233 s for the SYNC graph and a slow-compile alarm for
-        the subcycled one); the scan form compiles the child body once."""
+        """Advance levels L..n-1 by one level-L step of ``dt``; returns
+        (new datas, level-L flux). Pure in its carries so the r sub-steps run
+        under ``lax.scan`` (traced graph O(n levels), not O(r**n))."""
         lvl = levels[L]
         L_old = datas[0]
         gp = ghost_prim(L, L_old, parent_gprim)
@@ -830,19 +650,10 @@ def advance_subcycle(levels, dt_base, cfg, *, gamma, limiter=1, riemann_solver="
 
 
 def floor_positivity(levels, cfg, *, gamma, rho_floor, p_floor):
-    """Opt-in positivity floor: quiescent-reset any active cell that has gone
-    unphysical (rho <= rho_floor, e_int <= 0, or non-finite) to a quiet state
-    ``(rho_floor, v=0, p_floor)``. Uses ``where`` (NOT ``max``) so a NaN/inf cell
-    is REPLACED, not propagated through a maximum. Inactive/sentinel blocks
-    (coords[:, 0] < 0, all-NaN by construction) are left untouched so the
-    sentinel machinery keeps working.
-
-    This is the robustness knob for extreme-depth AMR: when a capped level puts
-    a coarse-fine seam through a strong shock (the L5 Sedov shell needs more
-    blocks than one device holds, so the cap truncates mid-front), the seam flux
-    can drive a cell negative and collapse the CFL dt to a denormal. The floor
-    localizes that to a few quietly-reset cells instead of a run-ending spiral.
-    Off by default (rho_floor = 0); a validated shallow run never triggers it."""
+    """Opt-in positivity floor: quiescent-reset any active unphysical cell
+    (rho <= rho_floor, e_int <= 0, or non-finite) to ``(rho_floor, v=0,
+    p_floor)``. Uses ``where`` (not ``max``) so NaN/inf cells are REPLACED, and
+    never touches inactive/sentinel blocks. Off by default (rho_floor = 0)."""
     ndim = cfg.ndim
     out = []
     for lvl in levels:
@@ -863,14 +674,9 @@ def floor_positivity(levels, cfg, *, gamma, rho_floor, p_floor):
 
 
 def floor_from_fraction(levels, cfg, *, gamma, frac):
-    """Absolute ``(rho_floor, p_floor)`` scaled from the base-level mean state:
-    ``frac * mean(rho)`` and ``frac * mean(p)``. Auto-scales the positivity floor
-    to the problem so a deep-hierarchy run can be made robust without knowing the
-    absolute density scale (``frac`` ~ 1e-8..1e-6 sits far below resolved
-    structure). Inactive / sentinel slots are NaN by construction, so ``nanmean``
-    over level 0 is exactly the mean over live base cells. Meant to be called
-    once at setup (returns Python floats); feed the result to
-    :func:`floor_positivity`."""
+    """Absolute ``(rho_floor, p_floor)`` = ``frac`` times the base-level mean
+    state (``frac`` ~ 1e-8..1e-6). Call once at setup (returns Python floats);
+    feed the result to :func:`floor_positivity`."""
     ndim = cfg.ndim
     d = levels[0].data
     rho = d[:, 0]
@@ -883,13 +689,16 @@ def floor_from_fraction(levels, cfg, *, gamma, frac):
     return frac * rho_mean, frac * max(p_mean, 0.0)
 
 
-def compute_dt_subcycle(levels, cfg, *, gamma, CFL):
-    """Base (level-0) timestep for subcycling: the largest dt_base such that
-    ``dt_base / r**L`` still satisfies the CFL limit on every level L. Level L
-    then sub-steps with ``dt_base / r**L``."""
+# ---------------------------------------------------------------------------
+# CFL timestep over the hierarchy
+# ---------------------------------------------------------------------------
+def _compute_dt(levels, cfg, *, gamma, CFL, subcycle=False):
+    """Per-axis CFL dt ``min_d dx_d / (|v_d| + cs)`` over all levels. With
+    ``subcycle`` each level's dt is scaled by ``r**L`` back to a base dt (level
+    L then sub-steps with ``dt_base / r**L``). Empty (all-NaN) levels are inf."""
     ndim = cfg.ndim
     r = cfg.refinement_ratio
-    dt_base = jnp.inf
+    dt = jnp.inf
     for L, lvl in enumerate(levels):
         W = cons_to_prim_blocks(lvl.data, gamma)
         rho, P = W[:, 0], W[:, -1]
@@ -898,30 +707,23 @@ def compute_dt_subcycle(levels, cfg, *, gamma, CFL):
         local = jnp.inf
         for d in range(ndim):
             local = jnp.minimum(local, dx[d] / (jnp.abs(W[:, 1 + d]) + cs))
-        cand = (r ** L) * CFL * jnp.nanmin(local)           # scale level-L CFL dt to base
-        dt_base = jnp.minimum(dt_base, jnp.where(jnp.isnan(cand), jnp.inf, cand))
-    return dt_base
-
-
-# ---------------------------------------------------------------------------
-# CFL timestep over the hierarchy
-# ---------------------------------------------------------------------------
-def compute_dt(levels, cfg, *, gamma, CFL):
-    ndim = cfg.ndim
-    dt = jnp.inf
-    for L, lvl in enumerate(levels):
-        W = cons_to_prim_blocks(lvl.data, gamma)
-        rho = W[:, 0]
-        P = W[:, -1]
-        cs = jnp.sqrt(gamma * P / rho)
-        dx = cfg.level_dx(L)
-        # per-axis CFL: min_d dx_d / (|v_d| + cs)
-        local = jnp.inf
-        for d in range(ndim):
-            local = jnp.minimum(local, dx[d] / (jnp.abs(W[:, 1 + d]) + cs))
-        cand = CFL * jnp.nanmin(local)                  # nan if the level is empty
+        if subcycle:
+            cand = (r ** L) * CFL * jnp.nanmin(local)   # scale level-L CFL dt to base
+        else:
+            cand = CFL * jnp.nanmin(local)              # nan if the level is empty
         dt = jnp.minimum(dt, jnp.where(jnp.isnan(cand), jnp.inf, cand))
     return dt
+
+
+def compute_dt_subcycle(levels, cfg, *, gamma, CFL):
+    """Base (level-0) timestep for subcycling: the largest dt_base such that
+    ``dt_base / r**L`` still satisfies the CFL limit on every level L."""
+    return _compute_dt(levels, cfg, gamma=gamma, CFL=CFL, subcycle=True)
+
+
+def compute_dt(levels, cfg, *, gamma, CFL):
+    """Synchronized CFL timestep: the strictest per-level CFL dt."""
+    return _compute_dt(levels, cfg, gamma=gamma, CFL=CFL)
 
 
 # ---------------------------------------------------------------------------

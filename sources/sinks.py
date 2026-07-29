@@ -1,28 +1,10 @@
-"""On-the-fly sink particles with self-gravity coupling (3D).
+"""On-the-fly sink particles with self-gravity coupling (3D only).
 
-Demonstrates LUNA forming sink particles dynamically during a collapse (e.g.
-Boss-Bodenheimer fragmentation), accreting gas, and integrating them with the
-gas and self-gravity. The gravity is the standard Bate-Bonnell-Price-style
-HYBRID — mesh for the gas, direct N-body for the sinks — so close protobinaries
-are resolved rather than grid-softened:
-
-  gas -> gas    : FMG-multigrid Poisson on the gas density  → φ_gas, gas kick −∇φ_gas
-  gas -> sink   : −∇φ_gas interpolated (CIC) at each sink    (gas-only φ ⇒ no self-force)
-  sink -> gas   : each sink's analytic softened point-mass field added to the gas kick
-  sink -> sink  : direct pairwise N-body (self-excluded, softened ε_sink) — resolves binaries
-
-Sinks are advanced by a leapfrog (KDK) under (gas→sink + sink→sink). Mass and
-momentum are conserved on accretion (gas inside r_acc transferred to the sink)
-and on creation (a density peak above the threshold becomes a sink holding the
-gas it replaced).
-
-JAX needs static shapes, so we pre-allocate `sink_max_count` slots carried as
-(pos[N,3], vel[N,3], mass[N], active[N]); an `active` mask gates everything and
-new sinks fill the first free slot. State is threaded through the runner loop
-like the OU-forcing / particle state.
-
-3D only. Requires SELF_GRAVITY-style config (GRAVITATIONAL_G, POISSON_BOUNDARY).
-Enable with cfg.sinks_enabled = True.
+Hybrid gravity: FMG-multigrid Poisson for the gas; gas→sink via CIC-interpolated
+gas-only φ (no self-force); sink→gas via analytic softened point-mass fields;
+sink→sink direct N-body. JAX needs static shapes: `sink_max_count` slots
+(pos[N,3], vel[N,3], mass[N], active[N]) gated by the `active` mask, threaded
+through the runner loop as state.
 """
 import jax
 import jax.numpy as jnp

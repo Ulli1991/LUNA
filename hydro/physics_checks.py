@@ -8,28 +8,8 @@ import jax.numpy as jnp
 
 
 def compute_physics_diagnostics(U, gamma):
-    """
-    Compute physics diagnostics on GPU (JIT-compiled).
-    Returns scalar values for validation with minimal CPU transfer overhead.
-
-    Parameters
-    ----------
-    U : array
-        Conservative state, shape (Nvar, Nx[, Ny[, Nz]])
-    gamma : float
-        Ratio of specific heats
-
-    Returns
-    -------
-    min_rho : float
-        Minimum density in domain
-    min_p : float
-        Minimum pressure in domain
-    has_nan : bool
-        True if any NaN detected
-    has_inf : bool
-        True if any Inf detected
-    """
+    """GPU-resident diagnostics of a conservative state: returns scalars
+    (min_rho, min_p, has_nan, has_inf)."""
     # Check for NaN/Inf in conservative state
     has_nan = jnp.any(jnp.isnan(U))
     has_inf = jnp.any(jnp.isinf(U))
@@ -58,30 +38,8 @@ def compute_physics_diagnostics(U, gamma):
 
 
 def validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=None, time=None):
-    """
-    Validate physics diagnostics (use when diagnostics are pre-computed).
-    This function only performs the validation checks without recomputing.
-
-    Parameters
-    ----------
-    min_rho : float
-        Minimum density in domain
-    min_p : float
-        Minimum pressure in domain
-    has_nan : bool
-        True if any NaN detected
-    has_inf : bool
-        True if any Inf detected
-    step : int, optional
-        Current timestep number (for error message)
-    time : float, optional
-        Current simulation time (for error message)
-
-    Raises
-    ------
-    RuntimeError
-        If unphysical states are detected
-    """
+    """Raise RuntimeError on NaN/Inf or non-positive min density/pressure;
+    ``step``/``time`` only decorate the error message."""
     if has_nan:
         msg = "NaN detected in conservative state"
         if step is not None:
@@ -116,27 +74,8 @@ def validate_from_diagnostics(min_rho, min_p, has_nan, has_inf, step=None, time=
 
 
 def validate_state(U, gamma, step=None, time=None):
-    """
-    Validate conservative state for physical correctness.
-    Uses GPU-resident computation with minimal data transfer.
-    Only transfers 4 scalar values from GPU to CPU for checking.
-
-    Parameters
-    ----------
-    U : array
-        Conservative state, shape (Nvar, Nx[, Ny[, Nz]])
-    gamma : float
-        Ratio of specific heats
-    step : int, optional
-        Current timestep number (for error message)
-    time : float, optional
-        Current simulation time (for error message)
-
-    Raises
-    ------
-    RuntimeError
-        If unphysical states are detected
-    """
+    """Validate a conservative state (GPU-resident; transfers only 4 scalars);
+    raises RuntimeError on unphysical values."""
     # Compute diagnostics on GPU (JIT-compiled, efficient)
     min_rho, min_p, has_nan, has_inf = compute_physics_diagnostics(U, gamma)
 

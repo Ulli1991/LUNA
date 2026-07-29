@@ -1,17 +1,7 @@
-"""Boundary helpers for the Poisson solver.
-
-Each `make_*_halo_3d` factory returns a function `halo(phi)` that takes
-a 3D scalar field of shape (Nx, Ny, Nz) and returns a padded array of
-shape (Nx+2, Ny+2, Nz+2) with the requested 1-cell ghost layer.
-
-Phase 1 ships single-process versions (just jnp.pad). The shard_map
-variants (using jax.lax.ppermute) come in Phase 2 and will live in
-gravity/poisson_bc_shardmap.py.
-
-Boundary types follow the hydro convention:
-  0 = periodic
-  1 = Neumann (zero-gradient, ∂Φ/∂n = 0 → ghost = nearest boundary cell)
-  2 = reflective (Φ does not change sign at reflective walls → same as Neumann)
+"""Boundary helpers for the Poisson solver: each `make_*_halo_3d` factory
+returns `halo(phi)` mapping (Nx, Ny, Nz) -> (Nx+2, Ny+2, Nz+2) with a 1-cell
+ghost layer. Boundary codes follow the hydro convention: 0 = periodic,
+1 = Neumann (∂Φ/∂n = 0), 2 = reflective (same as Neumann for Φ).
 """
 
 import jax.numpy as jnp
@@ -42,24 +32,11 @@ def make_zero_dirichlet_halo_3d():
 
 
 def multipole_dirichlet_face_values(rho, dx, fourpiG, l_max=2):
-    """Guillet-Teyssier 2011 §3 face-centred BC: Φ evaluated at the box
-    face positions (not at ghost cell centres). Pairs with
-    `make_linear_extrap_dirichlet_halo_3d` so the discrete BC lands
-    exactly on the face — which is what gives 2nd-order accuracy.
-
-    l_max controls the multipole order of the boundary potential:
-      l_max = 0 → monopole only  (Φ = -G M / r)
-      l_max ≥ 2 → monopole + quadrupole (dipole vanishes about the COM)
-                  Φ = -G[ M/r + ½ Q_ij r_i r_j / r^5 ],
-                  Q_ij = Σ ρ (3 r_i r_j - r² δ_ij) dV  (traceless).
-    The quadrupole term matters when the boundary is close to a
-    non-spherical mass — e.g. the Boss-Bodenheimer m=2 cloud in a tight
-    box, where the monopole-only BC would otherwise distort the m=2 mode.
-
-    Returned array is shape (Nx+2, Ny+2, Nz+2); only the six face
-    slices carry meaningful values (interior/edges/corners are zero
-    and never read by the 7-point stencil).
-    """
+    """Guillet-Teyssier 2011 §3 face-centred Dirichlet BC: Φ evaluated at the
+    box FACE positions (pairs with `make_linear_extrap_dirichlet_halo_3d` for
+    2nd-order accuracy). l_max=0 -> monopole Φ = -G M/r; l_max>=2 adds the
+    traceless quadrupole ½ Q_ij r_i r_j / r^5. Returns (Nx+2, Ny+2, Nz+2);
+    only the six face slices carry meaningful values."""
     Nx, Ny, Nz = rho.shape
     G = fourpiG / (4.0 * jnp.pi)
 
@@ -119,18 +96,9 @@ def multipole_dirichlet_face_values(rho, dx, fourpiG, l_max=2):
 
 
 def make_linear_extrap_dirichlet_halo_3d(phi_face_values):
-    """Halo factory implementing the Guillet-Teyssier 2011 §3 linear-
-    extrapolation Dirichlet BC:
-
-        GHOST = 2 · Φ_face − Φ_first_interior
-
-    `phi_face_values` is the (Nx+2, Ny+2, Nz+2) array produced by
-    `multipole_dirichlet_face_values`. The corners and edges of the
-    halo array are never read by the 7-point stencil so they remain
-    zero. The ghost depends on the current `phi` (the first interior
-    cell along the normal direction), so the halo is *not* fixed —
-    it's recomputed each smoother sweep.
-    """
+    """Halo factory for the Guillet-Teyssier linear-extrapolation Dirichlet
+    BC: GHOST = 2·Φ_face − Φ_first_interior. The ghost depends on the current
+    phi, so the halo is recomputed each smoother sweep."""
     def halo(phi):
         Nx, Ny, Nz = phi.shape
         padded = jnp.pad(phi, ((1, 1), (1, 1), (1, 1)),
@@ -153,18 +121,10 @@ def make_linear_extrap_dirichlet_halo_3d(phi_face_values):
 
 
 def make_halo_3d(boundary):
-    """Dispatch on the boundary code used by LUNA's hydro path.
-
-    Boundary codes:
-      0 = periodic        (Jeans-swindle multigrid)
-      1 = Neumann         (∂Φ/∂n = 0)
-      2 = reflective      (same as Neumann for Φ)
-      3 = isolated        (Dirichlet from multipole expansion — see
-                           multipole_dirichlet_face_values + the
-                           linear-extrap halo factory; the solver
-                           constructs the halo factory itself because
-                           it needs ρ)
-    """
+    """Dispatch on the LUNA boundary code: 0 periodic, 1 Neumann,
+    2 reflective (= Neumann for Φ), 3 isolated (returns the zero-Dirichlet
+    halo as a sentinel; the solver builds the real multipole halo once ρ is
+    known)."""
     if boundary == 0:
         return make_periodic_halo_3d()
     if boundary in (1, 2):

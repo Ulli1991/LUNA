@@ -1,25 +1,9 @@
-"""Gravitational coupling between the mesh gas and point particles (sinks/stars).
+"""Gas <-> particle gravity via two MG Poisson solves: phi_gas = MG(rho_gas)
+and phi_star = MG(CIC-deposit(particles)).
 
-Lives in the gravity package next to the multigrid Poisson solver because this
-*is* LUNA gravity physics — it reuses `solve_poisson_fmg` (the same MG/FMG solver
-used for gas self-gravity). The particle <-> mesh coupling needs two grid
-potentials (each a multigrid Poisson solve):
-
-    phi_gas  = MG( rho_gas )                  gas self-gravity, AND the field
-                                              particles feel from the gas
-    phi_star = MG( CIC-deposit(particles) )   the field the GAS feels from the
-                                              particles  ("Particle-Mesh": the
-                                              point masses are smeared to a grid
-                                              density first, since the MG solver
-                                              acts on a density field, not on
-                                              point masses)
-
-Particle <-> particle gravity is deliberately NOT done here — for a coupled run
-that is the external N-body code's job (ph4 / PeTar), so LUNA never does the
-O(N^2) star-star sum. Gas->particle sampling uses the gas-only phi_gas, so
-particles feel no self-force. All grid ops keep a fixed shape and all particle
-ops are vmapped over the particle axis (no Python loop), so nothing here forces
-an XLA recompile as particles are created/destroyed.
+Particle-particle gravity is deliberately NOT done here (external N-body's
+job); particles sample the gas-only phi_gas, so they feel no self-force.
+Fixed grid shapes + vmapped particle ops -> no recompile as particles change.
 """
 
 import jax
@@ -83,16 +67,9 @@ class ParticleMeshGravity:
         return jnp.pad(phi, ((2, 2), (2, 2), (2, 2)), mode=mode)
 
     def grad_phi(self, phi, order=2):
-        """-∇φ on the grid (the gravitational acceleration field).
-
-        order=2 (default): 2nd-order centred difference, 1-cell halo, O(Δx²).
-        order=4: 4th-order centred difference, 2-cell halo,
-            ∂φ/∂x ≈ [φ(i-2) − 8φ(i-1) + 8φ(i+1) − φ(i+2)] / (12Δx),
-        cutting the force error to O(Δx⁴) and reducing grid-scale force
-        anisotropy -- the recommended PM force for the cosmological DM particles.
-        Periodic / Neumann boundaries only. The stencil is anti-symmetric, so a
-        CIC-deposit / CIC-gather pair stays self-force-free.
-        """
+        """-∇φ on the grid: order=2 centred difference (default) or order=4
+        (∂φ/∂x ≈ [φ(i-2) − 8φ(i-1) + 8φ(i+1) − φ(i+2)] / (12Δx)). Periodic /
+        Neumann boundaries only; anti-symmetric stencil keeps CIC self-force-free."""
         if order == 4:
             pp = self._pad2(phi)
             c = self.inv_12dx
@@ -153,13 +130,8 @@ class ParticleMeshGravity:
 
     # -- Particle-Mesh: particle mass -> grid density (CIC) -----------------
     def cic_deposit(self, positions, masses, active):
-        """Deposit particle masses onto the grid as a density (CIC).
-
-        Vectorized scatter-add over the particle axis — O(N), shape-stable.
-        ∑ρ·dV == ∑ active masses (mass-conserving; positions clamped to box).
-        This is the prerequisite for the MG solve: the solver acts on a density
-        field, so point masses must be smeared to the mesh first.
-        """
+        """Deposit particle masses onto the grid as a density (CIC scatter-add):
+        ∑ρ·dV == ∑ active masses (positions clamped to the box)."""
         w = (masses * active) / self.dV
         fx = positions[:, 0] / self.dx - 0.5
         fy = positions[:, 1] / self.dx - 0.5

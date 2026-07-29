@@ -1,29 +1,8 @@
-"""Lane–Emden polytropic equilibrium.
+"""Lane–Emden polytrope: self-gravitating hydrostatic equilibrium sphere built
+from the numerically integrated Lane–Emden solution (P = K ρ^(1+1/n)).
 
-Self-gravitating polytrope in hydrostatic equilibrium:
-    P = K ρ^(1 + 1/n)
-    ∇²Φ = 4πGρ
-    ∇P = -ρ ∇Φ        (HSE)
-
-Substituting θⁿ for the normalised density (ρ = ρ_c · θⁿ) and
-ξ = r/r_n where r_n = √((n+1) K ρ_c^(1/n - 1) / (4πG)), the
-dimensionless Lane–Emden equation is
-
-    d²θ/dξ² + (2/ξ) dθ/dξ + θⁿ = 0,
-    θ(0) = 1,  θ'(0) = 0,
-
-solved numerically. The surface ξ_1 is where θ first reaches zero;
-for n = 1.5 (γ = 5/3), ξ_1 ≈ 3.6537.
-
-Test: the polytrope should stay in HSE under self-gravity. Run for
-several dynamical times and check max|v| remains small.
-
-Config knobs (cfg fields):
-    lane_n         : polytrope index (default 1.5 for γ=5/3)
-    lane_rho_c     : central density (default 1.0)
-    lane_R         : physical radius of polytrope (default 1.0)
-    lane_K         : not used here — K is determined by R/ρ_c/n consistency
-    lane_rho_ambient : low-density background outside the polytrope
+Test criterion: the polytrope should stay in HSE — max|v| stays small over
+several dynamical times. K is derived from R/ρ_c/n consistency (lane_K unused).
 """
 
 import jax.numpy as jnp

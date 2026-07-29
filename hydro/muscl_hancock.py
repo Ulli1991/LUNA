@@ -1,13 +1,7 @@
-"""MUSCL-Hancock flux divergence (first- and second-order).
+"""MUSCL-Hancock flux divergence dU/dt = -∇·F(U) (first- and second-order).
 
-Provides the per-step flux divergence dU/dt = -∇·F(U) used by the production
-integrator. The second-order variant adds the MUSCL-Hancock predictor
-(Jacobian form: W_half = Wc - ½dt·A·∇W) and PLM reconstruction.
-
-Memory-optimized: the 3D second-order branch accumulates per-direction into
-a single running dU so direction-specific intermediates only live during
-their own block. The HLLC flux helpers themselves (in hydro/fluxes.py) are
-per-component to avoid stacked star-state arrays.
+Second order adds the unsplit predictor (W_half = Wc - ½dt·A·∇W) + PLM
+reconstruction; the 3D branch accumulates per-direction to bound memory.
 """
 
 import jax.numpy as jnp
@@ -44,6 +38,7 @@ def _pick_riemann(riemann_solver: str):
 
 
 def first_order_divergence(W_pad, *, gamma, riemann_solver, spatial_dim, inv_dx, inv_dy, inv_dz):
+    """First-order (Godunov) flux divergence -∇·F from a 1-ghost primitive pad."""
     flux_fn = _pick_riemann(riemann_solver)
 
     if spatial_dim == 1:
@@ -73,86 +68,46 @@ def first_order_divergence(W_pad, *, gamma, riemann_solver, spatial_dim, inv_dx,
 # --------------------------------------------------------------------------
 
 
-def _muscl_hancock_1d(W_pad, dt, dWx, *, gamma, riemann_solver, inv_dx, boundary):
-    flux_fn = _pick_riemann(riemann_solver)
-    Wc = W_pad[:, 1:-1]
-    A_dW = apply_primitive_jacobian_1d(Wc, dWx * inv_dx, gamma)
-    W_half = Wc - 0.5 * dt * A_dW
-    Wr_x = W_half + 0.5 * dWx
-    Wl_x = W_half - 0.5 * dWx
-    if boundary == 0:
-        WL_bc = Wr_x[:, -1:]
-        WR_bc = Wl_x[:, 0:1]
-    else:
-        WL_bc = W_pad[:, 0:1]
-        WR_bc = W_pad[:, -1:]
-    WL = jnp.concatenate([WL_bc, Wr_x], axis=1)
-    WR = jnp.concatenate([Wl_x, WR_bc], axis=1)
-    Fx = flux_fn(WL, WR, axis=0, gamma=gamma)
-    return -(Fx[:, 1:] - Fx[:, :-1]) * inv_dx
+# Per-axis single-direction slope kernels, indexed by axis d (0=x, 1=y, 2=z).
+_SLOPE_3D = (
+    compute_slope_x_3d_from_padded,
+    compute_slope_y_3d_from_padded,
+    compute_slope_z_3d_from_padded,
+)
 
 
-def _muscl_hancock_2d(W_pad, dt, dWx, dWy, *, gamma, riemann_solver, inv_dx, inv_dy, boundary):
-    flux_fn = _pick_riemann(riemann_solver)
-    Wc = W_pad[:, 1:-1, 1:-1]
-    A_dW = apply_primitive_jacobian_2d(Wc, dWx * inv_dx, dWy * inv_dy, gamma)
-    W_half = Wc - 0.5 * dt * A_dW
+def _axis_face_slices(d):
+    """Rank-4 index tuples for axis ``d`` of a (n_vars, X, Y, Z) array:
+    (all-but-last, all-but-first, first-only, last-only)."""
+    lo = [slice(None)] * 4
+    hi = [slice(None)] * 4
+    first = [slice(None)] * 4
+    last = [slice(None)] * 4
+    lo[1 + d] = slice(None, -1)
+    hi[1 + d] = slice(1, None)
+    first[1 + d] = slice(0, 1)
+    last[1 + d] = slice(-1, None)
+    return tuple(lo), tuple(hi), tuple(first), tuple(last)
 
-    # ---- X direction ----
-    Wr_x = W_half + 0.5 * dWx
-    Wl_x = W_half - 0.5 * dWx
-    if boundary == 0:
-        WL_x_bc = Wr_x[:, -1:, :]
-        WR_x_bc = Wl_x[:, 0:1, :]
-    else:
-        WL_x_bc = W_pad[:, 0:1, 1:-1]
-        WR_x_bc = W_pad[:, -1:, 1:-1]
-    WL_x = jnp.concatenate([WL_x_bc, Wr_x], axis=1)
-    WR_x = jnp.concatenate([Wl_x, WR_x_bc], axis=1)
-    Fx = flux_fn(WL_x, WR_x, axis=0, gamma=gamma)
-    dU = (Fx[:, :-1, :] - Fx[:, 1:, :]) * inv_dx
 
-    # ---- Y direction ----
-    Wr_y = W_half + 0.5 * dWy
-    Wl_y = W_half - 0.5 * dWy
-    if boundary == 0:
-        WL_y_bc = Wr_y[:, :, -1:]
-        WR_y_bc = Wl_y[:, :, 0:1]
-    else:
-        WL_y_bc = W_pad[:, 1:-1, 0:1]
-        WR_y_bc = W_pad[:, 1:-1, -1:]
-    WL_y = jnp.concatenate([WL_y_bc, Wr_y], axis=2)
-    WR_y = jnp.concatenate([Wl_y, WR_y_bc], axis=2)
-    Fy = flux_fn(WL_y, WR_y, axis=1, gamma=gamma)
-    dU = dU + (Fy[:, :, :-1] - Fy[:, :, 1:]) * inv_dy
-
-    return dU
+def _axis_bc_slabs(W_pad, d):
+    """Left/right halo slabs of a one-ghost padded (n_vars, X+2, Y+2, Z+2)
+    array along axis ``d`` (interior slice on the other axes)."""
+    bc = [slice(1, -1)] * 3
+    bc[d] = slice(0, 1)
+    WL_bc = W_pad[(slice(None), *bc)]
+    bc[d] = slice(-1, None)
+    WR_bc = W_pad[(slice(None), *bc)]
+    return WL_bc, WR_bc
 
 
 def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_dy, inv_dz, boundary,
                       exact_wrap=False):
-    """3D unsplit MUSCL-Hancock — full transverse predictor, streaming flux phase.
-
-    Predictor (A_dW = A_x dWx + A_y dWy + A_z dWz) is built one direction at
-    a time into a running accumulator with `optimization_barrier` between
-    contributions. This forces XLA to commit the partial A_dW and release
-    the previous direction's slope + Jacobian intermediates before computing
-    the next. Slopes are never alive concurrently for the predictor.
-
-    W_half = Wc - 0.5*dt*A_dW carries the full transverse correction (this
-    is the unsplit Colella scheme, NOT dim-split — bit-equivalent to the
-    original triple-slope version up to floating-point reduction order).
-
-    Flux phase: each direction's sweep is a self-contained closure that
-    recomputes its own slope from W_pad, reconstructs Wr/Wl from W_half,
-    computes fluxes (interior + 2 boundary), and returns its per-direction
-    flux divergence. The three sweep results are summed sequentially with
-    barriers between, so per-direction Wr/Wl/F intermediates from the
-    previous sweep are released before the next starts.
-
-    Per-axis flux split into (interior, left bdy, right bdy) so the
-    (Nx+1)-sized WL/WR concatenated arrays are never materialised.
-    """
+    """3D unsplit MUSCL-Hancock (full transverse predictor). Predictor and
+    flux sweeps are built one direction at a time with
+    ``optimization_barrier`` between contributions so only one direction's
+    intermediates are alive; bit-equivalent to the triple-slope version up
+    to floating-point reduction order."""
     import jax.lax as lax
 
     flux_fn = _pick_riemann(riemann_solver)
@@ -174,18 +129,20 @@ def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_
     W_half = lax.optimization_barrier(W_half)
 
     # ---- Flux phase: per-direction sweeps, slope recomputed inside each.
-    def _x_sweep():
-        dW = compute_slope_x_3d_from_padded(W_pad, limiter)
+    def _sweep(d):
+        """Axis-``d`` flux-divergence contribution (slope recomputed locally)."""
+        lo, hi, first, last = _axis_face_slices(d)
+        dW = _SLOPE_3D[d](W_pad, limiter)
         Wr = W_half + 0.5 * dW
         Wl = W_half - 0.5 * dW
-        F_int = flux_fn(Wr[:, :-1, :, :], Wl[:, 1:, :, :], axis=0, gamma=gamma)
+        F_int = flux_fn(Wr[lo], Wl[hi], axis=d, gamma=gamma)
         if exact_wrap:
             # Single-process periodic: the wrap seam is ONE physical face
             # (between cell N-1 and cell 0). Compute its flux once from the
             # reconstructed states on both sides and use it at both ends —
             # the flux sum then telescopes exactly (mass/momentum/energy
             # conservation to machine precision) and the seam stays 2nd order.
-            F_face = flux_fn(Wr[:, -1:, :, :], Wl[:, 0:1, :, :], axis=0, gamma=gamma)
+            F_face = flux_fn(Wr[last], Wl[first], axis=d, gamma=gamma)
             F_l = F_face
             F_r = F_face
         else:
@@ -195,76 +152,28 @@ def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_
             # carries the BC state). Costs half-order accuracy and exact
             # telescoping at that single face; under shard_map the proper fix
             # is exchanging reconstructed face states (future work).
-            WL_bc = W_pad[:, 0:1, 1:-1, 1:-1]
-            WR_bc = W_pad[:, -1:, 1:-1, 1:-1]
-            F_l = flux_fn(WL_bc, Wl[:, 0:1, :, :], axis=0, gamma=gamma)
-            F_r = flux_fn(Wr[:, -1:, :, :], WR_bc, axis=0, gamma=gamma)
+            WL_bc, WR_bc = _axis_bc_slabs(W_pad, d)
+            F_l = flux_fn(WL_bc, Wl[first], axis=d, gamma=gamma)
+            F_r = flux_fn(Wr[last], WR_bc, axis=d, gamma=gamma)
         return jnp.concatenate(
-            [F_l - F_int[:, 0:1, :, :], F_int[:, :-1, :, :] - F_int[:, 1:, :, :], F_int[:, -1:, :, :] - F_r],
-            axis=1,
-        ) * inv_dx
+            [F_l - F_int[first], F_int[lo] - F_int[hi], F_int[last] - F_r],
+            axis=1 + d,
+        ) * (inv_dx, inv_dy, inv_dz)[d]
 
-    def _y_sweep():
-        dW = compute_slope_y_3d_from_padded(W_pad, limiter)
-        Wr = W_half + 0.5 * dW
-        Wl = W_half - 0.5 * dW
-        F_int = flux_fn(Wr[:, :, :-1, :], Wl[:, :, 1:, :], axis=1, gamma=gamma)
-        if exact_wrap:
-            F_face = flux_fn(Wr[:, :, -1:, :], Wl[:, :, 0:1, :], axis=1, gamma=gamma)
-            F_l = F_face
-            F_r = F_face
-        else:
-            WL_bc = W_pad[:, 1:-1, 0:1, 1:-1]
-            WR_bc = W_pad[:, 1:-1, -1:, 1:-1]
-            F_l = flux_fn(WL_bc, Wl[:, :, 0:1, :], axis=1, gamma=gamma)
-            F_r = flux_fn(Wr[:, :, -1:, :], WR_bc, axis=1, gamma=gamma)
-        return jnp.concatenate(
-            [F_l - F_int[:, :, 0:1, :], F_int[:, :, :-1, :] - F_int[:, :, 1:, :], F_int[:, :, -1:, :] - F_r],
-            axis=2,
-        ) * inv_dy
-
-    def _z_sweep():
-        dW = compute_slope_z_3d_from_padded(W_pad, limiter)
-        Wr = W_half + 0.5 * dW
-        Wl = W_half - 0.5 * dW
-        F_int = flux_fn(Wr[:, :, :, :-1], Wl[:, :, :, 1:], axis=2, gamma=gamma)
-        if exact_wrap:
-            F_face = flux_fn(Wr[:, :, :, -1:], Wl[:, :, :, 0:1], axis=2, gamma=gamma)
-            F_l = F_face
-            F_r = F_face
-        else:
-            WL_bc = W_pad[:, 1:-1, 1:-1, 0:1]
-            WR_bc = W_pad[:, 1:-1, 1:-1, -1:]
-            F_l = flux_fn(WL_bc, Wl[:, :, :, 0:1], axis=2, gamma=gamma)
-            F_r = flux_fn(Wr[:, :, :, -1:], WR_bc, axis=2, gamma=gamma)
-        return jnp.concatenate(
-            [F_l - F_int[:, :, :, 0:1], F_int[:, :, :, :-1] - F_int[:, :, :, 1:], F_int[:, :, :, -1:] - F_r],
-            axis=3,
-        ) * inv_dz
-
-    # Strictly sequential: each sweep returns dU contribution, gets summed,
-    # barrier forces materialisation before the next sweep starts.
-    dU = lax.optimization_barrier(_x_sweep())
-    dU = lax.optimization_barrier(dU + _y_sweep())
-    dU = dU + _z_sweep()
+    # Strictly sequential (x then y then z): each sweep returns dU
+    # contribution, gets summed, barrier forces materialisation before the
+    # next sweep starts.
+    dU = lax.optimization_barrier(_sweep(0))
+    dU = lax.optimization_barrier(dU + _sweep(1))
+    dU = dU + _sweep(2)
     return dU
 
 
 def _muscl_hancock_3d_fused(W_pad2, dt, *, gamma, limiter, riemann_solver,
                             inv_dx, inv_dy, inv_dz):
-    """Concat-free 3D MUSCL-Hancock: needs a TWO-ghost pad.
-
-    Reconstructs (slopes + predictor) on interior PLUS one ghost ring, then
-    each axis does ONE flux call over all N+1 faces and assembles the
-    divergence by slicing -- no `concatenate`, no boundary special-casing
-    (ghosts carry the BC / neighbour-shard content, so shard seams get full
-    second-order reconstructed states). Measured +17% over the concat-
-    assembled path at 512^3 FP64 on MI300A (scaling/hydro_audit.py); the
-    slope/predictor overspill into the ghost ring costs (1+2/N)^3 extra work.
-
-    Restrictions: order=1 (MUSCL) path only; caller gates on boundary 0/1
-    (reflective/diode outer-ghost fixes are single-layer in the halo).
-    """
+    """Concat-free 3D MUSCL-Hancock — needs a TWO-ghost pad: reconstructs on
+    interior + one ghost ring, one flux call per axis over all N+1 faces.
+    Restrictions: order=1 (MUSCL) path only; caller gates on boundary 0/1."""
     flux_fn = _pick_riemann(riemann_solver)
     inv = (inv_dx, inv_dy, inv_dz)
     Wg = W_pad2[:, 1:-1, 1:-1, 1:-1]          # interior + 1 ghost ring
@@ -296,28 +205,24 @@ def _muscl_hancock_3d_fused(W_pad2, dt, *, gamma, limiter, riemann_solver,
 
 
 # --------------------------------------------------------------------------
-# Face-flux variants (for AMR coarse-fine reflux)
+# Face-flux variants (1D/2D divergence + AMR coarse-fine reflux)
 # --------------------------------------------------------------------------
 #
 # These return the per-axis face-flux arrays F (shape ``(n_vars, N_d+1, ...)``
 # along axis d) instead of the assembled divergence. The flux divergence
-# ``dU/dt = -div.F`` is recovered by :func:`divergence_from_face_fluxes`, which
-# reproduces :func:`muscl_hancock_divergence` (order=2) exactly. They exist so
-# the AMR layer can capture the *block-boundary* face fluxes (F at index 0 and
-# -1 along each axis) at coarse-fine interfaces and apply a Berger-Colella flux
-# correction. The production divergence path above is left untouched.
+# ``dU/dt = -div.F`` is recovered by :func:`divergence_from_face_fluxes`;
+# the 1D/2D branches of :func:`muscl_hancock_divergence` use exactly this
+# fluxes+assembly pair. They also let the AMR layer capture the
+# *block-boundary* face fluxes (F at index 0 and -1 along each axis) at
+# coarse-fine interfaces and apply a Berger-Colella flux correction.
 #
 # Only the second-order (MUSCL-Hancock) path is provided — the only order AMR
-# hydro uses. The state construction mirrors the matching ``_muscl_hancock_*``
-# divergence functions line-for-line, so the two stay bit-consistent.
+# hydro uses.
 
 
 def _muscl_hancock_1d_fluxes(W_pad, dt, dWx, *, gamma, riemann_solver, inv_dx, boundary):
-    """1D face fluxes for the AMR path — identical predictor + Riemann solve as
-    :func:`_muscl_hancock_1d`, but returns the face-flux array ``(Fx,)`` (shape
-    ``(n_vars, N+1)``) instead of assembling the divergence, so the AMR reflux /
-    seam layer can consume the raw faces. Bit-consistent with the divergence
-    variant (same slopes, same Jacobian half-step, same ``flux_fn``)."""
+    """1D MUSCL-Hancock face fluxes ``(Fx,)`` (shape ``(n_vars, N+1)``): PLM
+    predictor + Riemann solve, no divergence assembly."""
     flux_fn = _pick_riemann(riemann_solver)
     Wc = W_pad[:, 1:-1]
     A_dW = apply_primitive_jacobian_1d(Wc, dWx * inv_dx, gamma)
@@ -396,55 +301,24 @@ def _muscl_hancock_3d_fluxes(W_pad, dt, *, gamma, limiter, riemann_solver,
     W_half = Wc - 0.5 * dt * A_dW
     W_half = lax.optimization_barrier(W_half)
 
-    def _x_faces():
-        dW = compute_slope_x_3d_from_padded(W_pad, limiter)
+    def _faces(d):
+        """Axis-``d`` full (N+1) face-flux array (slope recomputed locally)."""
+        lo, hi, first, last = _axis_face_slices(d)
+        dW = _SLOPE_3D[d](W_pad, limiter)
         Wr = W_half + 0.5 * dW
         Wl = W_half - 0.5 * dW
-        F_int = flux_fn(Wr[:, :-1, :, :], Wl[:, 1:, :, :], axis=0, gamma=gamma)
+        F_int = flux_fn(Wr[lo], Wl[hi], axis=d, gamma=gamma)
         if exact_wrap:
-            F_face = flux_fn(Wr[:, -1:, :, :], Wl[:, 0:1, :, :], axis=0, gamma=gamma)
+            F_face = flux_fn(Wr[last], Wl[first], axis=d, gamma=gamma)
             F_l = F_face
             F_r = F_face
         else:
-            WL_bc = W_pad[:, 0:1, 1:-1, 1:-1]
-            WR_bc = W_pad[:, -1:, 1:-1, 1:-1]
-            F_l = flux_fn(WL_bc, Wl[:, 0:1, :, :], axis=0, gamma=gamma)
-            F_r = flux_fn(Wr[:, -1:, :, :], WR_bc, axis=0, gamma=gamma)
-        return jnp.concatenate([F_l, F_int, F_r], axis=1)
+            WL_bc, WR_bc = _axis_bc_slabs(W_pad, d)
+            F_l = flux_fn(WL_bc, Wl[first], axis=d, gamma=gamma)
+            F_r = flux_fn(Wr[last], WR_bc, axis=d, gamma=gamma)
+        return jnp.concatenate([F_l, F_int, F_r], axis=1 + d)
 
-    def _y_faces():
-        dW = compute_slope_y_3d_from_padded(W_pad, limiter)
-        Wr = W_half + 0.5 * dW
-        Wl = W_half - 0.5 * dW
-        F_int = flux_fn(Wr[:, :, :-1, :], Wl[:, :, 1:, :], axis=1, gamma=gamma)
-        if exact_wrap:
-            F_face = flux_fn(Wr[:, :, -1:, :], Wl[:, :, 0:1, :], axis=1, gamma=gamma)
-            F_l = F_face
-            F_r = F_face
-        else:
-            WL_bc = W_pad[:, 1:-1, 0:1, 1:-1]
-            WR_bc = W_pad[:, 1:-1, -1:, 1:-1]
-            F_l = flux_fn(WL_bc, Wl[:, :, 0:1, :], axis=1, gamma=gamma)
-            F_r = flux_fn(Wr[:, :, -1:, :], WR_bc, axis=1, gamma=gamma)
-        return jnp.concatenate([F_l, F_int, F_r], axis=2)
-
-    def _z_faces():
-        dW = compute_slope_z_3d_from_padded(W_pad, limiter)
-        Wr = W_half + 0.5 * dW
-        Wl = W_half - 0.5 * dW
-        F_int = flux_fn(Wr[:, :, :, :-1], Wl[:, :, :, 1:], axis=2, gamma=gamma)
-        if exact_wrap:
-            F_face = flux_fn(Wr[:, :, :, -1:], Wl[:, :, :, 0:1], axis=2, gamma=gamma)
-            F_l = F_face
-            F_r = F_face
-        else:
-            WL_bc = W_pad[:, 1:-1, 1:-1, 0:1]
-            WR_bc = W_pad[:, 1:-1, 1:-1, -1:]
-            F_l = flux_fn(WL_bc, Wl[:, :, :, 0:1], axis=2, gamma=gamma)
-            F_r = flux_fn(Wr[:, :, :, -1:], WR_bc, axis=2, gamma=gamma)
-        return jnp.concatenate([F_l, F_int, F_r], axis=3)
-
-    return _x_faces(), _y_faces(), _z_faces()
+    return _faces(0), _faces(1), _faces(2)
 
 
 def muscl_hancock_face_fluxes(
@@ -498,17 +372,11 @@ def riemann_face_flux(W_L, W_R, *, axis, gamma, riemann_solver):
 def muscl_hancock_boundary_states(
     W_pad, dt, *, gamma, limiter, spatial_dim, inv_dx, inv_dy, inv_dz,
 ):
-    """Reconstructed primitive face states at the block's boundary cells.
-
-    Returns a per-axis tuple ``((L_0, R_0), (L_1, R_1), ...)`` where ``L_d`` is
-    the left-reconstruction ``W_half - 0.5 dW_d`` at the *first* interior cell
-    along axis ``d`` and ``R_d`` the right-reconstruction ``W_half + 0.5 dW_d``
-    at the *last*; each is a face slab ``(n_vars, *transverse)`` (axis ``d``
-    collapsed). The predictor ``W_half`` is identical to the one in
-    ``muscl_hancock_face_fluxes`` (same slopes, same Jacobian sum order), so a
-    seam flux built from these states matches the block's own interior
-    reconstruction at that face.
-    """
+    """Reconstructed primitive face states at the block's boundary cells:
+    per-axis tuple ``((L_d, R_d), ...)`` with ``L_d``/``R_d`` the left/right
+    reconstructions at the first/last interior cell along axis ``d``, each a
+    face slab ``(n_vars, *transverse)``. Uses the same predictor as
+    ``muscl_hancock_face_fluxes``, so seam fluxes match the interior."""
     if spatial_dim == 1:
         dWx, _, _ = compute_slopes_from_padded(W_pad, limiter)
         Wc = W_pad[:, 1:-1]
@@ -635,11 +503,12 @@ def muscl_hancock_divergence(
             exact_wrap=exact_wrap,
         )
 
-    # 1D and 2D paths still precompute slopes (small N, memory not critical).
+    # 1D and 2D paths: face fluxes + divergence assembly (same states, same
+    # Riemann calls as the deleted standalone divergence variants).
     dWx, dWy, dWz = compute_slopes_from_padded(W_pad, limiter)
 
     if spatial_dim == 1:
-        return _muscl_hancock_1d(
+        fluxes = _muscl_hancock_1d_fluxes(
             W_pad,
             dt,
             dWx,
@@ -648,8 +517,8 @@ def muscl_hancock_divergence(
             inv_dx=inv_dx,
             boundary=boundary,
         )
-    if spatial_dim == 2:
-        return _muscl_hancock_2d(
+    elif spatial_dim == 2:
+        fluxes = _muscl_hancock_2d_fluxes(
             W_pad,
             dt,
             dWx,
@@ -660,4 +529,8 @@ def muscl_hancock_divergence(
             inv_dy=inv_dy,
             boundary=boundary,
         )
-    raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")
+    else:
+        raise NotImplementedError(f"Spatial dimension {spatial_dim} not supported")
+    return divergence_from_face_fluxes(
+        fluxes, spatial_dim=spatial_dim, inv_dx=inv_dx, inv_dy=inv_dy, inv_dz=inv_dz
+    )

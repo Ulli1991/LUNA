@@ -1,18 +1,11 @@
+"""Checkpoint housekeeping: rotation and config-compatibility checks."""
 import os
 import glob
 
 
 def manage_checkpoints(checkpoint_dir, max_checkpoints):
-    """
-    Delete old checkpoints to keep only the most recent max_checkpoints files.
-
-    Parameters
-    ----------
-    checkpoint_dir : str
-        Directory containing checkpoint files
-    max_checkpoints : int
-        Maximum number of checkpoints to keep (0 = keep all)
-    """
+    """Delete oldest checkpoints, keeping the newest max_checkpoints
+    (max_checkpoints <= 0 keeps all)."""
     if max_checkpoints <= 0:
         return  # Keep all checkpoints
 
@@ -34,21 +27,8 @@ def manage_checkpoints(checkpoint_dir, max_checkpoints):
 
 
 def validate_checkpoint_compatibility(checkpoint_data, cfg):
-    """
-    Validate that checkpoint is compatible with current configuration.
-
-    Parameters
-    ----------
-    checkpoint_data : dict
-        Data loaded from checkpoint file
-    cfg : Config
-        Current configuration
-
-    Raises
-    ------
-    ValueError
-        If checkpoint is incompatible with current configuration
-    """
+    """Raise ValueError if checkpoint grid/domain/dimension mismatch cfg;
+    gamma mismatch only warns (checkpoint gamma wins)."""
     grid = checkpoint_data["grid"]
     physics = checkpoint_data["physics"]
 

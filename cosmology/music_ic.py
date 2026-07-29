@@ -1,22 +1,9 @@
-"""Reader for MUSIC-style cosmological DM initial conditions (Arepo/Gadget HDF5).
-
-MUSIC (Hahn & Abel 2011) writes Gadget/Arepo HDF5 ICs with a ``Header`` group and
-one ``PartType{n}`` group per species; dark matter is ``PartType1``. We read the
-DM positions, velocities, and masses plus the cosmology/box header so LUNA can
-deposit them onto the mesh and solve gravity with the multigrid Poisson solver.
-
-Conventions (Gadget/Arepo):
-  * Header/BoxSize     -- comoving box size in the file's length unit.
-  * Header/Time        -- the scale factor a of the IC (= 1/(1+z)).
-  * Header/MassTable   -- per-species mass; if MassTable[1] == 0 a per-particle
-                          ``PartType1/Masses`` dataset is present instead.
-  * PartType1/Coordinates (N,3), Velocities (N,3), ParticleIDs (N).
-  * Velocities are the Gadget peculiar velocity u = sqrt(a) dx/dt (relevant to
-    the integrator later, not to the gravity solve).
-
-``write_synthetic_dm_ic`` emits a small, format-correct file (a Zel'dovich-
-displaced particle grid) as a stand-in for real MUSIC output, so the reader and
-the PM pipeline can be exercised before wiring up MUSIC.
+"""Reader for MUSIC-style cosmological ICs (Gadget/Arepo HDF5): DM (PartType1)
+and gas (PartType0) positions/velocities/masses plus the cosmology/box header.
+Gadget conventions: Header/Time is the scale factor a; velocities are the Gadget
+peculiar velocity u = sqrt(a) dx/dt; MassTable[part_type] == 0 means a
+per-particle Masses dataset instead. ``write_synthetic_dm_ic`` emits a small
+format-correct stand-in file.
 """
 from __future__ import annotations
 
@@ -55,13 +42,8 @@ def music_part_count(path: str, part_type: int = 0) -> int:
 def read_music_dm_ic(path: str, part_type: int = 1,
                      lo: int = None, hi: int = None) -> DMICs:
     """Read DM (``PartType{part_type}``) ICs from a MUSIC/Gadget Arepo-HDF5 file.
-
-    If ``lo``/``hi`` are given, only the index slice ``[lo:hi]`` of each dataset
-    is read from disk (h5py hyperslab) -- so a multi-node run reads only this
-    rank's chunk (~N/nproc particles) instead of the whole file on every rank.
-    Because MUSIC writes particles in x-major Lagrangian order, a contiguous
-    index chunk is (at z_init, sub-cell displacements) almost exactly one x-slab;
-    a single drift-exchange settles the boundary crossers afterwards."""
+    If ``lo``/``hi`` are given, only the slice ``[lo:hi]`` of each dataset is read
+    (h5py hyperslab), so each rank reads only its own chunk."""
     import h5py
 
     with h5py.File(path, "r") as f:
@@ -191,14 +173,9 @@ def music_cosmology(ic: DMICs):
 
 
 def music_run_config(ic: DMICs, Nx: int, base=None):
-    """Build a LUNA Config for a cosmological DM run from a loaded MUSIC IC.
-
-    The box size, cosmology (Omega_m, Omega_L, H0), initial scale factor,
-    periodic boundary, and the Arepo unit constants are all taken from the IC
-    header -- so a cosmo run is configured AT STARTUP straight from the ICs,
-    nothing hardcoded at the call site. Units are Gadget/Arepo (length kpc/h,
-    velocity km/s, mass 1e10 Msun/h); H0 = 0.1 h km/s/kpc in that system.
-    """
+    """Build a LUNA Config for a cosmological DM run from a loaded MUSIC IC:
+    box, cosmology, a_init, periodic boundary, and Arepo unit constants
+    (length kpc/h, velocity km/s, mass 1e10 Msun/h; H0 = 0.1 h km/s/kpc)."""
     from dataclasses import replace
     from template_config import Config
     cfg = Config() if base is None else base

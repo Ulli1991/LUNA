@@ -1,24 +1,8 @@
-"""DM-only cosmological N-body runner (dispatched from main.run for a Cosmo-DM
-run). Loads MUSIC dark-matter ICs, configures box + cosmology from the header,
-and evolves the particles with a super-comoving KDK leapfrog and the comoving
-multigrid particle-mesh gravity:
-
-    CIC deposit  ->  MG Poisson  lap(phi~) = (3/2) H0^2 Omega_m a * delta
-                 ->  4th-order force  ->  gather to particles.
-
-Multi-GPU (particle-parallel): the particles are sharded by index over the
-device mesh; each shard deposits its own particles, an all-reduce (psum) forms
-the global density, the MG solve is replicated, and the force gather is local --
-one collective per step, fixed shapes, no particle exchange. (Full grid-sharded
-domain decomposition is a later step.)
-
-Variables (Gadget/Arepo units: kpc/h, km/s, 1e10 Msun/h):
-  * comoving position x (kpc/h), wrapped periodically in the box;
-  * canonical momentum p = a^2 dx/dt (km/s); from the MUSIC Gadget velocity
-    u = sqrt(a) dx/dt this is p = u * a^{3/2} at the IC.
-  * super-comoving time tau (dtau = dt/a^2): the leapfrog is the plain drift
-    x += p dtau and kick p += g~ dtau; a is advanced through the a(tau) table.
-"""
+"""DM-only cosmological N-body runner (cfg.CosmoDM): MUSIC ICs, super-comoving
+KDK leapfrog, comoving PM gravity (CIC deposit -> MG Poisson -> 4th-order force
+-> gather; one solve/step). Particle-parallel across devices (psum'd density,
+replicated solve); grid-sharded slab path via cfg.dm_domain_decomp. Gadget
+units: x kpc/h comoving, p = a^2 x_dot km/s (= MUSIC u * a^1.5 at the IC)."""
 import time
 
 import jax
@@ -29,6 +13,7 @@ from cosmology import Cosmology
 from cosmology.music_ic import music_run_config, read_music_dm_ic
 from gravity.particle_mesh import ParticleMeshGravity
 from gravity.poisson_multigrid import solve_poisson_fmg
+from file_io.write_gadget import write_gadget_dm_snapshot
 from setup.cosmo_common import (CosmoClock, dtau_accel, poisson_coeff_fac,
                                 softening_from_config)
 
@@ -137,7 +122,7 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     if is_main_process:
         print(f"[cosmo-dm] done: {step} steps, a={a:.4f} (z={1/a-1:.4f}), "
               f"{time.time()-t0:.1f}s")
-        _write_snapshot(cfg, np.asarray(pos), np.asarray(p) / a ** 1.5, a, ic)
+        write_gadget_dm_snapshot(cfg, np.asarray(pos), np.asarray(p) / a ** 1.5, a, ic)
     return {"a": a, "n_steps": step}
 
 
@@ -247,45 +232,5 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         mom_h = np.asarray(pS)
         act_h = np.asarray(actS) > 0
         sel = np.nonzero(act_h)[0]
-        _write_snapshot(cfg, pos_h[sel], mom_h[sel] / a ** 1.5, a, ic)
+        write_gadget_dm_snapshot(cfg, pos_h[sel], mom_h[sel] / a ** 1.5, a, ic)
     return {"a": a, "n_steps": step, "n_out_of_slab": n_bad_tot}
-
-
-def _write_snapshot(cfg, pos, vel_gadget, a, ic):
-    """Gadget/Arepo-style DM particle snapshot + a density-slice figure."""
-    import os
-
-    import h5py
-    out_dir = getattr(cfg, "output_dir", "snapshots/cosmo_dm")
-    os.makedirs(out_dir, exist_ok=True)
-    fn = os.path.join(out_dir, f"snap_a{a:.4f}.hdf5")
-    n = pos.shape[0]
-    with h5py.File(fn, "w") as f:
-        H = f.create_group("Header")
-        H.attrs["BoxSize"] = float(cfg.Lx)
-        H.attrs["Time"] = a
-        H.attrs["Redshift"] = 1.0 / a - 1.0
-        H.attrs["Omega0"] = cfg.cosmo_Omega_m
-        H.attrs["OmegaLambda"] = cfg.cosmo_Omega_L
-        H.attrs["HubbleParam"] = ic.h
-        H.attrs["NumPart_ThisFile"] = np.array([0, n, 0, 0, 0, 0], dtype=np.int64)
-        H.attrs["MassTable"] = np.array([0, float(ic.mass[0]), 0, 0, 0, 0])
-        g = f.create_group("PartType1")
-        g.create_dataset("Coordinates", data=pos.astype(np.float32))
-        g.create_dataset("Velocities", data=vel_gadget.astype(np.float32))
-    print(f"[cosmo-dm] wrote {fn}")
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        Nx = cfg.Nx
-        H2, _, _ = np.histogram2d(pos[:, 0], pos[:, 1], bins=Nx,
-                                  range=[[0, cfg.Lx], [0, cfg.Lx]])
-        fig, ax = plt.subplots(figsize=(5, 5))
-        ax.imshow(np.log10(H2.T + 0.5), origin="lower", cmap="inferno")
-        ax.set_title(f"DM (z={1/a-1:.2f})"); ax.set_xticks([]); ax.set_yticks([])
-        os.makedirs("figures", exist_ok=True)
-        fig.tight_layout(); fig.savefig("figures/cosmo_dm.png", dpi=130)
-        print("[cosmo-dm] wrote figures/cosmo_dm.png")
-    except Exception as e:
-        print(f"[cosmo-dm] plot skipped: {e}")

@@ -1,34 +1,9 @@
-"""Bonnor–Ebert isothermal sphere.
+"""Bonnor–Ebert isothermal sphere: self-gravitating cloud truncated at ξ_t,
+built from the isothermal Lane–Emden solution.
 
-Self-gravitating isothermal sphere truncated by external pressure:
-    P = c_s² ρ
-    ∇²Φ = 4πGρ
-    ∇P = -ρ ∇Φ
-
-Substituting ρ = ρ_c · e^(-ψ) and ξ = r / r_BE with
-r_BE = c_s / √(4πGρ_c), the modified Lane–Emden equation is
-
-    d²ψ/dξ² + (2/ξ) dψ/dξ = e^(-ψ),
-    ψ(0) = 0,  ψ'(0) = 0,
-
-integrated outward. The sphere is truncated at ξ = ξ_t set by
-the desired density contrast ρ_c / ρ_edge.
-
-Stability:
-  - ξ_t < 6.451  (ρ_c / ρ_edge < 14.04): stable equilibrium → cloud
-    stays put under self-gravity + isothermal pressure.
-  - ξ_t > 6.451: unstable → cloud collapses (super-critical BE,
-    classic protostellar collapse setup).
-
-The simulation must use the runner's isothermal projection
-(isothermal_cs2 > 0) to enforce P = c_s² ρ during evolution.
-
-Config knobs:
-    be_xi_t        : truncation radius in BE units (default 5 = stable)
-    be_rho_c       : central density (default 1.0)
-    be_cs2         : isothermal sound speed squared (default 1.0)
-    be_R           : physical radius of cloud in code units (default 1.0)
-    be_rho_ambient : low-density outside background (default 1e-3 * ρ_c)
+Stability: ξ_t < 6.451 is a stable equilibrium; ξ_t > 6.451 collapses.
+Requires the runner's isothermal projection (isothermal_cs2 > 0) to enforce
+P = c_s² ρ during evolution.
 """
 
 import jax.numpy as jnp

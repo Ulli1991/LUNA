@@ -1,17 +1,6 @@
-"""Linear Jeans instability initial condition.
-
-Uniform medium (ρ₀, P₀, v=0) on a periodic box, perturbed by a
-sinusoidal density wave at wavenumber (jeans_kx, jeans_ky, jeans_kz)
-with relative amplitude jeans_amp.
-
-The Hancock predictor + multigrid self-gravity should grow the unstable
-mode at the linear-theory rate σ = √(4πGρ₀ − c_s² k²) where k = |k|.
-
-Config knobs expected:
-    jeans_rho0 : background density
-    jeans_P0   : background pressure (constant-T isothermal-like setup)
-    jeans_amp  : initial relative density amplitude
-    jeans_kx, jeans_ky, jeans_kz : perturbation wavenumber components
+"""Linear Jeans instability: uniform medium on a periodic box with a sinusoidal
+density perturbation. Unstable mode should grow at the linear-theory rate
+σ = √(4πGρ₀ − c_s² k²).
 """
 
 import math

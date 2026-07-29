@@ -1,17 +1,6 @@
-"""HYBRID dense-L0 block-AMR driver: align the block path with the dense path.
-
-Motivation (measured, 2026-07-20): the pure block solver runs ~250x slower per
-GPU than the dense fixed-grid solver at the same cell count -- the per-step
-27-region gather ghost fill + ghosted-copy materialization is XLA-hostile,
-while the AMR logic itself (C/F, reflux, 2 levels) only costs 1.75x. Level 0
-always tiles the domain, so this driver stores L0 as ONE DENSE ARRAY stepped by
-the proven dense MUSCL kernels (gigacell/s), and keeps the (validated) block
-machinery only for the refined levels, which are small.
-
-v1: single-device, synchronized same-dt, hydro-only. The dense/block bridges
-all pre-exist: ``fill_ghost_from_coarse`` (dense-parent C/F fill -- the
-original design), ``apply_reflux_dense`` (Berger-Colella into a dense coarse
-field), and restriction as a batched ``dynamic_update_slice`` scatter.
+"""HYBRID dense-L0 block-AMR driver: L0 is stored as one dense array stepped
+by the dense MUSCL kernels; the block machinery serves only the refined levels.
+Single-device, synchronized same-dt, hydro-only.
 """
 from __future__ import annotations
 

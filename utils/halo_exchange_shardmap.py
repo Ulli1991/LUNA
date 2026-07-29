@@ -1,28 +1,10 @@
-"""Shard_map halo exchange — explicit per-shard halo via jax.lax.ppermute.
-
-Why explicit halos: letting the compiler infer the communication from a
-NamedSharding (via `jnp.pad(mode='wrap')`) materialises ~4 extra full-shard
-scratch arrays per halo call and refuses to drop below ~71 GB working set at
-1024^3 fp32 / 8 GPUs (rematerialization warnings confirm). The shard_map path
-exchanges only thin slabs (~5 MB each at 2x2x2 mesh) and gives us explicit
-per-shard footprint control.
-
-For each spatial axis we ppermute the +/-1 boundary slab to/from the
-neighbour and concatenate into the local body. Axis-by-axis chaining
-populates corner ghost cells correctly via the standard pad order. This
-is the single multi-GPU halo path for LUNA (1D/2D/3D, every boundary).
-
-Boundary types (variable layout being
-[density, mom/vel_x, mom/vel_y, mom/vel_z, energy] so component `axis` is
-the normal momentum/velocity along array axis `axis`):
-  0 = periodic    — ppermute wrap on all neighbours.
-  1 = zero-grad   — interior shards ppermute; boundary shards reuse own
-                    edge as ghost (via `jax.lax.axis_index` + `jnp.where`).
-  2 = reflective  — zero-grad ghost, then negate the normal momentum
-                    component in the outer ghost on the boundary shards.
-  4 = diode       — zero-grad ghost, then clamp the outer-ghost normal
-                    velocity against inflow (gas may leave, none enters):
-                    low face -> min(v, 0), high face -> max(v, 0).
+"""Explicit per-shard halo exchange via jax.lax.ppermute — the single
+multi-GPU halo path for LUNA (1D/2D/3D). Returned halo functions MUST be
+called inside a shard_map body. Boundary codes: 0=periodic, 1=zero-gradient,
+2=reflective (negate normal momentum in outer ghost), 4=diode (clamp
+outer-ghost normal velocity against inflow). Variable layout
+[density, mom_x, mom_y, mom_z, energy]: component `axis` is the normal
+momentum/velocity along array axis `axis`.
 """
 
 import jax

@@ -2,26 +2,9 @@ import jax.numpy as jnp
 
 
 def shu_osher(cfg, x_slice=None):
-    """
-    Shu-Osher shock-density wave interaction test problem (1D).
-
-    A Mach 3 shock (left state) interacts with a sinusoidal density field (right state).
-    Tests the scheme's ability to resolve small-scale features in the presence of shocks.
-
-    Left state (x < -4): Mach 3 shock
-    Right state (x >= -4): Sinusoidal density perturbations
-
-    Parameters
-    ----------
-    cfg : Config
-        Configuration object containing Nx, Lx, gamma
-    x_slice : tuple (x_start, x_end), optional
-        Generate only this x-range for distributed initialization
-
-    Returns
-    -------
-    U : jax.numpy.ndarray
-        Conservative variables [rho, rho*u, E] with shape (3, Nx_local)
+    """1D Shu-Osher test: Mach 3 shock (x < -4) hitting a sinusoidal density field.
+    Domain is centered at 0 ([-Lx/2, Lx/2]).
+    Returns U = [rho, rho*u, E], shape (3, Nx_local).
     """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma

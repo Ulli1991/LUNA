@@ -1,28 +1,12 @@
+"""Serial HDF5 checkpoint writer (full simulation state for exact restart)."""
 import os
 import h5py
 import jax.numpy as jnp
 
 
 def write_checkpoint(U, cfg, t, step, checkpoint_dir="checkpoints"):
-    """
-    Write a checkpoint file containing complete simulation state for restart.
-
-    This saves the conserved variables U directly (not primitive variables)
-    along with all metadata needed to restart the simulation exactly.
-
-    Parameters
-    ----------
-    U : jax array
-        Conserved variables (Nvar, Nx, Ny, Nz)
-    cfg : Config
-        Configuration object
-    t : float
-        Current simulation time
-    step : int
-        Current step number
-    checkpoint_dir : str
-        Directory to save checkpoints (default: "checkpoints")
-    """
+    """Write checkpoint_NNNNNN.hdf5 with the conserved variables U (not
+    primitives) plus all metadata for exact restart; returns the path."""
 
     # Create checkpoint directory
     os.makedirs(checkpoint_dir, exist_ok=True)

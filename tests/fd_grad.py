@@ -1,23 +1,9 @@
-"""Finite-difference cross-check for autodiff gradients.
+"""Finite-difference cross-checks for autodiff gradients.
 
-Two utilities:
-
-  central_diff(f, x, h)
-      Central-difference Jacobian of a scalar-output `f: R^n -> R` at point `x`.
-      Returns (∂f/∂x_i)_i. h is per-coordinate or scalar; for log-scaled inputs
-      use h ≈ 1e-3 * |x_i|. Costs 2n forward evaluations.
-
-  horizon_scan(f_for_horizon, params, horizons, h)
-      For each integration horizon T in `horizons`, compute both the autodiff
-      gradient and the FD gradient of `f_for_horizon(params, T)` w.r.t.
-      `params`, and return arrays (grads_ad, grads_fd, err_rel). The single
-      diagnostic that tells you when chaos / limiter kinks start eating the
-      signal.
-
-The autodiff side uses forward-mode (jacfwd) — correct for the small-parameter-
-vector case our autodiff demos target (Sedov ∂R/∂E with 2 params, CC85 with
-~4 params). For large parameter vectors, swap to jax.grad/reverse-mode.
-"""
+central_diff(f, x, h): central-difference Jacobian (2n evals).
+horizon_scan(...): AD vs FD gradient per integration horizon -- shows where
+chaos / limiter kinks eat the signal. Uses forward-mode (small parameter
+vectors); swap to jax.grad for large ones."""
 from __future__ import annotations
 
 import numpy as np

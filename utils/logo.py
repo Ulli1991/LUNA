@@ -1,3 +1,6 @@
+"""ASCII LUNA startup banner."""
+
+
 def print_LUNA_banner():
     # Intro line
     print("Hi there, this is LUNA:\n")

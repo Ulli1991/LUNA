@@ -1,33 +1,9 @@
 """Coarse-fine reflux (Berger-Colella flux correction).
 
-When a fine block borders an unrefined coarse region, the two levels disagree
-on the flux through that shared face: the coarse cell was updated with a single
-coarse flux ``F_c``, while the fine side resolves it as ``r**(ndim-1)`` subface
-fluxes ``F_f``. The mismatch ``F_c - <F_f>`` is the conservation error at the
-coarse-fine interface. Reflux removes it by correcting the *coarse* cell just
-outside the fine patch (the fine solution is taken as truth):
-
-    dx_c side, + face of the patch:  U_c += (dt/dx_c) * (<F_f> - F_c)
-    dx_c side, - face of the patch:  U_c += (dt/dx_c) * (F_c - <F_f>)
-
-with ``<F_f>`` the transverse average of the fine subface fluxes over the coarse
-face. After reflux the coarse-outside cell sees exactly the flux the fine block
-applied to itself, so mass/momentum/energy telescope across the interface.
-
-First cut — matches the dense-parent assumption already used by
-:func:`amr.halo.fill_ghost_from_coarse`:
-
-  * the coarse level is a *dense* ``(n_vars, *grid)`` field (the natural L0
-    representation; its parent is the base grid);
-  * **no time subcycling** — coarse and fine advance with the same ``dt`` (so
-    ``<F_f>`` is a plain spatial average, no time accumulation);
-  * a coarse-fine face is any fine-block face lacking a same-level fine
-    neighbour (``coarse_fine_face_mask``); under the periodic cosmology BC the
-    coarse underlay always exists there.
-
-The per-slot Python loops below unroll under ``jit`` (slot count is static); they
-are written for clarity over a scatter and are a first-cut hot-path cost to
-revisit when wiring the full multi-level subcycled step.
+Corrects the coarse cell just outside a fine patch so it sees the
+transverse-averaged fine subface flux: ``U_c += +/-(dt/dx_c) * (<F_f> - F_c)``.
+Assumes NO time subcycling (coarse and fine share ``dt``). A coarse-fine face
+is any fine-block face lacking a same-level neighbour.
 """
 
 from __future__ import annotations
@@ -105,25 +81,10 @@ def apply_reflux_dense(
     cfg,
     dt,
 ):
-    """Correct the dense coarse field at coarse-fine interfaces.
-
-    Parameters
-    ----------
-    U_coarse : (n_vars, *coarse_grid)
-        Dense coarse field AFTER its own hydro update (level ``fine_level-1``).
-    coarse_fluxes : tuple of per-axis ``Fc_d`` (n_vars, coarse_grid[d]+1, *transverse)
-        Coarse face fluxes (``muscl_hancock_face_fluxes`` on the dense coarse).
-    fine_fluxes : tuple of per-axis ``Ff_d`` (n_slots, n_vars, block[d]+1, *transverse)
-        Fine block face fluxes (``amr.hydro.block_face_fluxes``).
-    fine_coords : (n_slots, ndim) int
-        Fine block coords at ``fine_level`` (inactive slots ignored via mask).
-    cf_mask : (n_slots, 2*ndim) bool
-        From :func:`coarse_fine_face_mask`.
-
-    Returns
-    -------
-    (n_vars, *coarse_grid) refluxed coarse field.
-    """
+    """Correct the dense coarse field (``(n_vars, *coarse_grid)``, AFTER its own
+    hydro update) at coarse-fine interfaces. ``coarse_fluxes``/``fine_fluxes``
+    are per-axis face-flux tuples; ``cf_mask`` is from
+    :func:`coarse_fine_face_mask`. Returns the refluxed coarse field."""
     ndim = cfg.ndim
     bs = cfg.block_shape
     h = tuple(s // 2 for s in bs)                 # patch extent in coarse cells
@@ -164,13 +125,9 @@ def apply_reflux_dense(
 
 
 def restrict_fine_into_coarse_dense(U_coarse, fine_data, fine_coords, fine_level, cfg):
-    """Overwrite the coarse cells under each fine block with the conservative
-    restriction of the fine data (the fine solution is authoritative there).
-
-    ``U_coarse`` is the dense level-``(fine_level-1)`` field; ``fine_data`` is
-    ``(n_slots, n_vars, *block_shape)``. Inactive slots (coord ``-1``) are
-    skipped.
-    """
+    """Overwrite the coarse cells under each fine block with restrict(fine)
+    (fine authoritative). ``U_coarse`` is the dense level-``(fine_level-1)``
+    field; inactive slots (coord ``-1``) are skipped."""
     ndim = cfg.ndim
     bs = cfg.block_shape
     h = tuple(s // 2 for s in bs)
@@ -190,29 +147,11 @@ def restrict_fine_into_coarse_dense(U_coarse, fine_data, fine_coords, fine_level
 def apply_reflux_blocks(coarse_data, coarse_fluxes, fine_fluxes, fine_coords,
                         fine_parent_slots, fine_neighbors, fine_n_active,
                         coarse_neighbors, dt, coarse_level, cfg):
-    """Block-sparse Berger-Colella reflux (production version).
-
-    Corrects the UNREFINED coarse cells just outside every coarse-fine face so
-    the coarse update sees exactly the transverse-averaged fine fluxes: for the
-    fine patch's +d face  ``U_c += (dt/dx_c)(<F_f> - F_c)`` on the coarse cell
-    across it, mirrored for -d. Fully vectorised: a vmap builds one correction
-    block per fine slot and a ``segment_sum`` keyed by the target coarse slot
-    scatter-adds them (2*ndim passes total, no per-slot Python loops -- the
-    dense first cut above unrolled per slot and cannot compile at ~10^4 blocks).
-
-    Target resolution per fine face: the fine block occupies octant ``q`` of its
-    parent. Its +d face lies on the parent's midplane when ``q_d == 0`` (target
-    = the parent block, cell layer ``h_d``) and on the parent's +d boundary when
-    ``q_d == 1`` (target = the parent's +d coarse neighbour, cell layer 0);
-    mirrored for -d. Distinct fine faces correct disjoint coarse cells, and a
-    correction landing on a COVERED coarse cell is later overwritten by the
-    fine-authoritative restriction (harmless, per standard Berger-Colella).
-
-    ``coarse_fluxes`` / ``fine_fluxes`` are the per-axis seam-corrected face
-    fluxes the updates actually used (``conservative_block_divergence(...,
-    return_face_fluxes=True)``). Sentinel/inactive slots carry NaN fluxes; every
-    invalid contribution is masked to zero before the scatter.
-    """
+    """Block-sparse Berger-Colella reflux (production version): vectorised
+    vmap + segment_sum correction of the unrefined coarse cells outside every
+    coarse-fine face. ``coarse_fluxes``/``fine_fluxes`` must be the per-axis
+    seam-corrected face fluxes the updates actually used; sentinel/inactive
+    slots carry NaN fluxes and are masked to zero before the scatter."""
     ndim = cfg.ndim
     bs = cfg.block_shape
     hs = tuple(s // 2 for s in bs)

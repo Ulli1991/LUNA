@@ -204,6 +204,9 @@ def main():
 
 
 def test_pm_shardmap_parity():
+    if jax.device_count() < 2:
+        pytest.skip("needs >=2 devices (GPU count or "
+                    "--xla_force_host_platform_device_count)")
     main()
 
 

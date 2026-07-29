@@ -1,32 +1,8 @@
-"""Evrard collapse — classic 3D self-gravitating collapse test.
+"""Evrard collapse — 3D self-gravitating cold-cloud collapse test. Ref: Evrard 1988.
 
-Evrard (1988): a spherical cold gas cloud with density profile
-
-    ρ(r) = M / (2π R²) · 1/r   for r ≤ R
-    ρ(r) = ρ_ambient            for r > R
-
-internal energy per unit mass u = 0.05 (very cold), v = 0 at t = 0.
-Mass M, radius R, gravitational constant G all set to 1 in code units.
-
-The cloud collapses freely until an accretion shock forms at ~25% R,
-the shock propagates outward, and the cloud settles into a virialized
-state. Used as a 3D code validation test in SPH/grid/AMR papers since
-the original publication; reference solutions are widely available
-(e.g. Springel 2010 fig. 26).
-
-We embed the cloud in a low-density ambient medium to give the cells
-outside R a non-zero ρ (we cannot represent true vacuum in Euler).
-A reasonable ρ_ambient = M / (4π/3 · L³ · 1e3) keeps the ambient
-gravity contribution << central gravity if L >> R.
-
-For periodic BC we want L >> R so the cloud's periodic images don't
-pollute. L = 4R is the usual minimum (Springel 2010 used larger).
-
-Config knobs (all set in the run script):
-    evrard_M      : cloud mass (default 1.0)
-    evrard_R      : cloud radius (default 1.0)
-    evrard_u      : internal energy per unit mass inside cloud (default 0.05)
-    evrard_rho_ambient : background gas density outside cloud (default 1e-3 * ρ_cloud_avg)
+Cloud ρ(r) = M/(2πR²r) inside R, low-density ambient outside (no true vacuum
+in Euler); u = 0.05, v = 0, M = R = G = 1 in code units.
+Periodic BC needs L >> R (L = 4R usual minimum) so periodic images don't pollute.
 """
 
 import jax.numpy as jnp

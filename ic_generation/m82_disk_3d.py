@@ -1,14 +1,9 @@
-"""M82-like disk galaxy IC (Schneider+ 2018 CC85 setup).
+"""M82-like disk galaxy IC: rotating isothermal exponential disk in vertical HSE
+in a static MN + NFW potential, embedded in a hot CGM. Ref: Schneider+ 2018.
 
-Initial state:
-
-  * Rotating exponential isothermal disk (T_disk = 10^4 K) in vertical HSE
-    in a static Miyamoto-Nagai (stellar) + NFW (dark halo) potential.
-  * Hot CGM ambient (n ~ 1e-4 cm^-3, T ~ 1e6 K) filling the rest.
-  * Mass is taken in (1e10 Msun), length in kpc, velocity in km/s.
-
-The central spherical CC85 injection is NOT added here -- it is applied
-as an operator-split source term at every step in the runner.
+Units: mass in 1e10 Msun, length in kpc, velocity in km/s (requires cfg.units).
+The central CC85 injection is NOT added here — the runner applies it as an
+operator-split source each step.
 """
 
 import jax.numpy as jnp

@@ -2,32 +2,10 @@ import jax.numpy as jnp
 
 
 def soundwave(cfg, x_slice=None):
-    """
-    Linear sound wave test problem (1D) — single right-going acoustic eigenmode.
-
-    A small-amplitude perturbation aligned with the right-going acoustic
-    eigenvector of the linearized Euler equations:
-        δρ = A sin(kx)
-        δu = A · cs / ρ₀ · sin(kx)
-        δp = A · cs² · sin(kx)
-    where cs² = γ · p₀ / ρ₀. The wave propagates at cs and returns exactly
-    to the IC after one period t = Lx / cs.
-
-    Single-eigenmode (not u=0 superposition) so the test matches AthenaK's
-    linear_wave problem generator one-for-one. Default background:
-    ρ₀ = 1, p₀ = 0.6, γ = 5/3 → cs² = 1, period = Lx.
-
-    Parameters
-    ----------
-    cfg : Config
-        Configuration object containing Nx, Lx, gamma
-    x_slice : tuple (x_start, x_end), optional
-        Generate only this x-range for distributed initialization
-
-    Returns
-    -------
-    U : jax.numpy.ndarray
-        Conservative variables [rho, rho*u, E] with shape (3, Nx_local)
+    """1D linear sound wave: single right-going acoustic eigenmode (matches
+    AthenaK linear_wave; cfg.soundwave_single_mode=False gives the old u=0
+    standing-wave superposition). Background ρ₀=1, p₀=0.6, γ=5/3 → cs=1,
+    period=Lx. Returns U = [rho, rho*u, E], shape (3, Nx_local).
     """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma

@@ -62,20 +62,9 @@ def _stitch_field(shards, field, ndim):
 
 
 def read_snapshot(snapdir):
-    """Read a LUNA snapshot directory and return stitched fields.
-
-    Parameters
-    ----------
-    snapdir : str
-        Path to a snapdir_NNN/ directory.
-
-    Returns
-    -------
-    dict with keys:
-        t, step, gamma, ndim, Lx, [Ly, [Lz]], dx, [dy, [dz]],
-        x, [y, [z]],
-        rho, vx, [vy, [vz]], P, e_int
-    """
+    """Read a snapdir_NNN/ directory into a dict of stitched global fields:
+    t, step, gamma, ndim, Lx/dx/Nx (+y/z for ndim>=2/3), cell centers
+    x[/y/z], and rho, vx[/vy/vz], P, e_int."""
     files = _list_shard_files(snapdir)
     shards = [h5py.File(f, "r") for f in files]
     try:
@@ -129,11 +118,8 @@ def latest_snapshot_dir(output_dir):
 
 
 def find_snapshot_at_time(output_dir, t_target, tol=1e-6):
-    """Return the snapdir whose time is closest to t_target (within tol).
-
-    Useful for the time-progression plots (KH grid, square advection) where
-    we need specific timestamps rather than the final state.
-    """
+    """Return the snapdir whose snapshot time is closest to t_target
+    (closest match is returned even if the difference exceeds tol)."""
     best = None
     best_diff = float("inf")
     for d in sorted(glob.glob(os.path.join(output_dir, "snapdir_*"))):

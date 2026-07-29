@@ -1,21 +1,8 @@
-"""2D solar convection initial conditions (polytropic atmosphere, vertical = y).
+"""2D solar convection IC: polytropic atmosphere in hydrostatic equilibrium,
+optionally with an entropy seed. Same recipe as the 3D version.
 
-Stratification (y is "up", gravity points in -y, so cfg.gravity_z < 0):
-
-    rho_eq(y) = rho_0 * (1 - y/H)^(1/(Gamma-1))
-    p_eq(y)   = p_0   * (1 - y/H)^(Gamma/(Gamma-1))
-    H         = Gamma * p_0 / ((Gamma - 1) * rho_0 * g)
-
-Same recipe as the 3D version, but the vertical coordinate is y, the state
-has 4 fields (rho, vx, vy, E), and the equilibrium is broadcast across x.
-
-Config knobs:
-    cfg.gamma, cfg.gravity_z (vertical magnitude lives in this field for both
-                              2D and 3D - confusingly named for legacy)
-    cfg.solar_rho0  (default 1.0)
-    cfg.solar_p0    (default 1.0)
-    cfg.solar_Gamma (default cfg.gamma)
-    cfg.solar_pert_amp / cfg.solar_pert_seed
+Vertical axis is y; gravity still lives in cfg.gravity_z (legacy naming) and
+must be < 0 (downward). State has 4 fields (rho, vx, vy, E).
 """
 
 import jax.numpy as jnp

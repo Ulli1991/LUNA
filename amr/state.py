@@ -1,14 +1,9 @@
 """AMR hierarchy state container + uniform<->block partitioning.
 
-``AMRState`` is a plain tuple of ``LevelData`` (one per level, level 0 = base).
-Both are JAX pytrees (NamedTuple fields / tuple elements are children), so an
-``AMRState`` flows through ``jit``/``scan``/``shard_map`` transparently. The
-*number* of levels and each level's *slot count* are static (fixed shapes);
-re-adaptation changes contents (coords/data/n_active), not shapes — so it does
-not force a recompile unless a level's ``max_blocks`` is grown.
-
-The static geometry lives in ``AMRConfig`` (passed separately), never inside the
-traced state.
+``AMRState`` is a tuple of ``LevelData`` pytrees, so it flows through
+``jit``/``scan``/``shard_map``; level count and slot counts are static shapes
+(re-adaptation changes contents, not shapes). Static geometry lives in
+``AMRConfig``, never inside the traced state.
 """
 
 from __future__ import annotations

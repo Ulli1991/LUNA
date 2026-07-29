@@ -1,31 +1,8 @@
-"""3D solar convection initial conditions (polytropic atmosphere).
+"""3D solar convection IC: polytropic atmosphere in hydrostatic equilibrium,
+optionally with an entropy seed (z is up; cfg.gravity_z must be < 0).
 
-Stratification (z is "up", gravity points in -z, so g_z = -g, g > 0):
-
-    rho_eq(z) = rho_0 * (1 - z/H)^(1/(Gamma-1))
-    p_eq(z)   = p_0   * (1 - z/H)^(Gamma/(Gamma-1))
-
-with the scale height
-    H = Gamma * p_0 / ((Gamma - 1) * rho_0 * g)
-
-where rho_0, p_0 are bottom (z=0) values and Gamma is the polytropic index.
-Setting Gamma = gamma gives an isentropic (adiabatic, Schwarzschild-stable)
-profile — the right starting point for HSE-preservation validation. To drive
-convection, pick Gamma slightly larger than gamma (superadiabatic) or add
-an entropy seed on top of the stable profile.
-
-The IC produces:
-    solar_convection_3d(cfg)            -> U with optional entropy perturbation
-    solar_convection_3d_equilibrium(cfg) -> U_eq with v=0 (used by WB integrator)
-
-Configuration knobs read off cfg:
-    cfg.gamma                  : adiabatic index of the gas
-    cfg.gravity_z              : g_z (should be negative for downward gravity)
-    cfg.solar_rho0   (default 1.0)
-    cfg.solar_p0     (default 1.0)
-    cfg.solar_Gamma  (default cfg.gamma)
-    cfg.solar_pert_amp (default 0.0)   small random entropy seed
-    cfg.solar_pert_seed (default 11)
+Gamma = gamma gives an isentropic Schwarzschild-stable profile (for HSE
+validation); to drive convection use Gamma > gamma or the entropy seed.
 """
 
 import jax.numpy as jnp

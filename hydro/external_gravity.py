@@ -1,29 +1,9 @@
-"""External, position-dependent gravitational accelerations from analytic
-static potentials. Used for galaxy-scale simulations (CGOLS-style M82) where
-the gas self-gravity is negligible compared to the fixed stellar + halo
-potential.
+"""External static-potential gravitational accelerations (Miyamoto-Nagai
+disk + NFW halo) for galaxy-scale runs where gas self-gravity is negligible.
 
-All quantities are in the Arepo unit system (kpc, 1e10 Msun, km/s), so:
-
-    G_code  = 43.0071   (km/s)^2 * kpc / (1e10 Msun)
-    Lengths in kpc, masses in 1e10 Msun, velocities in km/s.
-
-Supported components:
-
-  * Miyamoto-Nagai disk:
-        Phi(R, z) = -G * M / sqrt(R^2 + (a + sqrt(z^2 + b^2))^2)
-        g_R       = -G * M * R / D^(3/2)
-        g_z       = -G * M * (a + sqrt(z^2+b^2)) * z / (sqrt(z^2+b^2) * D^(3/2))
-        D         = R^2 + (a + sqrt(z^2+b^2))^2
-
-  * NFW spherical halo:
-        rho(r)  = rho_s / [(r/r_s)(1 + r/r_s)^2]
-        M(<r)   = 4*pi*rho_s*r_s^3 * [ln(1+r/r_s) - (r/r_s)/(1+r/r_s)]
-        g_r     = -G*M(<r)/r^2
-
-    Parametrised by (M_200, c). We compute r_200 from M_200 and an
-    z=0 critical density rho_crit_code = 1.4e-8 (1e10 Msun / kpc^3),
-    then r_s = r_200 / c and rho_s from the normalization integral.
+All quantities are in the Arepo unit system (kpc, 1e10 Msun, km/s;
+G_code = 43.0071). NFW is parametrised by (M_200, c) with z=0
+rho_crit_code = 1.4e-8.
 """
 
 from __future__ import annotations

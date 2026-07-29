@@ -1,12 +1,8 @@
-"""Runner-side wiring for the external static-potential gravity source.
-
-Position-dependent (gx, gy, gz) from Miyamoto-Nagai (stellar disk) + NFW
-(dark halo), applied as an operator-split per-step source on U.
-
-Multi-process aware (KH-IC sharding pattern: each rank builds only its local
-slice and assembles via make_array_from_single_device_arrays). The JIT'd
+"""Runner-side wiring for the external static-potential gravity source:
+Miyamoto-Nagai (stellar disk) + NFW (dark halo) accelerations applied as
+an operator-split per-step source on U. Multi-process aware; the JIT'd
 update function receives (gx, gy, gz) as ARGUMENTS, not closures, so XLA
-does not try to inline the sharded multi-process arrays as MLIR constants.
+does not inline the sharded multi-process arrays as MLIR constants.
 """
 
 import jax

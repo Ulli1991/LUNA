@@ -1,25 +1,10 @@
-"""Basic particle (point-mass) module — gravity coupling to the gas.
-
-A small set of point masses — a central star, an orbiting planet, or (later)
-sink particles — that exert a Plummer-softened gravitational acceleration on the
-gas grid each step:
+"""Point-mass particles (fixed star + planet on a prescribed circular Keplerian
+orbit) exerting Plummer-softened gravity on the gas grid each step:
 
     g(x) = -G Σ_i m_i (x - r_i) / (|x - r_i|² + ε²)^{3/2}
 
-applied operator-split to the gas momentum and energy exactly like the
-external-gravity source (kick momentum, midpoint-momentum energy work). Built
-for the disc-planet interaction test (de Val-Borro et al. 2006 / GANDALF,
-Hubber+ 2018 §6.11) and reusable as the basis for Boss-Bodenheimer sink
-particles.
-
-Motion: the central star is held fixed at the box centre; the planet is held on
-a **prescribed circular Keplerian orbit** of radius a and rate Ω = √(GM⋆/a³)
-(it does not migrate, per the test). Particle positions are threaded through the
-runner loop as state (like the OU-forcing state). Currently 2D
-(SPATIAL_DIMENSION == 2), the form the de Val-Borro benchmark uses.
-
-Enable with cfg.particles_enabled = True; configure the star/planet via
-particle_star_mass, particle_planet_q, particle_planet_a, particle_softening.
+Applied operator-split (kick momentum, midpoint-momentum energy work). Particle
+positions are threaded through the runner loop as state. 2D only.
 """
 import jax
 import jax.numpy as jnp

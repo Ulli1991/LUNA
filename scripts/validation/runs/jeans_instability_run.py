@@ -1,27 +1,9 @@
-"""Linear Jeans instability — Phase 1 acceptance test for self-gravity.
+"""Linear Jeans instability -- self-gravity acceptance test.
 
-Uniform periodic box (γ-law gas) with a small sinusoidal density
-perturbation. For wavenumber k and background sound speed c_s, the
-linear theory growth rate is
-
-    ω² = c_s² k² - 4πGρ₀
-
-For k < k_J = √(4πGρ₀)/c_s the mode is unstable: ω² < 0. From a STATIC
-(v=0) cosine density perturbation the mode grows as δρ(t) = A₀ cosh(σt)
-with σ = √|ω²| (equal projection onto the growing and decaying
-eigenmodes). We integrate with LUNA + multigrid self-gravity, read the
-snapshots back, and fit σ_measured from the log-slope of max|δρ|/ρ₀ over
-the linear window, then emit figures/jeans_growth_Nx{N}.png comparing the
-measured growth to the analytic A₀cosh(σt).
-
-Default parameters: σ_analytic ≈ 5.33 (growth time 0.19); t_end = 1.2
-covers ~6.4 e-folds while keeping the perturbation linear
-(A_0 = 1e-4 → A(t_end) ~ 3%, comfortably inside linear theory).
-
-Env vars:
-    LUNA_JEANS_NX     : grid resolution (default 64)
-    LUNA_JEANS_TEND   : end time in code units (default 1.2)
-"""
+Static cosine perturbation in a periodic box grows as A0 cosh(sigma t) with
+sigma = sqrt(4 pi G rho0 - cs^2 k^2); fit sigma from the snapshots and compare
+(default sigma ~ 5.33, ~6 e-folds, stays linear). Env knobs LUNA_JEANS_*
+documented below."""
 import os
 import numpy as np
 

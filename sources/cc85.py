@@ -1,14 +1,8 @@
-"""Runner-side wiring for the CC85 central-injection source.
-
-Mdot and Edot deposited uniformly inside a sphere of radius R_*, derived
-from (SFR, eta_M, eta_E):
-
-    Mdot_wind = eta_M * SFR                                   [Msun/yr]
-    Edot_wind = eta_E * (SFR / 100 Msun) * 1e51 erg/yr        [erg/s]
-
-The sphere mask is sharded the same way as U, and is PASSED AS A JIT
-ARGUMENT to the per-step apply function (not as a closure variable) so
-XLA cannot inline the sharded multi-process array as an MLIR constant.
+"""Runner-side wiring for the CC85 central-injection source: deposits
+Mdot = eta_M*SFR and Edot = eta_E*(SFR/100 Msun)*1e51 erg/yr uniformly
+inside a sphere of radius R_*. The sphere mask is sharded like U and is
+PASSED AS A JIT ARGUMENT (not a closure variable) so XLA cannot inline
+the sharded multi-process array as an MLIR constant.
 """
 
 import jax

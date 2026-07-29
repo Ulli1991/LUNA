@@ -1,32 +1,9 @@
-"""Velasco-Romero & Teyssier (2025) 2D stellar-convection test.
+"""2D stellar-convection test: three-layer polytropic atmosphere plus an
+under-dense Gaussian bubble in the convective middle layer.
+Ref: Velasco-Romero & Teyssier 2025.
 
-Three-layer polytropic atmosphere (z runs vertical, gravity points in -z):
-
-    | Zone                | Gamma | rho_0 | P_0  | z-range          |
-    |---------------------|-------|-------|------|------------------|
-    | Bottom radiative    | 1.20  | 1.81  | 5.94 | [z_0, z_1]       |
-    | Convective middle   | 1.67  | 1.17  | 3.53 | [z_1, z_2]       |
-    | Top radiative       | 1.01  | 0.09  | 0.05 | [z_2, z_3]       |
-
-With (z_0, z_1, z_2, z_3) = (0, 1.64, 7.77, 11) and g = 1.
-
-Inside each zone the profile is polytropic:
-    T(z) = T_0,i * [ 1 - ((Gamma_i - 1)/Gamma_i) * rho_0,i * g / P_0,i * (z - z_{i-1}) ]
-    rho(z) = rho_0,i * (T(z)/T_0,i)^(1/(Gamma_i-1))
-    P(z)   = P_0,i   * (T(z)/T_0,i)^(Gamma_i/(Gamma_i-1))
-where T_0,i = P_0,i / rho_0,i (ideal gas, mean molecular weight absorbed).
-
-Convection driver: a small under-dense Gaussian bubble in the middle layer:
-    delta_rho / rho_eq = -0.012 * exp( -r^2 / (2 r_b^2) ),  r < r_b
-with r_b = 0.25 centered at (x_b, z_b) = (L/4, z_1 + 0.75).
-
-For LUNA's 2D convention the vertical axis is `y`. The mapping:
-    x_VT -> x in LUNA
-    z_VT -> y in LUNA   (gravity_z config field is along y in 2D, magnitude g)
-
-The two functions:
-    solar_convection_vt_2d_equilibrium(cfg) -> U_eq  (no bubble, used by WB)
-    solar_convection_vt_2d(cfg)              -> U   (equilibrium + bubble)
+V&T's vertical z maps to LUNA's y in 2D; gravity is still cfg.gravity_z
+(must be < 0, magnitude g along y).
 """
 
 import jax.numpy as jnp

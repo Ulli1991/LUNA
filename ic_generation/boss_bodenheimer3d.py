@@ -1,25 +1,10 @@
-"""Boss-Bodenheimer 1979 protostellar collapse test — physical (cgs) units.
+"""Boss–Bodenheimer 1979 protostellar collapse: rotating uniform cloud with an
+m=2 density perturbation that fragments into a binary. Ref: Boss & Bodenheimer
+1979; Hubber+ 2018 §6.12.
 
-Built verbatim from GANDALF (Hubber, Rosotti & Booth 2018, MNRAS 473, 1603,
-§6.12) / Boss & Bodenheimer (1979): a uniform rotating spherical cloud with an
-m=2 azimuthal density perturbation that collapses under self-gravity and
-fragments into a protostellar binary.
-
-Paper parameters (cgs), run with a star-formation UnitSystem (pc, M_sun, km/s):
-    ρ₀     = 1.44e-17 g/cm³        (mean cloud density)
-    R      = 0.01 pc               (cloud radius)
-    Ω      = 1.6e-12 rad/s         (rigid-body rotation; β ≈ 0.16)
-    ρ(φ)   = ρ₀ [1 + A sin(m φ)],  A = 0.5,  m = 2
-    EOS    = barotropic  T(ρ) = T0[1 + (ρ/ρ_AD)^(γ-1)],
-             T0 = 10 K, ρ_AD = 1e-14 g/cm³, γ = 5/3, μ = 2.35
-            (set cfg.barotropic_eos = True; the runner enforces it each step)
-
-The barotropic stiffening above ρ_AD is what halts the runaway isothermal
-collapse — without it the central density spikes and the Cartesian grid imprints
-a cardinal-axis cross instead of the m=2 binary.
-
-Config knobs (see template_config): bb_rho0_cgs, bb_R_pc, bb_omega_rad_s,
-bb_amp, bb_m, bb_rho_ambient_frac, and the barotropic_* parameters.
+Requires cfg.units enabled (physical cgs parameters) and the barotropic EOS
+(cfg.barotropic_eos = True; runner enforces it) — without the barotropic
+stiffening the collapse runs away and the grid imprints a cross, not a binary.
 """
 
 import jax.numpy as jnp

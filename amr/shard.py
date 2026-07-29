@@ -1,28 +1,11 @@
-"""Explicit ``jax.shard_map`` distribution of the AMR block step.
+"""Explicit ``jax.shard_map`` distribution of the AMR block step; blocks are
+the shard unit (the ``n_slots`` axis is partitioned across devices).
 
-Blocks are the shard unit (the ``n_slots`` axis is partitioned across devices),
-mirroring how the dense LUNA path shards spatial axes. The AMR-specific twist:
-block neighbours are *irregular* (Morton ids, any block can neighbour any other),
-so the halo / seam exchange cannot be a nearest-neighbour ``ppermute``. Three
-exchange strategies exist, selected by ``LUNA_AMR_HALO_MODE`` (read in
-``setup.runner_amr``):
-
-  * ``sparse`` (default when sharded): host-built per-device-pair routing plans
-    (:func:`build_same_level_plan` and friends) turn the exchange into one
-    ``all_to_all`` of only the remote boundary blocks — O(surface) wire traffic.
-    Plans are rebuilt at (re)grid time and passed through the jitted step as
-    arguments.
-  * ``gather``: plain ``all_gather`` of the block data (simple, O(total) wire).
-  * ``ring``: chunked ring gather (``_use_ring`` / ``LUNA_AMR_HALO_RING``),
-    trading fill cost for peak memory when a full gather would OOM.
-
-Production entry points: :func:`advance_shmap` (synchronized same-dt) and
-:func:`advance_subcycle_shmap` (Berger-Oliger). Both fill ghosts and compute
-fluxes/divergence per device for LOCAL blocks only; coarse-fine underlay, seam
-fluxes, reflux (three modes via ``LUNA_AMR_REFLUX``: replicated wrapper,
-explicit-psum ``sharded``, plan-routed ``iface``), restriction, and sharded
-regrid (:func:`regrid_sharded`, with lockstep barriers for multi-process
-dispatch drift) live here as well.
+Neighbours are irregular, so halo/seam exchange is ``sparse`` (all_to_all
+routing plans rebuilt at regrid time and passed through the jitted step),
+``gather`` or ``ring`` -- via ``LUNA_AMR_HALO_MODE`` / ``LUNA_AMR_HALO_RING``;
+reflux modes via ``LUNA_AMR_REFLUX``. Entry points: :func:`advance_shmap`,
+:func:`advance_subcycle_shmap`, :func:`regrid_sharded`.
 """
 
 from __future__ import annotations
@@ -55,12 +38,9 @@ if _shard_map is None:  # older jax
 
 
 def _use_ring(n_dev, gathered_bytes):
-    """Pick the halo exchange strategy. LUNA_AMR_HALO_RING = "1" (force ring) /
-    "0" (force all_gather) / "auto" (default): use the memory-lean ring ONLY when
-    the all_gather peak (the full block array on every device) would exceed
-    LUNA_AMR_HALO_RING_GB (default 16 GB). So shallow hierarchies keep the fast
-    single-pass all_gather; deep ones that would otherwise OOM get the total/D
-    ring automatically."""
+    """Pick the halo exchange strategy: LUNA_AMR_HALO_RING = "1"/"0" forces
+    ring/all_gather; "auto" (default) uses the ring only when the all_gather
+    peak would exceed LUNA_AMR_HALO_RING_GB (default 16 GB)."""
     if n_dev <= 1:
         return False
     mode = os.environ.get("LUNA_AMR_HALO_RING", "auto")
@@ -89,12 +69,9 @@ def _same_level_offsets(ndim):
 
 
 def _same_level_stencil(neighbors, cfg):
-    """Global source slot for every ghost region, per block. ``neighbors`` is the
-    (replicated, small) face table (order ``[+d,-d]`` per axis, sentinel = last
-    slot). Returns ``(n_slots, 3**ndim)`` int32: column ``o`` is the block reached
-    by composing the face-hops of offset ``offsets[o]`` from HIGHEST nonzero axis
-    to lowest (the exact neighbour the sweep's last pass reads). Any missing hop
-    collapses to the sentinel -> that region fills NaN, matching the sweep."""
+    """Global source slot for every ghost region: (n_slots, 3**ndim) int32,
+    column ``o`` = block reached by composing face-hops of offset ``o``,
+    highest axis first; a missing hop collapses to the sentinel (region NaN)."""
     ndim = cfg.ndim
     n = neighbors.shape[0]
     sentinel = n - 1
@@ -116,22 +93,9 @@ def _same_level_stencil(neighbors, cfg):
 
 
 def _fill_same_level_diag(W, stencil_idx, mesh, cfg):
-    """Corner-exact same-level ghost fill, sharded on the block axis. ``W`` is the
-    (sharded) unghosted primitive data; ``stencil_idx`` (:func:`_same_level_stencil`,
-    sharded rows) gives each local block's global source slot per ghost region.
-    Returns the local blocks' ghosted array, sharded -- bit-identical to
-    ``halo.fill_ghost_same_level`` on the active blocks.
-
-    Two exchange strategies (bit-identical; each of the 3**ndim ghost regions is
-    written by exactly ONE source block, so order is irrelevant):
-      * all_gather (default): gather the FULL global block array on every device,
-        then index. Simple, one pass, O(total) MEMORY per device -- the sharding
-        win evaporates during the fill (was ~half the 6-level OOM).
-      * ring (LUNA_AMR_HALO_RING=1): ppermute the block segments around the device
-        ring; at each of the D steps a device holds ONE segment (total/D) and
-        extracts the bands whose global source lands in that segment. Peak memory
-        total/D (the win). Trades memory for ~D x the (cheap) band-copy compute.
-    """
+    """Corner-exact same-level ghost fill, sharded on the block axis --
+    bit-identical to ``halo.fill_ghost_same_level`` on the active blocks.
+    Exchange via all_gather (default) or ring (peak memory total/D)."""
     g, ndim, bs = cfg.n_ghost, cfg.ndim, cfg.block_shape
     offsets = _same_level_offsets(ndim)
     W_spec = P("blocks", *([None] * (W.ndim - 1)))
@@ -197,28 +161,12 @@ def _fill_same_level_diag(W, stencil_idx, mesh, cfg):
 
 
 def build_exchange_plan(src_slots_np, n_src, n_dev):
-    """Host-side sparse exchange plan (Stage 2: O(surface) communication) for a
-    general block gather ``dst_row <- src_slots[dst_row, :]``. Topology is static
-    between regrids, so we precompute, for every ordered device pair (s -> r), the
-    sorted unique list of REMOTE source blocks r's rows need from s. Local sources
-    (most of them, under the Morton-contiguous partition) are read directly and
-    never touch the wire -- that is what makes the traffic O(surface) instead of
-    the all_gather/ring's O(total).
-
-    ``src_slots_np`` (n_rows, R) int -- global source slot per destination row and
-    stencil column. ``n_src`` -- size of the SOURCE block array (may differ from
-    n_rows, e.g. coarse-fine: rows = fine blocks, sources = coarse blocks). Both
-    n_rows and n_src must be divisible by n_dev (guaranteed by pad_to).
-
-    Returns (send_idx, recv_pos, K):
-      send_idx (n_dev, n_dev, K) int32 -- sender-LOCAL source indices; row [s, r]
-          is what s packs for r, padded with 0 (padded entries are never
-          referenced by any recv_pos).
-      recv_pos (n_rows, R) int32 -- for each row and column, the flat position
-          (s*K + j) of its source in the receiver's all_to_all buffer, or -1 if
-          the source is LOCAL to the row's owner (read directly).
-      K -- per-pair slot budget, pow2 bucket (bounds recompiles across regrids).
-    """
+    """Host-side sparse exchange plan for a general block gather (O(surface)
+    comm). ``src_slots_np`` (n_rows, R) is the global source slot per row and
+    stencil column; n_rows and n_src must be divisible by n_dev. Returns
+    (send_idx (n_dev, n_dev, K) sender-local indices, recv_pos (n_rows, R)
+    flat all_to_all position ``s*K + j`` or -1 for local sources, K = pow2
+    per-pair slot budget)."""
     import numpy as _np
     n_rows, R = src_slots_np.shape
     bpd_row = n_rows // n_dev
@@ -264,13 +212,8 @@ def build_same_level_plan(stencil_np, n_dev):
 
 
 def _fill_same_level_sparse(W, stencil_idx, send_idx, recv_pos, mesh, cfg):
-    """Same-level ghost fill with the SPARSE all_to_all exchange (Stage 2).
-    Each device packs only the blocks its peers actually need
-    (``send_idx[dev]``), one ``all_to_all`` delivers them, and each ghost band
-    fills from a two-source select: local block (direct read) vs received
-    remote block (``recv_pos``). Communication and remote-buffer memory are
-    O(surface blocks) instead of O(total). Bit-identical to the gather/ring
-    fills: same source block per region, same band copy."""
+    """Same-level ghost fill with the SPARSE all_to_all exchange (O(surface)
+    comm and memory); bit-identical to the gather/ring fills."""
     g, ndim, bs = cfg.n_ghost, cfg.ndim, cfg.block_shape
     offsets = _same_level_offsets(ndim)
     n_dev = int(mesh.shape["blocks"])
@@ -319,15 +262,9 @@ def _fill_same_level_sparse(W, stencil_idx, send_idx, recv_pos, mesh, cfg):
 def _coarse_underlay_sharded(fine_ghosted, fine_coords, parent_slots,
                              coarse_ghosted, mesh, cfg, interp="linear",
                              plan=None):
-    """Sparse coarse-fine ghost fill (``halo.fill_ghost_from_coarse_sparse``) with
-    the fine blocks sharded. Each device all-gathers the (smaller) parent ghosted
-    level, then runs the identical per-block gather+prolong for its local fine
-    blocks. Output sharded on the fine block axis.
-
-    ``plan`` (``(send_idx, recv_pos)`` from :func:`build_exchange_plan` on
-    ``parent_slots[:, None]``): switches to the SPARSE all_to_all exchange -- pack
-    only the coarse parents peers need, one all_to_all, then each fine block reads
-    its single parent (local coarse or received) and prolongs. O(surface) comm."""
+    """Sharded sparse coarse-fine ghost fill: gathers (or, with ``plan``,
+    sparse-all_to_alls) the parent ghosted level, then runs the identical
+    per-block gather+prolong. Output sharded on the fine block axis."""
     from amr.halo import fill_ghost_from_coarse_sparse
     fg_spec = P("blocks", *([None] * (fine_ghosted.ndim - 1)))
     coord_spec = P("blocks", None)
@@ -406,19 +343,11 @@ def _coarse_underlay_sharded(fine_ghosted, fine_coords, parent_slots,
 
 
 def _fill_ghosts_sharded(levels, cfg, mesh, gamma, plans=None):
-    """Sharded twin of ``driver._fill_ghosts``: per-level ghost-filled PRIMITIVE
-    blocks, each level's ghosted array born SHARDED on the block axis (the big
-    array), with only the smaller unghosted / parent gathers transient. Same-level
-    fill is corner-exact (:func:`_fill_same_level_diag`); finer levels add the
-    sparse coarse underlay; a physical BC (per-block, sharding-preserving) fills
-    domain-edge NaNs. Bit-identical to the replicated ``_fill_ghosts``.
-
-    ``plans`` (optional, per level ``(same_plan, cf_plan)`` or None; each sub-plan
-    ``(send_idx, recv_pos)`` or None) switches the same-level and/or coarse-fine
-    fill to the SPARSE all_to_all exchange (Stage 2, O(surface) comm) — built at
-    (re)grid time by :func:`build_exchange_plan` and threaded through the jitted
-    step as arguments (never closure-captured: the plan VALUES change at every
-    regrid even when shapes don't, so a captured constant would go stale)."""
+    """Sharded twin of ``driver._fill_ghosts``: per-level ghosted PRIMITIVE
+    blocks born sharded on the block axis; bit-identical to the replicated
+    fill. ``plans`` (per level ``(same_plan, cf_plan)``) switch to the sparse
+    all_to_all exchange -- threaded as arguments, never closure-captured (plan
+    VALUES change at every regrid even when shapes don't)."""
     from amr.halo import fill_ghost_physical
     D = mesh.devices.size
     ghosted = []
@@ -497,30 +426,12 @@ def _block_bstates_vec(W_ghosted, dt, inv, cfg, *, gamma, limiter):
 
 def _seam_couple(fluxes, states, nbr_loc, mask_loc, ndim, n_dev, ring, seam,
                  seam_send=None, seam_recv=None, dom_loc=None):
-    """Replace each block-block face flux with the SHARED seam Riemann flux built
-    from this block's reconstruction and its (possibly remote) neighbour's.
-
-    sparse (seam_send/seam_recv given): O(surface) all_to_all. Each block's
-    payload stacks its per-axis boundary states in neighbour-column order
-    (slot 2d = Ld_d wanted by a -side neighbour via col 2d, slot 2d+1 = Rd_d
-    wanted by a +side neighbour via col 2d+1); one all_to_all delivers the
-    remote payloads, and each face reads its neighbour's plane local-or-received.
-    Requires cubic blocks (equal per-axis face shape to stack) -- the runner only
-    builds the plan then. Bit-identical to the gather path.
-
-    ring=False: all_gather the per-axis boundary states (O(total) memory/device).
-    ring=True : ppermute the state segments around the device ring; at each of
-    the n_dev steps couple only the faces whose neighbour slot lands in the held
-    segment. Peak = one segment (total/D). Bit-identical: each face's neighbour
-    lives in exactly one segment, so it is coupled exactly once (masked set);
-    faces with no real neighbour (mask False) keep the ghost-based flux, as in
-    the gather path.
-
-    ``dom_loc`` (Nloc, 2*ndim) marks PHYSICAL (outflow) domain faces: their flux
-    is replaced by the consistent zero-gradient flux f(pred) = seam(own, own)
-    (see conservative_block_divergence -- the raw ghost-based flux pairs a
-    predicted interior state with an un-predicted ghost copy and pumps mass
-    through the wall). Applied AFTER the seam coupling, before returning."""
+    """Replace each block-block face flux with the SHARED seam Riemann flux
+    from both sides' reconstructions. Sparse (seam_send/seam_recv; requires
+    cubic blocks), all_gather (ring=False) and ring (ring=True) exchanges are
+    bit-identical; faces without a real neighbour keep the ghost-based flux.
+    ``dom_loc`` marks outflow domain faces, whose flux becomes the consistent
+    zero-gradient ``seam(own, own)``."""
 
     def _domain_faces(fluxes):
         if dom_loc is None:
@@ -622,16 +533,12 @@ def _states_bytes(W_all, cfg):
 def divergence_batched_shmap(W_all, inv_all, nbr_all, mask_all, mesh, dt, cfg, *,
                              gamma, limiter=1, riemann_solver="hllc", seam_plan=None,
                              dom_all=None):
-    """Single sharded divergence over the concatenated all-levels block axis.
-    ``W_all`` (N, n_vars, *ghosted) is every level's ghosted blocks stacked;
-    ``inv_all`` (N, ndim) the per-block 1/dx; ``nbr_all`` (N, 2*ndim) GLOBAL
-    same-level neighbour slots (invalid -> that level's NaN sentinel slot);
-    ``mask_all`` (N, 2*ndim) bool marks real neighbours. Returns (dU_all, fluxes)
-    sharded on the block axis. Bit-matches the per-level ``divergence_shmap``.
-
-    ``seam_plan`` (``(send_idx, recv_pos)`` from :func:`build_exchange_plan` on
-    ``nbr_all``): the seam boundary-state coupling uses the SPARSE all_to_all
-    (O(surface) comm) instead of the all_gather/ring."""
+    """Single sharded divergence over the concatenated all-levels block axis
+    (one compile / one dispatch). ``W_all`` (N, n_vars, *ghosted); ``inv_all``
+    (N, ndim) per-block 1/dx; ``nbr_all`` (N, 2*ndim) GLOBAL neighbour slots;
+    ``mask_all`` marks real neighbours; ``seam_plan`` switches the seam
+    coupling to the sparse all_to_all. Returns (dU_all, fluxes) sharded on the
+    block axis; bit-matches the per-level :func:`divergence_shmap`."""
     ndim = cfg.ndim
     blk = P("blocks", *([None] * (W_all.ndim - 1)))
     vec = P("blocks", None)
@@ -723,13 +630,9 @@ def _batch_levels(ghosted, hierarchy, cfg):
 def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
                      gamma, limiter=1, riemann_solver="hllc",
                      return_face_fluxes=False, coords=None):
-    """Conservative seam-flux divergence for one level, with the per-block flux
-    compute (the bottleneck) **sharded over devices** and the same-level seam
-    coupling done by an ``all_gather`` of the boundary states. ``W_ghosted`` /
-    ``neighbors`` are replicated; each device computes its local blocks' fluxes,
-    all-gathers the boundary states + its dU, and returns the full (replicated)
-    divergence — so it drops into the existing (replicated) driver loop. Reuses
-    the existing ghost fill and restrict; only this hot kernel is distributed."""
+    """Conservative seam-flux divergence for one level with the per-block flux
+    compute sharded over devices; only the small boundary-state planes are
+    exchanged for the seam coupling. Drops into the existing driver loop."""
     ndim = cfg.ndim
     W_spec = P("blocks", *([None] * (W_ghosted.ndim - 1)))
     nbr_spec = P("blocks", None)
@@ -787,13 +690,10 @@ def divergence_shmap(W_ghosted, neighbors, mesh, dt, level, cfg, *,
 
 def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
                   riemann_solver="hllc", use_batched=True, halo_plans=None):
-    """Synchronized multi-level step with the per-level divergence sharded across
-    devices. Ghost fill is sharded (:func:`_fill_ghosts_sharded`); the divergence
-    is a SINGLE batched kernel over all levels (:func:`divergence_batched_shmap`,
-    ``use_batched=True``) -- collapsing the 6 per-level compiles into one -- or
-    the per-level :func:`divergence_shmap` loop (``use_batched=False``, kept as a
-    bit-identical fallback). Restrict/reflux stay per-level. Matches
-    :func:`amr.driver.advance`."""
+    """Synchronized multi-level step, sharded: sharded ghost fill, a single
+    batched divergence over all levels (``use_batched=True``; per-level loop
+    as bit-identical fallback), per-level reflux/restrict.
+    Matches :func:`amr.driver.advance`."""
     from amr.driver import _restrict_into_parent
     from amr.reflux import apply_reflux_blocks
 
@@ -894,13 +794,9 @@ def advance_shmap(hierarchy, dt, cfg, mesh, *, gamma, limiter=1,
 
 
 def _reshard_blocks(datas, mesh):
-    """Pin each level's updated data back to block-sharded storage (step 1 of the
-    sharded-memory plan). The all_gather in :func:`divergence_shmap` makes the
-    step's intermediates replicated; without this the returned hierarchy would be
-    replicated too and between-step storage would not be distributed. This is a
-    cheap slice of the already-materialized replicated result -- it does NOT
-    reduce the in-step PEAK (that is step 2: removing the gather). A no-op when
-    the block axis is not divisible by the device count (leaves it replicated)."""
+    """Pin each level's updated data back to block-sharded storage so the
+    between-step hierarchy stays distributed; a no-op (left replicated) when
+    the block axis is not divisible by the device count."""
     from jax.sharding import NamedSharding
     D = mesh.devices.size
     blk = NamedSharding(mesh, P("blocks"))
@@ -916,19 +812,11 @@ def _reshard_blocks(datas, mesh):
 def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
                            gamma, limiter=1, riemann_solver="hllc",
                            gravity=None, reflux=True, t0=0.0, halo_plans=None):
-    """Subcycled (Berger-Oliger) step with each per-level divergence sharded via
-    :func:`divergence_shmap`. Reuses :func:`amr.driver.advance_subcycle`'s
-    recursion + time-interpolated coarse ghosts, swapping the divergence kernel
-    for the distributed one. Matches the single-device subcycled step.
-
-    ``gravity``/``reflux``/``t0`` mirror the driver hooks. The gravity solve and
-    kick run on the REPLICATED hierarchy (same as the synchronized shard path --
-    every device redundantly computes the identical phi; distribution buys
-    memory/flops only in the divergence). Fluxes coming out of the sharded
-    divergence are pinned explicitly replicated and the Berger-Colella
-    correction executes INSIDE a fully-replicated shard_map -- the same GSPMD
-    trap + fix as :func:`advance_shmap` (an outer jit otherwise silently
-    re-partitions the segment-sums to shard-local scope)."""
+    """Subcycled (Berger-Oliger) step with each per-level divergence sharded;
+    reuses :func:`amr.driver.advance_subcycle`'s recursion and hooks. Gravity
+    runs replicated; fluxes are pinned replicated and the reflux executes
+    inside a fully-replicated shard_map (an outer jit otherwise silently
+    re-partitions its segment-sums and drops shard-remote contributions)."""
     from jax.sharding import NamedSharding
 
     from amr.driver import advance_subcycle
@@ -1002,21 +890,11 @@ def advance_subcycle_shmap(hierarchy, dt_base, cfg, mesh, *,
 def build_reflux_plan(fine_coords_np, fine_neighbors_np, fine_n_active,
                       fine_parent_slots_np, coarse_neighbors_np, n_coarse,
                       cfg, n_dev):
-    """Host-side routing plan for :func:`apply_reflux_iface` pass B.
-
-    For every ACTIVE fine block face that is a C/F interface (no same-level
-    neighbour), reproduce apply_reflux_blocks' target arithmetic (octant q,
-    parent's neighbour, cell layer, transverse quadrant offset) and route the
-    restricted flux patch to the target's owner device.
-
-    Returns (send_idx, meta, K):
-      send_idx (n_dev, n_dev, K) int32 -- indices into the sender's flattened
-          (bpd_f * 2ndim) payload axis (payload order: [+d0, -d0, +d1, ...]).
-          Padding entries point at 0 (never read: their meta rows are -1).
-      meta (n_dev, n_dev*K, 4 + ndim) int32 -- per RECEIVER device, aligned
-          with its all_to_all buffer rows: [tgt_local_slot | d | sgn | cell_d
-          | o_0..o_{ndim-1}]; tgt = -1 marks padding.
-    """
+    """Host-side routing plan for :func:`apply_reflux_iface` pass B: route each
+    active C/F fine-face's restricted flux patch to its target's owner device.
+    Returns (send_idx (n_dev, n_dev, K) int32 into the sender's flattened
+    (bpd_f * 2ndim) payload axis, meta (n_dev, n_dev*K, 4 + ndim) int32 rows
+    [tgt_local_slot | d | sgn | cell_d | o_0..] with tgt = -1 padding, K)."""
     import numpy as _np
     ndim = cfg.ndim
     bs = cfg.block_shape
@@ -1076,29 +954,10 @@ def build_reflux_plan(fine_coords_np, fine_neighbors_np, fine_n_active,
 def apply_reflux_iface(coarse_data, coarse_fluxes, fine_fluxes,
                        fine_parent_slots, fine_n_active, coarse_neighbors,
                        dt, coarse_level, cfg, mesh, plan):
-    """INTERFACE-LOCAL Berger-Colella reflux: O(C/F interface) communication.
-
-    The prior modes ship VOLUME-scale flux arrays every step (the replicated
-    wrapper gathers the sharded fine fluxes; apply_reflux_sharded replicates
-    the coarse-side fluxes, which for L1->L0 is the biggest array in the run).
-    Measured cost: ~0.8 s/step at 256^3/8 GPUs -- the dominant distributed-AMR
-    loss. Correction split:  U_c += (dt/dx_c) * s * (<F_f> - F_c)
-
-    Pass A (coarse-local, ZERO comm): the -F_c part. With complete octets and
-    proper nesting, a coarse block's (d, side) boundary layer receives the
-    full-face -F_c correction exactly when its OPPOSITE-side neighbour is
-    covered by children (replicated topology; corrections to covered blocks are
-    the reference's harmless-overwritten case, applied identically here).
-
-    Pass B (fine-side, INTERFACE-sized): the +<F_f> part. Each fine C/F face's
-    transverse-restricted flux patch travels via a sparse all_to_all plan
-    (built host-side at (re)grid time: ``build_reflux_plan``); receivers
-    scatter-add through fully precomputed meta rows. Per-step wire traffic =
-    the C/F face patches only.
-
-    ``plan`` = (send_idx (n_dev, n_dev, K) int32 into the flattened local
-    (bpd_f * 2ndim) payload axis, meta (n_dev, n_dev*K, 4 + ndim) int32 rows
-    [tgt_local_slot | d | sgn | cell_d | o_0..] with tgt = -1 padding)."""
+    """INTERFACE-LOCAL Berger-Colella reflux, O(C/F interface) communication:
+    pass A applies the -F_c part coarse-locally (zero comm); pass B ships each
+    fine C/F face's restricted +<F_f> patch via the sparse all_to_all ``plan``
+    (send_idx, meta) from :func:`build_reflux_plan`."""
     from amr.reflux import _fine_boundary_face, _restrict_transverse
     ndim = cfg.ndim
     bs = cfg.block_shape
@@ -1201,25 +1060,11 @@ def apply_reflux_iface(coarse_data, coarse_fluxes, fine_fluxes,
 def apply_reflux_sharded(coarse_data, coarse_fluxes, fine_fluxes, fine_coords,
                          fine_parent_slots, fine_neighbors, fine_n_active,
                          coarse_neighbors, dt, coarse_level, cfg, mesh):
-    """Distributed Berger-Colella reflux: robust-by-construction replacement for
-    the fully-replicated shard_map wrapper around ``apply_reflux_blocks``.
-
-    Why: the replicated wrapper exists because a raw ``segment_sum`` under an
-    outer jit lets GSPMD re-partition the scatter over the block axis and
-    silently drop shard-remote flux contributions (mass loss). Here the
-    cross-device reduction is an EXPLICIT ``psum`` inside the shard_map, so the
-    partitioner has no freedom to break it -- and the work distributes: each
-    device builds correction patches only for its LOCAL fine blocks (fine
-    fluxes stay sharded; no fine-level-size gather), partial-segment-sums them
-    into a coarse-level-size buffer, psums (coarse is ~1/2**ndim the fine
-    level), and applies the summed correction to its local coarse rows.
-    Bit-comparable to ``apply_reflux_blocks`` up to floating-point summation
-    order in the psum (identical masked patches, same targets).
-
-    Coarse fluxes and the small topology tables are replicated (the correction
-    reads the coarse flux at arbitrary remote targets); fine per-block arrays
-    are sharded on the fine block axis; ``coarse_data`` is sharded on the
-    coarse block axis and returned sharded."""
+    """Distributed Berger-Colella reflux with an EXPLICIT ``psum`` inside the
+    shard_map (GSPMD cannot silently re-partition the scatter). Fine per-block
+    arrays stay sharded; coarse fluxes/topology are replicated; ``coarse_data``
+    is sharded and returned sharded. Bit-comparable to ``apply_reflux_blocks``
+    up to psum summation order."""
     from amr.reflux import (_fine_boundary_face,
                             _restrict_transverse, _coarse_face_patch, _i32)
     ndim = cfg.ndim
@@ -1303,11 +1148,8 @@ def apply_reflux_sharded(coarse_data, coarse_fluxes, fine_fluxes, fine_coords,
 
 def _preserve_sharded(new_data, old_slot, old_data, mesh):
     """Sharded twin of :func:`amr.blocks.preserve_unaltered`: copy matched OLD
-    block data (``old_slot >= 0``) into the new level, with both data arrays
-    sharded on the block axis. gather mode replicates ``old_data`` transiently
-    (the regrid's last big transient); ring mode ppermutes the old segments so
-    the peak is one segment (old/D). Bit-identical: each new slot's source lives
-    in exactly one segment (masked copy); unmatched slots keep ``new_data``."""
+    block data (``old_slot >= 0``) into the new level via gather or ring
+    exchange; unmatched slots keep ``new_data``. Bit-identical."""
     n_dev = int(mesh.shape["blocks"])
     ring = _use_ring(n_dev, old_data.size * old_data.itemsize)
     nd_spec = P("blocks", *([None] * (new_data.ndim - 1)))
@@ -1358,18 +1200,9 @@ def _preserve_sharded(new_data, old_slot, old_data, mesh):
 # ---------------------------------------------------------------------------
 def build_children_sharded(parent_coords, parent_data, flags, level, cfg, mesh,
                            max_parents, parent_ghosted=None):
-    """Sharded twin of :func:`amr.blocks.build_children`. Refine flagged parents
-    into child blocks, but produce the (big) child DATA array SHARDED on the
-    block axis while all TOPOLOGY (coords / valid / n_active -- small int arrays)
-    stays replicated. Bit-identical to build_children on the active blocks.
-
-    Why: the regrid rebuild is the last replicated big-data op -- measured 70 GiB
-    at 6 levels (2048^3-eff) -> OOM even on 4xA100. The prolongation is
-    per-parent-independent, so it shards cleanly: gather the flagged parents'
-    data replicated (transient, ~1.3 GB at the coarse parent level, << the 70 GiB
-    child output), then prolong under a shard_map so each device owns 1/D of the
-    children. Topology stays replicated because it is tiny (~2 MB/level).
-    """
+    """Sharded twin of :func:`amr.blocks.build_children`: the (big) child DATA
+    array is produced SHARDED on the block axis while topology stays
+    replicated. Bit-identical to build_children on the active blocks."""
     import itertools
     from amr.geometry import prolong_centered_cons, prolong_linear_cons
     _prolong = (prolong_centered_cons
@@ -1436,13 +1269,9 @@ def build_children_sharded(parent_coords, parent_data, flags, level, cfg, mesh,
 
 def regrid_sharded(levels, cfg, mesh, *, thresholds, periodic=True, bucket=None,
                    pad_to=1, criterion="density", max_blocks=0):
-    """Shard-aware twin of :func:`amr.driver.regrid`: child DATA built sharded
-    (:func:`build_children_sharded`), all TOPOLOGY on the existing replicated
-    kernels. Removes the regrid's 70 GiB replicated child-data peak (6 levels)
-    so 2048^3-eff fits across devices. The one remaining transient is
-    ``_preserve_j``'s gather of the OLD level's data (carries evolved fine state
-    across the regrid); it briefly replicates the old level (~its own size, not
-    the new 8x-larger one). Bit-identical to driver.regrid on active blocks."""
+    """Shard-aware twin of :func:`amr.driver.regrid`: child data built sharded,
+    topology on the existing replicated kernels. Bit-identical to driver.regrid
+    on active blocks."""
     from amr.driver import (Level, _flag_blocks, _ghosted_parent, _match_blocks_j,
                             _neighbors_j, _pad_blocks, _parent_slots_j, _preserve_j,
                             _sized_parents)

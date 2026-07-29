@@ -2,29 +2,9 @@ import jax.numpy as jnp
 
 
 def woodward_colella(cfg, x_slice=None):
-    """
-    Woodward-Colella blast wave interaction test problem (1D).
-
-    Two strong blast waves propagating toward each other in a tube.
-    Tests the scheme's ability to handle strong shocks and extreme
-    pressure ratios (p_max/p_min = 100,000).
-
-    Regions:
-    - Left (x < 0.1): p = 1000
-    - Middle (0.1 <= x < 0.9): p = 0.01
-    - Right (x >= 0.9): p = 100
-
-    Parameters
-    ----------
-    cfg : Config
-        Configuration object containing Nx, Lx, gamma
-    x_slice : tuple (x_start, x_end), optional
-        Generate only this x-range for distributed initialization
-
-    Returns
-    -------
-    U : jax.numpy.ndarray
-        Conservative variables [rho, rho*u, E] with shape (3, Nx_local)
+    """1D Woodward-Colella interacting blast waves: rho=1, u=0, p = 1000 / 0.01 / 100
+    in x < 0.1Lx / middle / x >= 0.9Lx.
+    Returns U = [rho, rho*u, E], shape (3, Nx_local).
     """
     Nx, Lx = cfg.Nx, cfg.Lx
     gamma = cfg.gamma

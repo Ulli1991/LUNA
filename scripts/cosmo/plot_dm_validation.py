@@ -76,8 +76,8 @@ def cosmic_web(Ng=768, slab_frac=0.25):
 
 def powerspec():
     """fig33: P(k) overlay + Arepo/LUNA ratio (npz from dm_powerspec parts mode)."""
-    L = np.load("figures/pk_luna_dmo.npz")
-    A = np.load("figures/pk_arepo_dmo.npz")
+    L = np.load("code_paper_figs/pk_luna_dmo.npz")
+    A = np.load("code_paper_figs/pk_arepo_dmo.npz")
     kL, PL = L["k"], L["P"]
     kA, PA = A["k"], A["P"]
     PLi = np.interp(kA, kL, PL)

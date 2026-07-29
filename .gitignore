@@ -22,23 +22,28 @@ reference
 checkpoints
 
 # ───────────────────────── Logs / job output / profiling ─────────────────
+# NB: extension-anchored on purpose. The old `*out*`/`*err*` substring rules
+# silently untracked ANY path containing those letters (bit us once with
+# pm_force_1overr2.png; would swallow a future utils/error_norms.py too).
 *.log
 job.out*
 job.err*
 job_*
-*out*
-*err*
+*.out
+*.err
+smoke_out/
 *.nsys-rep
 *.sqlite
 core.*
 
 # ────────────────────────────────── Figures ──────────────────────────────
-# Only the canonical paper/README figures are tracked; figures/ is scratch.
-# NOTE: this whitelist must stay AFTER the broad *out*/*err* rules above,
-# otherwise PNGs whose names merely contain those substrings get re-ignored
-# (e.g. pm_force_1ov[err]2.png).
+# code_paper_figs/ = the ONE tracked figure+data set (paper/README figures and
+# the reference .npz/.csv the plot scripts read back). figures/ = scratch
+# output of the plot scripts, never tracked.
+# NOTE: the png whitelist must stay AFTER the *.out/*.err rules above.
 *.png
 !code_paper_figs/*.png
+figures/
 
 # ───────────────────────────────── Editor / OS ───────────────────────────
 *.swp
@@ -70,9 +75,9 @@ submit/*
 # scripts/validation/plots/scaling_plot_fp64.py).
 /scaling/
 
-# viper-specific scaling artifacts (ignore for now)
-figures/scaling_fp64_amd_data.csv
-scripts/submit_viper_apu_2gpu.sh
+# site-specific SLURM launchers stay local; the repo ships two examples in
+# submit/examples/ (one NVIDIA, one AMD)
+scripts/submit_*.sh
 scripts/validation/plots/fig3_ramses_analog.py
 scripts/validation/plots/shock_density_singles.py
 scripts/validation/plots/workflow_figs.py
@@ -83,3 +88,4 @@ scripts/movies/
 # redundant _amd figure variants (README uses the plain names)
 code_paper_figs/scaling_weak_fp64_amd.png
 code_paper_figs/scaling_strong_fp64_amd.png
+.claude/

@@ -1,14 +1,9 @@
 """Ghost-halo fill for blocks (dimension-generic).
 
-Same-level fill: each block's ``n_ghost``-wide face bands are copied from the
-opposite face of its same-level neighbour. Missing neighbours map to the NaN
-sentinel slot, so their bands come out NaN (to be overwritten later by the
-coarse-parent interpolation or a physical BC). Corner/edge ghost regions are
-left NaN — matching upstream JAX-AMR, whose sequential-concat fill also leaves
-corners invalid; the per-axis hydro stencils only need axis-aligned face ghosts.
-
-Coarse-parent fallback and physical-BC fill are layered on top of this in the
-Poisson/hydro grafting steps (DESIGN steps 3-4).
+Same-level face bands are copied from neighbours; missing neighbours resolve
+to the NaN sentinel, so their bands come out NaN for the coarse-parent or
+physical-BC fill layered on top. Corners with no source stay NaN (the per-axis
+hydro stencils never read them).
 """
 
 from __future__ import annotations
@@ -26,21 +21,9 @@ def _spatial_slices(ndim, per_axis):
 
 
 def fill_ghost_same_level(blk_data, neighbors, cfg):
-    """Fill same-level face ghosts.
-
-    Parameters
-    ----------
-    blk_data : (n_slots, n_vars, *block_shape)
-        Block field data; last slot is the NaN sentinel.
-    neighbors : (n_slots, 2*ndim) int
-        Face-neighbour slot ids from ``blocks.find_face_neighbors`` (order
-        ``[+d,-d]`` per axis). Missing -> NaN-sentinel slot.
-
-    Returns
-    -------
-    (n_slots, n_vars, *(block_shape + 2*n_ghost)) with interior set, face bands
-    filled from neighbours, corners NaN.
-    """
+    """Fill same-level face ghosts: ``blk_data`` (n_slots, n_vars, *block_shape)
+    -> (n_slots, n_vars, *(block_shape + 2*n_ghost)) with face bands gathered
+    from neighbours (order ``[+d, -d]`` per axis) and unfillable ghosts NaN."""
     g = cfg.n_ghost
     ndim = cfg.ndim
     bs = cfg.block_shape
@@ -92,20 +75,11 @@ _PAD_MODE = {0: "wrap", 1: "edge", 2: "edge"}
 
 
 def fill_ghost_physical(ghosted, blk_data, cfg, coords=None, level=0):
-    """Fill remaining NaN ghosts at the domain edge with a physical BC.
-
-    After the same-level and coarse-parent fills, the only ghosts still NaN are
-    domain-boundary faces/edges/corners of non-periodic runs (no same-level
-    neighbour, no coarse parent). LUNA's UNSPLIT MUSCL-Hancock reads these, so
-    leaving them NaN corrupts the boundary blocks (and, via NaN-through-limiter,
-    the interior). We fill them by zero-gradient extension of the ALREADY-FILLED
-    ghosted array, axis by axis (face ghosts extend the interior; edge/corner
-    ghosts then extend the neighbour-filled face ghosts) — exact outflow for
-    ``boundary==1`` and used as a Neumann approximation for reflective
-    (``boundary==2``; proper velocity sign flips are layered later). Periodic
-    runs (``boundary==0``) never reach a NaN domain ghost — their same-level
-    halo wraps — so this is a no-op there.
-    """
+    """Fill remaining NaN domain-edge ghosts by per-axis zero-gradient
+    extension of the already-filled ghosted array (outflow for ``boundary==1``,
+    Neumann approximation for reflective; no-op for periodic). ``coords``/
+    ``level`` restrict the fill to true domain-edge bands so it can run BEFORE
+    the coarse underlay."""
     if cfg.boundary == 0:
         return ghosted
     g = cfg.n_ghost
@@ -158,40 +132,11 @@ def fill_ghost_physical(ghosted, blk_data, cfg, coords=None, level=0):
 
 def fill_ghost_from_coarse(fine_ghosted, fine_coords, parent_field, level, cfg,
                            boundary=0):
-    """Fill remaining NaN ghosts of fine blocks from a prolonged coarse underlay.
-
-    After :func:`fill_ghost_same_level`, ghost cells with no same-level
-    neighbour are NaN (coarse-fine faces, corners, and domain edges). This fills
-    *all* of them at once from the parent (level ``level-1``) field:
-
-      1. pad ``parent_field`` with the physical BC (so edge patches and periodic
-         wrap are handled by the pad mode);
-      2. for each fine block, slice the coarse patch covering the block's
-         extended (block+ghost) footprint and prolong it by 2;
-      3. write the prolonged underlay only where ``fine_ghosted`` is NaN.
-
-    First cut: ``parent_field`` is a *dense* uniform field at level ``level-1``
-    (the natural representation for L=1, whose parent is the base grid). Deeper
-    levels reuse the identical interpolation with a gathered patch instead of a
-    dense slice (later optimisation).
-
-    Requires ``n_ghost`` even (ghost maps to a whole number of coarse cells).
-
-    Parameters
-    ----------
-    fine_ghosted : (n_slots, n_vars, *(block_shape+2*n_ghost))
-        Output of :func:`fill_ghost_same_level` (NaN where coarse fill needed).
-    fine_coords : (n_slots, ndim) int
-        Fine block integer coords at ``level``.
-    parent_field : (n_vars, *parent_grid)
-        Dense coarse field at ``level-1``.
-    boundary : int
-        LUNA boundary code (0 periodic, 1 Neumann, 2 reflective).
-
-    Returns
-    -------
-    (n_slots, n_vars, *(block_shape+2*n_ghost)) with NaN ghosts filled.
-    """
+    """Fill remaining NaN fine-block ghosts from a prolonged DENSE coarse
+    underlay ``parent_field`` (n_vars, *parent_grid at ``level-1``); the pad
+    mode encodes the physical BC (``boundary``: 0 periodic, 1 Neumann,
+    2 reflective). Requires even ``n_ghost``. Returns ``fine_ghosted`` with
+    NaN ghosts filled."""
     ndim = cfg.ndim
     g = cfg.n_ghost
     bs = cfg.block_shape
@@ -223,34 +168,11 @@ def fill_ghost_from_coarse(fine_ghosted, fine_coords, parent_field, level, cfg,
 
 def fill_ghost_from_coarse_sparse(fine_ghosted, fine_coords, parent_slots,
                                   coarse_ghosted, cfg, interp="const"):
-    """Sparse coarse-fine ghost fill: gather each fine block's coarse underlay
-    from its parent *block* (not a dense field) and prolong.
-
-    Unlike :func:`fill_ghost_from_coarse` (dense parent), this serves deeper
-    refinement levels whose parent level is itself block-structured. Each fine
-    block lives in one quadrant of its parent coarse block; the fine block's
-    extended (block + ghost) footprint, measured in coarse cells, fits inside the
-    parent's *ghosted* block (interior + ``n_ghost`` halo), because the overhang
-    past the parent boundary is at most ``n_ghost//2`` coarse cells <= the halo
-    width. So we slice that footprint straight from ``coarse_ghosted[parent]``,
-    prolong by 2, and fill the fine block's NaN ghosts.
-
-    Requires the coarse level's ghosts to be filled first (``coarse_ghosted`` =
-    output of the same-level + coarse-parent fill at the coarser level). Needs
-    even ``n_ghost``. Corner ghosts that trace back to the parent's own NaN
-    corners stay NaN — those fine corners are never read by the per-axis hydro.
-
-    Parameters
-    ----------
-    fine_ghosted : (n_fine, n_vars, *(block_shape + 2*n_ghost))
-        Fine blocks after same-level fill (NaN where coarse fill is needed).
-    fine_coords : (n_fine, ndim) int
-        Fine block coords at the fine level.
-    parent_slots : (n_fine,) int
-        Coarse slot of each fine block's parent (:func:`blocks.find_parent_slots`).
-    coarse_ghosted : (n_coarse, n_vars, *(block_shape + 2*n_ghost))
-        Ghost-filled coarse blocks (the parent level).
-    """
+    """Sparse coarse-fine ghost fill: gather each fine block's underlay from
+    its parent BLOCK (``coarse_ghosted``, which must already be ghost-filled)
+    and prolong. Needs even ``n_ghost``; corner ghosts tracing to parent NaN
+    corners stay NaN. ``interp="linear"`` gives a (tri)linear underlay for
+    smooth scalars; ``"const"`` (default) is the conservative hydro fill."""
     ndim = cfg.ndim
     g = cfg.n_ghost
     bs = cfg.block_shape

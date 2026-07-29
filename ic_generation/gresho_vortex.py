@@ -1,25 +1,8 @@
-"""Gresho vortex (Gresho & Chan 1990, low-Mach variant à la Miczek+ 2015).
+"""Gresho vortex, low-Mach variant. Ref: Gresho & Chan 1990; Miczek+ 2015.
 
-Steady-state rotating vortex on a periodic 2D box [0,1]^2, centered at
-(0.5, 0.5). Velocity is piecewise-linear in radius; pressure is set so the
-flow is centrifugally balanced. Density is uniform.
-
-Velocity profile:
-    v_phi(r) = 5 r                      for r < 0.2
-    v_phi(r) = 2 - 5 r                  for 0.2 <= r < 0.4
-    v_phi(r) = 0                        for r >= 0.4
-
-Pressure (centrifugally balanced, dp/dr = rho v_phi^2 / r):
-    p(r) = p0 + 12.5 r^2                                for r < 0.2
-    p(r) = p0 + 9 + 4 ln(5 r) + 12.5 r^2 - 20 r + 4     for 0.2 <= r < 0.4
-    p(r) = p0 + 3 + 4 ln 2                              for r >= 0.4
-
-with the baseline p0 chosen so the maximum Mach number M_max = u_max/c_s is
-the requested target (default M_max = 0.01 for deep low-Mach testing).
-
-Density is uniform rho = 1.
-
-Reads `cfg.gresho_Mmax` (defaults to 0.01) for the Mach scaling.
+Steady rotating vortex on a periodic 2D box: piecewise-linear v_phi(r),
+centrifugally balanced pressure, uniform rho = 1. Baseline p0 is set from
+cfg.gresho_Mmax (default 0.01) so u_max/c_s hits the requested Mach number.
 """
 
 import jax.numpy as jnp

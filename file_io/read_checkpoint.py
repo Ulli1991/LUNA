@@ -1,28 +1,12 @@
+"""Read HDF5 checkpoints for restart and locate the latest one."""
 import h5py
 import jax.numpy as jnp
 
 
 def read_checkpoint(checkpoint_filename):
-    """
-    Read a checkpoint file and return the complete simulation state for restart.
-
-    Parameters
-    ----------
-    checkpoint_filename : str
-        Path to the checkpoint file
-
-    Returns
-    -------
-    checkpoint_data : dict
-        Dictionary containing:
-        - 'U': Conserved variables (Nvar, Nx, Ny, Nz)
-        - 'time': Current simulation time
-        - 'step': Current step number
-        - 'grid': Dictionary with grid configuration (Nx, Ny, Nz, Lx, Ly, Lz, etc.)
-        - 'physics': Dictionary with physics parameters (gamma)
-        - 'numerics': Dictionary with numerical scheme parameters
-        - 'time_control': Dictionary with time control parameters
-    """
+    """Read a checkpoint file into a restart dict with keys 'U' (Nvar, Nx,
+    Ny, Nz), 'time', 'step', 'grid', 'physics', 'numerics', 'time_control',
+    and 'units' (None for pre-units checkpoints)."""
 
     with h5py.File(checkpoint_filename, "r") as f:
         # Read conserved variables
@@ -94,19 +78,8 @@ def read_checkpoint(checkpoint_filename):
 
 
 def find_latest_checkpoint(checkpoint_dir="checkpoints"):
-    """
-    Find the latest checkpoint file in the checkpoint directory.
-
-    Parameters
-    ----------
-    checkpoint_dir : str
-        Directory containing checkpoint files (default: "checkpoints")
-
-    Returns
-    -------
-    checkpoint_filename : str or None
-        Path to the latest checkpoint file, or None if no checkpoints found
-    """
+    """Return the newest checkpoint path (by mtime) in checkpoint_dir,
+    or None if there is none."""
     import os
     import glob
 

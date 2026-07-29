@@ -1,3 +1,5 @@
+"""Plot 1D profiles (density, v_x, pressure, internal energy) from HDF5
+snapshots; 2D/3D data is sliced through the domain center."""
 import os
 
 import h5py

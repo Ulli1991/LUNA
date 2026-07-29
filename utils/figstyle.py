@@ -1,29 +1,6 @@
-"""Shared paper-figure style for all LUNA validation / autodiff figures.
-
-One consistent look across every paper figure:
-  - tick LABELS and ticks point INWARD
-  - ticks on ALL FOUR sides (top + right too), with minor ticks
-  - a coarse (major-only) background grid
-  - frameless, large legends
-  - one canonical panel size so every figure has the same layout
-
-Usage in a plotting script:
-
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from utils.figstyle import apply_style, decorate, FIGSIZE
-
-    apply_style()
-    fig, ax = plt.subplots(figsize=FIGSIZE)
-    ax.plot(...)
-    ax.legend()          # picks up frameless / large style
-    decorate(ax)         # 4-side inward ticks + coarse grid (belt & suspenders)
-    fig.tight_layout()
-    fig.savefig(...)
-
-`decorate(ax)` is idempotent and also fixes axes created before apply_style()
-(e.g. twin / secondary axes, or panels in a pre-existing figure).
+"""Shared paper-figure style for LUNA figures: call apply_style() before
+plotting, then decorate(ax) per axes (idempotent; also fixes twin/secondary
+axes created before apply_style()). Figures carry NO titles — captions only.
 """
 import matplotlib as mpl
 

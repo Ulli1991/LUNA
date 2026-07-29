@@ -1,33 +1,10 @@
 """Self-gravity on the block-AMR hierarchy: level-by-level Dirichlet multigrid.
 
-Per amr/DESIGN.md decision 6 (RAMSES / Guillet-Teyssier layout):
-
-  * Level 0 tiles the domain, so its Poisson problem IS the dense one --
-    solved exactly by LUNA's validated FMG (gravity.poisson_multigrid).
-  * Each refined level solves its own Poisson problem on the level's block
-    union with Dirichlet boundary values prolonged from the parent level's
-    phi, using PER-LEVEL V-CYCLES: the level is coarsened WITHIN blocks
-    (block_shape 16 -> 8 -> 4 -> 2; the block topology -- coords, neighbours,
-    sentinel -- is depth-invariant), and the coarse depths solve the ERROR
-    equation with homogeneous Dirichlet ghosts (zero at coarse-fine and
-    domain boundaries, standard correction scheme). Pre/post smoothing at
-    depth 0 uses the real Dirichlet ghosts. Red-black Gauss-Seidel is the
-    smoother throughout, with ghosts re-exchanged before every half-sweep so
-    the level relaxes as one coupled domain.
-
-    Plain relaxation alone stalls on smooth error when the refined region is
-    large (the cosmo-halo regime); the within-block V-cycle restores fast
-    convergence there while reusing only existing primitives
-    (geometry.restrict/prolong, the halo fills).
-
-The kick mirrors sources/self_gravity.py exactly: g = -central-diff(phi),
-momentum rho*v += dt * rho * g, energy E += dt * (rho*v)_mid . g  with the
-time-centred momentum. After the per-level kick, fine results are restricted
-into the parent (fine authoritative), matching the hydro advance convention.
-
-Everything is static-shape / fixed-iteration -> jit- and scan-compatible.
-The force-conserving Martin-Colella composite stays implementable on these
-same primitives later (DESIGN.md keeps that door open).
+Level 0 is solved densely by the validated FMG; each refined level solves on
+its block union with Dirichlet ghosts prolonged from the parent phi, via
+within-block V-cycles (RBGS smoother; homogeneous-Dirichlet error equation at
+coarser depths). The kick mirrors sources/self_gravity, then fine results are
+restricted into the parent. All static-shape / fixed-iteration -> jit-safe.
 """
 
 from __future__ import annotations
@@ -198,88 +175,50 @@ def _init_phi_from_parent(lvl, coarse_ghosted, cfg):
 def solve_phi_hierarchy(levels, cfg, *, fourpiG, boundary, n_vcycles=3,
                         n_pre=4, n_post=4, n_coarse=12, fmg_kwargs=None,
                         rho_blocks=None):
-    """Solve Poisson on the whole hierarchy. Returns per-level phi blocks
-    ``(n_slots, 1, *block_shape)`` (sentinel slots NaN).
-
-    Level 0: dense FMG on the assembled base grid (exact, validated solver).
-    Level L>0: ``n_vcycles`` within-block V-cycles with Dirichlet ghosts from
-    level L-1's phi. Periodic domains use the standard Jeans-swindle source
-    (rho - <rho>), with <rho> taken once from level 0 (mass conservation
-    keeps it exact).
-
-    ``rho_blocks`` (optional, per-level list of (n_slots, 1, *bs)): explicit
-    source density -- e.g. gas + deposited DM for the coupled cosmological
-    step. Default: the hierarchy's own gas density (levels[L].data[:, 0:1])."""
-    from gravity.poisson_multigrid import solve_poisson_fmg
-
+    """Solve Poisson on the whole hierarchy (:func:`solve_phi_level` per level:
+    L0 dense FMG, L>0 Dirichlet V-cycles from the parent's phi). Periodic
+    domains use the Jeans-swindle source rho - <rho>, <rho> taken once from
+    level 0. ``rho_blocks`` (optional, per level) overrides the gravitating
+    density (e.g. gas + deposited DM). Returns per-level phi blocks
+    ``(n_slots, 1, *block_shape)`` (sentinel slots NaN)."""
     ndim = cfg.ndim
     n_base = 1
     for d in range(ndim):
         n_base *= cfg.base_blocks[d]
 
-    # ---- level 0: dense solve ----
     src0 = rho_blocks[0] if rho_blocks is not None else levels[0].data[:, 0:1]
     rho0 = assemble_base_level(src0[:n_base], cfg)[0]
-    dx0 = cfg.level_dx(0)[0]
     # Jeans-swindle: the low-level FMG does NOT subtract the mean (the dense
     # self-gravity caller does it) -- an un-subtracted periodic source is
     # insolvable and produces unbounded phi.
     mean_rho = jnp.mean(rho0) if boundary == 0 else 0.0
-    phi0 = solve_poisson_fmg(rho0 - mean_rho, dx0, fourpiG, boundary,
-                             **(fmg_kwargs or {}))
-    phi0_blocks = partition_to_blocks(phi0[None], cfg)          # (n_base, 1, *bs)
-    n_slots0 = levels[0].data.shape[0]
-    if n_slots0 > n_base:                                        # pad + sentinel
-        pad = jnp.full((n_slots0 - n_base,) + phi0_blocks.shape[1:], jnp.nan,
-                       dtype=phi0_blocks.dtype)
-        phi0_blocks = jnp.concatenate([phi0_blocks, pad], axis=0)
-
-    phis = [phi0_blocks]
-    coarse_ghosted = _ghost_phi(phi0_blocks, levels[0], None, cfg)
+    phis = [solve_phi_level(levels[0], None, cfg, fourpiG=fourpiG,
+                            boundary=boundary, mean_rho=mean_rho, level=0,
+                            src=src0, fmg_kwargs=fmg_kwargs)]
+    coarse_ghosted = _ghost_phi(phis[0], levels[0], None, cfg)
     for L in range(1, len(levels)):
         lvl = levels[L]
-        phi = _init_phi_from_parent(lvl, coarse_ghosted, cfg)
-        srcL = rho_blocks[L] if rho_blocks is not None else lvl.data[:, 0:1]
-        rhs = fourpiG * (srcL - mean_rho)
-        for _ in range(n_vcycles):
-            phi = _vcycle_phi(phi, rhs, lvl, coarse_ghosted, cfg, L,
-                              n_pre, n_post, n_coarse)
-        phis.append(phi)
+        srcL = rho_blocks[L] if rho_blocks is not None else None
+        phis.append(solve_phi_level(lvl, coarse_ghosted, cfg, fourpiG=fourpiG,
+                                    boundary=boundary, mean_rho=mean_rho,
+                                    level=L, src=srcL, n_vcycles=n_vcycles,
+                                    n_pre=n_pre, n_post=n_post,
+                                    n_coarse=n_coarse))
         if L + 1 < len(levels):
-            coarse_ghosted = _ghost_phi(phi, lvl, coarse_ghosted, cfg)
+            coarse_ghosted = _ghost_phi(phis[L], lvl, coarse_ghosted, cfg)
     return phis
 
 
 def apply_gravity_kick(levels, phis, dt, cfg):
-    """Operator-split gravity kick on every level (mirrors sources/self_gravity):
-    g = -central-diff(phi);  m += dt*rho*g;  E += dt * m_mid . g.  Fine results
-    are then restricted into the parent (fine authoritative), like the hydro
-    advance."""
+    """Operator-split gravity kick on every level (:func:`kick_level`); fine
+    results are then restricted into the parent (fine authoritative), like the
+    hydro advance."""
     from amr.driver import _restrict_into_parent
-
-    ndim = cfg.ndim
-    g = cfg.n_ghost
-    bs = cfg.block_shape
 
     new_data = []
     coarse_ghosted = None
     for L, (lvl, phi) in enumerate(zip(levels, phis)):
-        gw = _ghost_phi(phi, lvl, coarse_ghosted, cfg)
-        dx = cfg.level_dx(L)
-        U = lvl.data
-        rho = U[:, 0:1]
-        mom = U[:, 1:1 + ndim]
-        E = U[:, ndim + 1:ndim + 2]
-        gvec = []
-        for d in range(ndim):
-            inv_2dx = 0.5 / dx[d]
-            gvec.append(-(_shift(gw, d, +1, ndim, g, bs)
-                          - _shift(gw, d, -1, ndim, g, bs)) * inv_2dx)
-        gvec = jnp.concatenate(gvec, axis=1)                     # (n, ndim, *bs)
-        new_mom = mom + dt * rho * gvec
-        mom_mid = 0.5 * (mom + new_mom)
-        new_E = E + dt * jnp.sum(mom_mid * gvec, axis=1, keepdims=True)
-        new_data.append(jnp.concatenate([rho, new_mom, new_E], axis=1))
+        new_data.append(kick_level(lvl, phi, coarse_ghosted, dt, L, cfg))
         if L + 1 < len(levels):
             coarse_ghosted = _ghost_phi(phi, lvl, coarse_ghosted, cfg)
 
@@ -293,15 +232,12 @@ def apply_gravity_kick(levels, phis, dt, cfg):
 def solve_phi_level(lvl, coarse_ghosted, cfg, *, fourpiG, boundary, mean_rho,
                     level, src=None, n_vcycles=3, n_pre=4, n_post=4,
                     n_coarse=12, fmg_kwargs=None):
-    """Solve Poisson for ONE level, the subcycling primitive (Berger-Oliger).
-
-    Level 0: dense FMG on the assembled base grid (exact). Level L>0: within-block
-    V-cycles with Dirichlet ghosts from the parent's already-ghosted phi
-    (``coarse_ghosted``). ``mean_rho`` is the Jeans-swindle subtraction (base-level
-    mean, threaded in so it is identical across all sub-steps); pass 0 for the
-    isolated/boundary!=0 case. ``src`` overrides the gravitating density (gas +
-    deposited DM for the coupled step); default is the level's own gas density.
-    Extracted verbatim from :func:`solve_phi_hierarchy` so the two paths agree."""
+    """Solve Poisson for ONE level -- the subcycling primitive, and the per-level
+    body of :func:`solve_phi_hierarchy`. Level 0: dense FMG on the assembled base
+    grid; L>0: within-block V-cycles with Dirichlet ghosts from the parent's
+    ghosted phi (``coarse_ghosted``). ``mean_rho`` is the Jeans-swindle
+    subtraction (base-level mean; 0 for boundary != 0); ``src`` overrides the
+    gravitating density (default: the level's own gas density)."""
     from gravity.poisson_multigrid import solve_poisson_fmg
 
     ndim = cfg.ndim
@@ -331,8 +267,9 @@ def solve_phi_level(lvl, coarse_ghosted, cfg, *, fourpiG, boundary, mean_rho,
 
 def kick_level(lvl, phi, coarse_ghosted, dt, level, cfg):
     """Operator-split gravity kick on ONE level (no restrict -- the subcycle
-    recursion owns fine->coarse restriction). Body identical to the per-level
-    loop in :func:`apply_gravity_kick`; returns the kicked conserved data."""
+    recursion owns fine->coarse restriction): g = -central-diff(phi);
+    m += dt*rho*g; E += dt * m_mid . g. Also the per-level body of
+    :func:`apply_gravity_kick`; returns the kicked conserved data."""
     ndim = cfg.ndim
     g = cfg.n_ghost
     bs = cfg.block_shape

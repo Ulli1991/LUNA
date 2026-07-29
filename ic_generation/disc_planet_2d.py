@@ -1,19 +1,9 @@
-"""2D disc-planet interaction IC (de Val-Borro et al. 2006 / GANDALF §6.11).
+"""2D disc-planet interaction IC. Ref: de Val-Borro et al. 2006.
 
-A gas disc in rotational balance with the central star's *softened* point-mass
-potential. The star (mass M⋆) and the q=10⁻³ planet on a fixed circular orbit at
-radius a live in the particle module (sources/particles.py) — this IC only lays
-down the gas. Over a few tens of orbits the planet opens a gap.
-
-The disc is GLOBALLY isothermal (P = isothermal_cs2 · Σ; LUNA has no spatially
-varying cs² yet, so H/R flares outward — adequate for a gap-opening demo, not the
-locally-isothermal benchmark). Surface density Σ ∝ R^-index, smoothly tapered to
-an ambient floor between disc_R_in and disc_R_out. The azimuthal velocity uses
-the softened gravity plus the standard sub-Keplerian pressure correction so the
-disc starts in (near) equilibrium with the same softening the particle module
-applies.
-
-2D: the conservative state is [Σ, Σ v_x, Σ v_y, E].
+Gas disc in rotational balance with the star's softened potential; star and
+planet live in the particle module (sources/particles.py) — this IC only lays
+down the gas. Requires isothermal_cs2 > 0 (globally isothermal, not the
+locally-isothermal benchmark). State is [Σ, Σ v_x, Σ v_y, E].
 """
 import jax.numpy as jnp
 

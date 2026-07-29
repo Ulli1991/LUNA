@@ -1,13 +1,8 @@
-"""Solver-in-the-loop ML flux corrector as an in-loop source term.
-
-A small CNN emits face fluxes whose discrete divergence corrects the coarse
-finite-volume update each step (conservative by construction). The network
-WEIGHTS are the differentiated parameter (theta) for the autodiff
-"corrector_training" task — the orchestrator trains them through the
-production solver, reverse-mode, with gradients flowing through the unrolled
-rollout (Um et al. 2020, solver-in-the-loop).
-
-2D (Kelvin-Helmholtz). State is (4, N, N) conserved [rho, rho vx, rho vy, E].
+"""Solver-in-the-loop ML flux corrector: a small CNN emits face fluxes whose
+discrete divergence corrects the coarse finite-volume update each step
+(conservative by construction). The network WEIGHTS are the differentiated
+theta for the autodiff "corrector_training" task. 2D only; state is
+(4, N, N) conserved [rho, rho vx, rho vy, E].
 """
 import jax
 import jax.numpy as jnp
@@ -25,11 +20,13 @@ def pool_factor(U, f):
 
 
 def adam_init(p):
+    """Zero-initialized Adam state dict {m, v, t} matching the param pytree."""
     z = jax.tree.map(jnp.zeros_like, p)
     return dict(m=z, v=jax.tree.map(jnp.zeros_like, p), t=0)
 
 
 def adam_step(g, p, s, lr, b1=0.9, b2=0.999, eps=1e-8):
+    """One Adam update; returns (new_params, new_state)."""
     t = s["t"] + 1
     m = jax.tree.map(lambda m_, g_: b1 * m_ + (1 - b1) * g_, s["m"], g)
     v = jax.tree.map(lambda v_, g_: b2 * v_ + (1 - b2) * g_ * g_, s["v"], g)
@@ -41,6 +38,7 @@ def adam_step(g, p, s, lr, b1=0.9, b2=0.999, eps=1e-8):
 
 
 def cnn_init(key):
+    """He-init CNN params [(W, b), ...]; last layer zero-init (starts as pure solver)."""
     params = []
     for i, (cin, cout) in enumerate(zip(CHANNELS[:-1], CHANNELS[1:])):
         key, k = jax.random.split(key)

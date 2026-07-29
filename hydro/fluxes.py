@@ -1,13 +1,5 @@
-"""
-HLLC Riemann solver that takes PRIMITIVE variables as input.
-
-This eliminates the redundant cons→prim conversion that happens when
-reconstructing primitives but then converting back to conservatives
-just to convert to primitives again inside the Riemann solver.
-
-OPTIMIZATION: Saves one prim↔cons conversion per flux evaluation.
-Expected speedup: ~5-8%
-"""
+"""HLLC (and HLL) Riemann solvers taking PRIMITIVE inputs and returning
+CONSERVATIVE fluxes (avoids a redundant prim<->cons round-trip)."""
 
 from functools import partial
 
@@ -15,21 +7,60 @@ import jax
 import jax.numpy as jnp
 
 
+# ---------------------------------------------------------------------------
+# Shared (normal, transverse) frame scaffold — used by the HLLC wrappers here
+# and by the L-HLLC wrappers in hydro/fluxes_lhllc.py.
+# ---------------------------------------------------------------------------
+def rotate_primitive_pair(W_L, W_R, axis):
+    """Map L/R primitive stacks (1D/2D/3D layout) onto the (normal,
+    transverse) frame of the ``*_core`` solvers. Returns their ten
+    positional arguments ``(rho_L, rho_R, vn_L, vn_R, P_L, P_R, vt1_L,
+    vt1_R, vt2_L, vt2_R)``, zero-padding transverse velocities missing in
+    1D/2D."""
+    ndim = W_L.shape[0] - 2
+    rho_L, rho_R = W_L[0], W_R[0]
+    P_L, P_R = W_L[ndim + 1], W_R[ndim + 1]
+    z = jnp.zeros_like(rho_L)
+    order = [axis] + [k for k in range(ndim) if k != axis]
+    v_L = [W_L[1 + k] for k in order] + [z] * (3 - ndim)
+    v_R = [W_R[1 + k] for k in order] + [z] * (3 - ndim)
+    return (rho_L, rho_R, v_L[0], v_R[0], P_L, P_R,
+            v_L[1], v_R[1], v_L[2], v_R[2])
+
+
+def unrotate_flux(F_rho, F_mn, F_mt1, F_mt2, F_E, *, axis, ndim):
+    """Stack (normal, transverse) core flux components back into the input
+    variable order ``(rho, momenta..., E)`` for the given axis."""
+    if ndim == 1:
+        return jnp.stack([F_rho, F_mn, F_E])
+    F_t = (F_mt1, F_mt2)
+    mom = []
+    t = 0
+    for k in range(ndim):
+        if k == axis:
+            mom.append(F_mn)
+        else:
+            mom.append(F_t[t])
+            t += 1
+    return jnp.stack([F_rho, *mom, F_E])
+
+
+def solve_in_normal_frame(core, W_L, W_R, axis, gamma):
+    """Rotate face states into the normal frame, run ``core``, un-rotate the
+    flux. ``core`` returns five components (tuple or stacked array)."""
+    ndim = W_L.shape[0] - 2
+    if ndim == 1:
+        axis = 0  # 1D: axis argument is ignored (signature compat)
+    F = core(*rotate_primitive_pair(W_L, W_R, axis), gamma)
+    return unrotate_flux(*F, axis=axis, ndim=ndim)
+
+
 def _hllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R,
                vt1_L, vt1_R, vt2_L, vt2_R, gamma):
-    """Core HLLC flux in (normal, transverse) coordinates.
-
-    Returns the five conservative flux components
-    ``(F_rho, F_mn, F_mt1, F_mt2, F_E)`` where ``F_mn`` is the NORMAL-momentum
-    flux and ``F_mt1/F_mt2`` the transverse ones. The 1D/2D/3D wrappers below
-    map array axes onto (normal, transverse) and pad the unused transverse
-    velocities with zeros, exactly as the L-HLLC solver does.
-
-    Memory-friendly (per-component ``jnp.where``, no stacked intermediates) and
-    autodiff-safe (every division is guarded away from exact zero, so the VJP
-    of the unselected branch cannot pull out a NaN; guarded faces are never
-    selected, so forward results are unchanged).
-    """
+    """Core HLLC flux in (normal, transverse) coordinates: returns
+    ``(F_rho, F_mn, F_mt1, F_mt2, F_E)`` with ``F_mn`` the normal-momentum
+    flux. Autodiff-safe: every division is guarded away from exact zero so
+    the VJP of unselected branches cannot pull out a NaN."""
     gm1 = gamma - 1.0
     c_L = jnp.sqrt(gamma * P_L / rho_L)
     c_R = jnp.sqrt(gamma * P_R / rho_R)
@@ -78,97 +109,38 @@ def _hllc_core(rho_L, rho_R, vn_L, vn_R, P_L, P_R,
 
 def hllc_flux_primitive_1d(W_L, W_R, axis, gamma):
     """HLLC flux, 1D Euler. W = [rho, vx, P]; returns conservative flux."""
-    rho_L, vx_L, P_L = W_L
-    rho_R, vx_R, P_R = W_R
-    z = jnp.zeros_like(rho_L)
-    F_rho, F_mn, _, _, F_E = _hllc_core(
-        rho_L, rho_R, vx_L, vx_R, P_L, P_R, z, z, z, z, gamma)
-    return jnp.stack([F_rho, F_mn, F_E])
+    return solve_in_normal_frame(_hllc_core, W_L, W_R, axis, gamma)
 
 
 def hllc_flux_primitive_2d(W_L, W_R, axis, gamma):
     """HLLC flux, 2D Euler. W = [rho, vx, vy, P]; axis 0->x, 1->y."""
-    rho_L, vx_L, vy_L, P_L = W_L
-    rho_R, vx_R, vy_R, P_R = W_R
-    z = jnp.zeros_like(rho_L)
-    if axis == 0:                       # normal = x, transverse = y
-        F_rho, F_mn, F_mt, _, F_E = _hllc_core(
-            rho_L, rho_R, vx_L, vx_R, P_L, P_R, vy_L, vy_R, z, z, gamma)
-        return jnp.stack([F_rho, F_mn, F_mt, F_E])
-    else:                               # normal = y, transverse = x
-        F_rho, F_mn, F_mt, _, F_E = _hllc_core(
-            rho_L, rho_R, vy_L, vy_R, P_L, P_R, vx_L, vx_R, z, z, gamma)
-        return jnp.stack([F_rho, F_mt, F_mn, F_E])
+    return solve_in_normal_frame(_hllc_core, W_L, W_R, axis, gamma)
 
 
 def hllc_flux_primitive_3d(W_L, W_R, axis, gamma):
     """HLLC flux, 3D Euler. W = [rho, vx, vy, vz, P]; axis 0->x, 1->y, 2->z."""
-    rho_L, vx_L, vy_L, vz_L, P_L = W_L
-    rho_R, vx_R, vy_R, vz_R, P_R = W_R
-    if axis == 0:                       # normal = x, transverse = y, z
-        F_rho, F_mn, F_t1, F_t2, F_E = _hllc_core(
-            rho_L, rho_R, vx_L, vx_R, P_L, P_R, vy_L, vy_R, vz_L, vz_R, gamma)
-        return jnp.stack([F_rho, F_mn, F_t1, F_t2, F_E])
-    elif axis == 1:                     # normal = y, transverse = x, z
-        F_rho, F_mn, F_t1, F_t2, F_E = _hllc_core(
-            rho_L, rho_R, vy_L, vy_R, P_L, P_R, vx_L, vx_R, vz_L, vz_R, gamma)
-        return jnp.stack([F_rho, F_t1, F_mn, F_t2, F_E])
-    else:                               # normal = z, transverse = x, y
-        F_rho, F_mn, F_t1, F_t2, F_E = _hllc_core(
-            rho_L, rho_R, vz_L, vz_R, P_L, P_R, vx_L, vx_R, vy_L, vy_R, gamma)
-        return jnp.stack([F_rho, F_t1, F_t2, F_mn, F_E])
+    return solve_in_normal_frame(_hllc_core, W_L, W_R, axis, gamma)
 
 
 # Dispatcher
 @partial(jax.jit, static_argnums=(2, 3))
 def hllc_flux_primitive(W_L, W_R, axis, gamma):
-    """
-    HLLC Riemann solver dispatcher for PRIMITIVE variables.
-
-    Automatically selects 1D or 2D version based on input shape.
-
-    Parameters
-    ----------
-    W_L, W_R : array
-        Left and right PRIMITIVE states
-        1D: (3, Nx) = [rho, vx, P]
-        2D: (4, Nx, Ny) = [rho, vx, vy, P]
-    axis : int (static)
-        Flux direction
-    gamma : float
-        Ratio of specific heats
-
-    Returns
-    -------
-    flux : array
-        HLLC flux in CONSERVATIVE form (same shape as W_L)
-    """
+    """HLLC dispatcher: selects the 1D/2D/3D solver from the variable count
+    of the PRIMITIVE states W_L/W_R; returns the CONSERVATIVE flux
+    (same shape as W_L). ``axis`` is the static flux direction."""
     Nvar = W_L.shape[0]
-
-    if Nvar == 3:
-        return hllc_flux_primitive_1d(W_L, W_R, axis, gamma)
-    elif Nvar == 4:
-        return hllc_flux_primitive_2d(W_L, W_R, axis, gamma)
-    elif Nvar == 5:
-        return hllc_flux_primitive_3d(W_L, W_R, axis, gamma)
-    else:
+    if Nvar not in (3, 4, 5):
         raise ValueError(
             f"hllc_flux_primitive only supports 1D (3), 2D (4), or 3D (5) vars, got {Nvar}"
         )
+    return solve_in_normal_frame(_hllc_core, W_L, W_R, axis, gamma)
 
 
 def hll_flux_primitive_3d(W_L, W_R, axis, gamma):
-    """HLL Riemann solver for 3D Euler — PRIMITIVE inputs, conservative flux.
-
-    Two-wave solver: no contact wave, so the contact/shear field is smeared
-    relative to HLLC. That extra dissipation is exactly what suppresses the
-    grid-aligned (carbuncle-type) instability in strong, grid-aligned
-    collapse flows. Use as a diagnostic alternative or hybrid fallback.
-
-        F_HLL = F_L                              if S_L ≥ 0
-              = F_R                              if S_R ≤ 0
-              = (S_R F_L − S_L F_R + S_L S_R (U_R − U_L)) / (S_R − S_L)
-    """
+    """Two-wave HLL solver for 3D Euler (PRIMITIVE inputs, conservative flux):
+    F = (S_R F_L − S_L F_R + S_L S_R (U_R − U_L)) / (S_R − S_L) between the
+    waves. More dissipative than HLLC (no contact wave) — suppresses
+    carbuncle-type instabilities."""
     rho_L, vx_L, vy_L, vz_L, P_L = W_L
     rho_R, vx_R, vy_R, vz_R, P_R = W_R
     gm1 = gamma - 1.0

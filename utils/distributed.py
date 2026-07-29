@@ -13,26 +13,9 @@ from jax.sharding import PartitionSpec as P
 
 
 def compute_local_slice(Nx, Ny, mesh, process_index, Nz=1):
-    """
-    Compute which slice of the global array this process should generate.
+    """Compute this process's slice of the global (Nx, Ny, Nz) grid.
 
-    Parameters
-    ----------
-    Nx, Ny : int
-        Global grid dimensions
-    mesh : Mesh
-        JAX mesh object
-    process_index : int
-        Current process index
-    Nz : int, optional
-        Z dimension (default 1 for 1D/2D problems)
-
-    Returns
-    -------
-    x_slice, y_slice : tuple of (start, end)
-        Slice indices for this process (for 1D/2D)
-    x_slice, y_slice, z_slice : tuple of (start, end)
-        Slice indices for this process (for 3D)
+    Returns ((x0, x1), (y0, y1), (z0, z1)) start/end index pairs.
     """
     # Get grid shape as integers from mesh
     # mesh.shape is a dict with axis names, mesh.devices.shape gives actual dimensions
@@ -92,34 +75,11 @@ def compute_local_slice(Nx, Ny, mesh, process_index, Nz=1):
 def create_device_mesh(
     n_devices, spatial_dimension, decomposition="auto", Nx=None, Ny=None, mesh_shape=None
 ):
-    """
-    Create device mesh for the given number of devices with configurable decomposition.
+    """Create a JAX device mesh; returns (mesh, grid_shape).
 
-    Parameters
-    ----------
-    n_devices : int
-        Total number of devices
-    spatial_dimension : int
-        1, 2, or 3
-    decomposition : str, optional
-        Decomposition strategy: "auto", "slab", or "block"
-        - "auto": Choose automatically based on heuristics
-        - "slab": 1D decomposition (minimizes messages)
-        - "block": 2D/3D decomposition (minimizes surface area)
-    Nx, Ny : int, optional
-        Grid dimensions (used for auto heuristic)
-    mesh_shape : tuple, optional
-        AthenaK-style explicit per-direction process grid. When supplied,
-        bypasses the heuristic above: the mesh is built from this tuple
-        directly. Length must match spatial_dimension and the product must
-        equal n_devices.
-
-    Returns
-    -------
-    mesh : Mesh
-        JAX mesh object
-    grid_shape : tuple
-        Process grid shape
+    decomposition: "auto" (heuristic), "slab" (1D), or "block" (2D/3D).
+    mesh_shape, if given, bypasses the heuristic: explicit per-axis process
+    grid whose length must match spatial_dimension and product n_devices.
     """
     # Explicit mesh shape (AthenaK-style): user picks the per-axis decomposition.
     if mesh_shape is not None:
@@ -241,26 +201,8 @@ def create_device_mesh(
 
 
 def create_sharded_array_from_local(U_local, global_shape, mesh, spatial_dimension):
-    """
-    Create a sharded JAX array from local arrays (one per process).
-    Avoids the expensive global array creation and verification.
-
-    Parameters
-    ----------
-    U_local : array
-        Local portion of the array for this process
-    global_shape : tuple
-        Shape of the full global array
-    mesh : Mesh
-        JAX mesh object
-    spatial_dimension : int
-        1 or 2
-
-    Returns
-    -------
-    U_sharded : array
-        Globally sharded array
-    """
+    """Build a globally sharded array from each process's local block,
+    avoiding materializing the full global array."""
     # Create sharding spec
     if spatial_dimension == 1:
         sharding = NamedSharding(mesh, P(None, "x"))
@@ -283,23 +225,7 @@ def create_sharded_array_from_local(U_local, global_shape, mesh, spatial_dimensi
 
 
 def shard_array_to_devices(U_global, mesh, spatial_dimension):
-    """
-    Shard a global array across devices according to the mesh.
-
-    Parameters
-    ----------
-    U_global : array (Nvar, Nx, Ny, Nz)
-        Global array
-    mesh : Mesh
-        Device mesh
-    spatial_dimension : int
-        Spatial dimension
-
-    Returns
-    -------
-    U_sharded : array
-        Sharded array distributed across devices
-    """
+    """Shard a global (Nvar, Nx, Ny, Nz) array across devices per the mesh."""
     if spatial_dimension == 1:
         sharding = NamedSharding(mesh, P(None, "x"))
     elif spatial_dimension == 2:
@@ -314,21 +240,9 @@ def shard_array_to_devices(U_global, mesh, spatial_dimension):
 
 
 def gather_array_from_devices(U_sharded):
-    """
-    Gather a sharded array back to a global array across all processes.
+    """Gather a sharded array into a global array replicated on all processes.
 
-    All processes must call this function (collective operation).
-    The result will be available on all processes.
-
-    Parameters
-    ----------
-    U_sharded : sharded array
-        Distributed array
-
-    Returns
-    -------
-    U_global : array
-        Global array (replicated on all processes)
+    Collective operation — MUST be called on all processes.
     """
     # Use process_allgather to properly gather data across multiple processes
     # This is a collective operation - all processes must participate

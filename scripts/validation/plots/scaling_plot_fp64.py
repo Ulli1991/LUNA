@@ -1,25 +1,10 @@
-"""FP64 scaling: LUNA (shard_map) vs AthenaK (RK2), 3D Sedov blast.
+"""FP64 scaling figure: LUNA (shard_map) vs AthenaK (RK2), 3D Sedov, A100 + MI300A.
 
-Matched double precision (the only comparison we report). Fair 2nd-order:
-both PLM + HLLC + 2nd-order time (LUNA MUSCL-Hancock, AthenaK RK2). Metric:
-aggregate Giga cell-updates / second.
-
-  LUNA    : per-step "perf = X Mcells/s" from the runner log, median over
-            steady-state steps (skip the JIT-compile-tainted warmup steps).
-            NOT the "Average performance (global grid)" line, which divides
-            total cells by the whole runtime incl. ~20 s compile.
-  AthenaK : "zone-cycles/cpu_second" reported at end of the main loop.
-
-Two hardware platforms are overlaid:
-  * A100  (NVIDIA, Raven) — reference numbers cached in
-            figures/scaling_fp64_data.csv (original slurm_logs live on Raven).
-  * MI300A (AMD, viper)   — parsed live from the viper run dirs:
-            LUNA    -> scaling/runs/<label>/slurm.out.*
-            AthenaK -> athenak/viper_run/runs/<label>/slurm.out.*
-
-Missing configs (crashed / not-yet-run) are simply skipped, so the figure
-fills in as points land.
-"""
+LUNA metric = median per-step "perf = X Mcells/s" over steady-state steps --
+NOT the "Average performance" line (that includes JIT compile). AthenaK =
+end-of-loop zone-cycles/cpu_second. A100 numbers from
+code_paper_figs/scaling_fp64_data.csv; MI300A parsed live from scaling/runs/<label>/.
+Missing configs are skipped, so the figure fills in as points land."""
 import glob
 import os
 import re
@@ -78,12 +63,12 @@ def _ak_zonecyc(logfile):
 
 # ---------------------------------------------------------------------------
 # A100 (Raven) — reference. slurm_logs live on Raven; fall back to the cached
-# CSV (figures/scaling_fp64_data.csv) which is what persists on viper.
+# CSV (code_paper_figs/scaling_fp64_data.csv) which is what persists on viper.
 # ---------------------------------------------------------------------------
 def a100_ref():
     """Return {(test, nx, gpu): (luna_Gcells, ak_Gcells)} from the cached CSV."""
     out = {}
-    path = "figures/scaling_fp64_data.csv"
+    path = "code_paper_figs/scaling_fp64_data.csv"
     if not os.path.exists(path):
         return out
     for ln in open(path):
@@ -131,7 +116,7 @@ AMD_AK_DIR = {
 # on Raven), read the AMD points from the snapshot CSV instead.
 def _amd_csv():
     out = {}
-    path = "figures/scaling_fp64_amd_data.csv"
+    path = "code_paper_figs/scaling_fp64_amd_data.csv"
     if not os.path.exists(path):
         return out
     for ln in open(path):
@@ -195,7 +180,7 @@ def main():
 
     os.makedirs("figures", exist_ok=True)
     os.makedirs("code_paper_figs", exist_ok=True)
-    with open("figures/scaling_fp64_amd_data.csv", "w") as fh:
+    with open("code_paper_figs/scaling_fp64_amd_data.csv", "w") as fh:
         fh.write("test,Nx,GPUs,LUNA_MI300A,AthenaK_MI300A,LUNA_A100,AthenaK_A100\n")
         for tag, rows in (("weak", weak), ("strong", strong), ("weak_sat", weak_sat)):
             for nx, gpu, lA, aA, l1, a1 in rows:

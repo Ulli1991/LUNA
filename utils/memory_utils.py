@@ -9,17 +9,8 @@ import jax
 
 
 def get_memory_usage():
-    """
-    Get current memory usage in GB across all devices.
-    Returns GPU memory if available, otherwise system memory.
-
-    Returns
-    -------
-    per_device_gb : list of float or None
-        Memory usage per device in GB
-    total_gb : float or None
-        Total memory usage across all devices in GB
-    """
+    """Return (per_device_gb, total_gb) memory usage; GPU memory if
+    available, else process RSS; (None, None) if untrackable."""
     try:
         # Try to get GPU memory usage (only local/addressable devices)
         devices = jax.local_devices()
@@ -56,14 +47,7 @@ def get_memory_usage():
 
 
 def print_memory_usage(label=""):
-    """
-    Print current memory usage with optional label.
-
-    Parameters
-    ----------
-    label : str
-        Optional prefix label for the output
-    """
+    """Print current memory usage with an optional prefix label."""
     per_device, total = get_memory_usage()
     if per_device is not None and total is not None:
         if len(per_device) > 1:

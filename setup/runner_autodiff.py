@@ -1,26 +1,9 @@
-"""Autodiffable distributed runner — the differentiable counterpart to
-run_simulation_distributed, selected by cfg.autodiff_mode in main.run.
-
-It reuses the SAME setup (mesh / IC / step_fn from create_solver_distributed)
-and the SAME source `apply` machinery (cc85, external gravity, self-gravity,
-cooling, OU forcing), but runs a pure remat'd fixed-length `lax.scan` with no
-IO / checkpoint / NaN-guard, so the whole evolution is differentiable. The
-per-step source order matches run_simulation_distributed._attempt_step.
-
-simulate(theta, U0) is differentiable in BOTH:
-  * theta — the trainable in-loop source params (cc85 loadings here; CNN
-    corrector weights in the solver-in-the-loop task), and
-  * U0    — the initial conditions (for IC-inversion tasks).
-
-Timestepping is fixed (cfg.autodiff_fixed_dt>0) or adaptive CFL (compute_dt_fn
-wrapped in jax.lax.stop_gradient, coasting at cfg.t_end). The fixed-length scan
-means BOTH forward and reverse AD apply, single- and multi-GPU (AD transposes
-through shard_map collectives like the HPC step_fn it calls).
-
-The task is chosen by cfg.autodiff_task:
-  * "xray_sensitivity" -> d ln L_X / d (cc85 loadings)         [forward/reverse]
-  * "ic_inversion"     -> recover an IC density perturbation   [reverse]
-"""
+"""Differentiable runner (cfg.autodiff_mode): same setup/step_fn/source stack as
+run_simulation_distributed, but a pure remat'd fixed-length lax.scan (no IO /
+NaN-guard), so simulate(theta, U0) differentiates in BOTH the in-loop source
+params theta and the IC U0, forward and reverse, single- and multi-GPU (AD
+transposes through the shard_map collectives). dt fixed or stop_gradient CFL.
+Task selected by cfg.autodiff_task (see run_simulation_autodiff)."""
 import os
 import time
 
@@ -33,55 +16,22 @@ from sources.external_gravity import setup_external_gravity
 from sources.self_gravity import setup_self_gravity
 from sources.cooling import setup_cooling
 from sources.ou_forcing import setup_ou_forcing
+from sources.ml_corrector import adam_init, adam_step
 from hydro.cooling import apply_cooling, PROTON_MASS_CGS, BOLTZMANN_CGS
-from setup.runner_distributed import _barotropic_project, _isothermal_project
+from hydro.observables import xray_luminosity
+from ic_generation.spectral import spectral_ic_field
+from sources.eos_projection import barotropic_project, isothermal_project
+from utils.autodiff_figs import (_save_emergence_montage,
+                                 _save_eta_recovery_figure,
+                                 _save_inversion_figure,
+                                 _save_corrector_figure)
 
 MYR_S = 1.0e6 * 3.15576e7
 
 
-def xray_luminosity(U, cfg, mu=0.6):
-    """Soft-band X-ray luminosity L_X = sum n^2 sqrt(T) band(T) dV, physical
-    T [K] from the cfg unit system. Absolute scale is a bremsstrahlung proxy;
-    the logarithmic sensitivity (elasticity) is scale-free."""
-    gamma = cfg.gamma
-    u = cfg.units
-    rho = U[0]
-    v2 = (U[1] ** 2 + U[2] ** 2 + U[3] ** 2) / (rho ** 2)
-    P = (gamma - 1.0) * (U[4] - 0.5 * rho * v2)
-    T = (mu * PROTON_MASS_CGS * jnp.clip(P, 1e-30) * u.UnitPressure_in_cgs
-         / (BOLTZMANN_CGS * rho * u.UnitDensity_in_cgs))
-    band = jax.nn.sigmoid((T - 1.0e6) / 3.0e5)
-    emiss = rho ** 2 * jnp.sqrt(jnp.clip(T, 1.0)) * band
-    dV = (cfg.Lx / cfg.Nx) * (cfg.Ly / cfg.Ny) * (cfg.Lz / cfg.Nz)
-    return jnp.sum(emiss) * dV
-
-
-def _spectral_ic_field(key, shape, k_max=0, amp=0.05, slope=0.0):
-    """Random real field with a prescribed spectral content, std normalized to
-    `amp`.
-
-    k_max <= 0  -> BROADBAND: power at every shell out to Nyquist. This is the
-                  honest input for an r(k) recovery test — there is signal at all
-                  scales, so where r(k) collapses is a genuine measurement of the
-                  solver's scale-resolved recovery limit, not an artifact of the
-                  input band-limit (the old k_max=4 put the collapse AT k=4 by
-                  construction and mislabelled it a dissipative limit).
-    k_max >  0  -> restrict injected power to k <= k_max (legacy band-limited).
-    slope       -> optional power-law shaping |F(k)| ~ k**slope (0 = white).
-    """
-    f = jax.random.normal(key, shape)
-    F = jnp.fft.rfftn(f)
-    kx = jnp.fft.fftfreq(shape[0]) * shape[0]
-    ky = jnp.fft.fftfreq(shape[1]) * shape[1]
-    kz = jnp.arange(F.shape[2])
-    KX, KY, KZ = jnp.meshgrid(kx, ky, kz, indexing="ij")
-    kk = jnp.sqrt(KX ** 2 + KY ** 2 + KZ ** 2)
-    if slope != 0.0:
-        F = F * jnp.where(kk > 0, kk, 1.0) ** slope
-    if k_max and k_max > 0:
-        F = jnp.where(kk <= k_max, F, 0.0)
-    g = jnp.fft.irfftn(F, s=shape)
-    return g / (jnp.std(g) + 1e-12) * amp
+def _central_fd(f, x, i, h=1.0e-4):
+    """Central finite difference of scalar f(x) along element/index i."""
+    return (float(f(x.at[i].add(h))) - float(f(x.at[i].add(-h)))) / (2.0 * h)
 
 
 # ---------------------------------------------------------------------------
@@ -126,9 +76,9 @@ def build_simulate(U0_ref, cfg, step_fn, compute_dt_fn, sharding,
         if forcing is not None:
             U, a, key = forcing["apply"](U, a, key, dt)
         if iso_cs2 > 0.0:
-            U = _isothermal_project(U, iso_cs2, cfg.gamma)
+            U = isothermal_project(U, iso_cs2, cfg.gamma)
         if getattr(cfg, "barotropic_eos", False):
-            U = _barotropic_project(U, cfg)
+            U = barotropic_project(U, cfg)
         if extg is not None:
             U = extg["apply"](U, dt)
         if selfg is not None:
@@ -215,13 +165,10 @@ def _render_image_target(Nx, path, lo, hi):
 
 def _luna_emergence(step_fn, cfg, is_main):
     """Reverse-mode IC optimization so the LATE-TIME field forms a target image
-    (the word 'LUNA') purely from the dynamics -- diffhydro Fig. 12. The free
-    parameter is the FULL per-cell IC field; nothing is placed by hand.
-
-    driver='blast': the free internal-energy field e(x,0) of a uniform medium at
-    rest; scattered Sedov sites collide and merge into the target (paper fig19
-    top row). The turbulence driver (fig19 bottom) is added separately.
-    """
+    (diffhydro Fig. 12); the free parameter is the FULL per-cell IC field.
+    driver='blast': free internal-energy field e(x,0) of a uniform medium at
+    rest (scattered Sedov sites collide into the target); driver='turbulence':
+    free band-limited velocity field of a uniform isothermal medium."""
     import time
     driver = getattr(cfg, "autodiff_emergence_driver", "blast")
     Nx, gamma, L, rho0 = cfg.Nx, float(cfg.gamma), cfg.Lx, 1.0
@@ -457,36 +404,6 @@ def _luna_emergence(step_fn, cfg, is_main):
     return {"loss": float(loss(theta)), "Nx": Nx, "driver": driver}
 
 
-def _save_emergence_montage(panel0, panel0_lab, panel0_cmap, frames, fracs,
-                            tgt, Nx, label, driver):
-    import os
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from utils.figstyle import apply_style, FIGSIZE
-    apply_style()
-    n = len(frames) + 1
-    fig, ax = plt.subplots(1, n, figsize=(FIGSIZE[0] * n * 0.62, FIGSIZE[1] * 0.95))
-    vmx = float(np.percentile(np.concatenate([f.ravel() for f in frames]), 99.5))
-    ax[0].imshow(panel0.T, origin="lower", cmap=panel0_cmap)
-    ax[0].text(0.04, 0.96, panel0_lab, transform=ax[0].transAxes,
-               va="top", ha="left", color="white", fontsize=10)
-    final_lab = "stirred -> target" if driver == "turbulence" else "merged -> target"
-    for a, fr, fc in zip(ax[1:], frames, fracs):
-        a.imshow(fr.T, origin="lower", cmap="viridis", vmin=float(tgt.min()), vmax=vmx)
-        lab = final_lab if fc == 1.0 else f"t = {fc:.2f} t_end"
-        a.text(0.04, 0.96, lab, transform=a.transAxes, va="top", ha="left",
-               color="white", fontsize=10)
-    for a in ax:
-        a.grid(False); a.set_xticks([]); a.set_yticks([])
-    fig.tight_layout()
-    os.makedirs("figures", exist_ok=True)
-    safe = label.replace(" ", "").replace("/", "_").split(".")[0]
-    out = f"figures/autodiff_luna_emergence_{driver}_{safe}_Nx{Nx}.png"
-    fig.savefig(out); plt.close(fig)
-    print(f"  wrote {out}", flush=True)
-
-
 def run_simulation_autodiff(U0, cfg, step_fn, compute_dt_fn, sharding,
                             is_main_process=True):
     """Differentiable-run dispatcher: selects the task by ``cfg.autodiff_task``
@@ -569,11 +486,8 @@ def _xray_sensitivity(simulate, U0, eta_true, cfg, is_main):
     else:
         g = jax.grad(lnLX)(eta_true)
         eM = float(eta_true[0] * g[0]); eE = float(eta_true[1] * g[1])
-    h = 1.0e-4
-    def fd(i):
-        return (float(lnLX(eta_true.at[i].add(h)))
-                - float(lnLX(eta_true.at[i].add(-h)))) / (2.0 * h)
-    fdM = eta_true[0] * fd(0); fdE = eta_true[1] * fd(1)
+    fdM = eta_true[0] * _central_fd(lnLX, eta_true, 0)
+    fdE = eta_true[1] * _central_fd(lnLX, eta_true, 1)
     relM = abs(eM - float(fdM)) / (abs(float(fdM)) + 1e-30)
     relE = abs(eE - float(fdE)) / (abs(float(fdE)) + 1e-30)
     if is_main:
@@ -591,15 +505,10 @@ def _xray_sensitivity(simulate, U0, eta_true, cfg, is_main):
 
 def _eta_recovery(simulate, U0, eta_true, cfg, is_main):
     """Closed-loop recovery of the CC85 loadings (η_M, η_E) by reverse-mode AD
-    through the FULL coupled forward model — cc85 wind + radiative cooling +
-    self-gravity + external potential, all active in apply_sources.
-
-    This is a CIRCULAR / self-consistency validation: we inject a KNOWN η,
-    evolve, and recover it. It certifies that the gradients are correct through
-    the entire physics stack simultaneously — it is NOT a measurement of the real
-    M82. "We measure what we put in." (The non-circular feedback-history
-    inference is the follow-up, not this code paper.)
-    """
+    through the FULL coupled forward model (wind + cooling + self-gravity +
+    external potential). CIRCULAR self-consistency validation: inject a KNOWN
+    η, evolve, recover it — certifies gradients through the whole physics
+    stack; NOT a measurement of the real M82."""
     t0 = time.time()
     U_obs = simulate(eta_true, U0)               # the "observed" evolved state
     log_true = jnp.log(eta_true)
@@ -613,9 +522,7 @@ def _eta_recovery(simulate, U0, eta_true, cfg, is_main):
 
     # FD-validate the reverse-mode gradient at the start point.
     g0 = jax.grad(loss)(log0)
-    h = 1.0e-4
-    fd0 = jnp.array([(loss(log0.at[i].add(h)) - loss(log0.at[i].add(-h)))
-                     / (2.0 * h) for i in range(2)])
+    fd0 = jnp.array([_central_fd(loss, log0, i) for i in range(2)])
     rel = [abs(float(g0[i]) - float(fd0[i])) / (abs(float(fd0[i])) + 1e-30)
            for i in range(2)]
     if is_main:
@@ -623,17 +530,14 @@ def _eta_recovery(simulate, U0, eta_true, cfg, is_main):
               f"∂loss/∂lnη AD={np.asarray(g0)}  FD={np.asarray(fd0)}  "
               f"rel={rel}", flush=True)
 
-    # Adam on log-η.
+    # Adam on log-η (shared pytree Adam: b1=0.9, b2=0.999, eps=1e-8, bias-corr).
     log_eta = log0
-    m = jnp.zeros_like(log_eta); v = jnp.zeros_like(log_eta)
+    opt = adam_init(log_eta)
     n_iter = int(getattr(cfg, "autodiff_n_iter", 60))
     hist_it, hist_L, hist_etaM, hist_etaE = [], [], [], []
     for it in range(n_iter):
         L, gg = jax.value_and_grad(loss)(log_eta)
-        m = 0.9 * m + 0.1 * gg
-        v = 0.999 * v + 0.001 * gg * gg
-        log_eta = log_eta - 3.0e-2 * m / (1 - 0.9 ** (it + 1)) / (
-            jnp.sqrt(v / (1 - 0.999 ** (it + 1))) + 1e-8)
+        log_eta, opt = adam_step(gg, log_eta, opt, 3.0e-2)
         eta_now = np.asarray(jnp.exp(log_eta))
         hist_it.append(it); hist_L.append(float(L))
         hist_etaM.append(float(eta_now[0])); hist_etaE.append(float(eta_now[1]))
@@ -653,53 +557,6 @@ def _eta_recovery(simulate, U0, eta_true, cfg, is_main):
                                   eta_t, rel, res, cfg)
     return {"eta_recovered": eta_rec.tolist(), "eta_true": eta_t.tolist(),
             "eta_rel_err": res, "grad_fd_rel": rel}
-
-
-def _save_eta_recovery_figure(its, Ls, etaM, etaE, eta_true, fd_rel, res, cfg):
-    """Closed-loop CC85 loading recovery through the full coupled physics. Two
-    panels: (a) the η_M, η_E trajectories converging onto the injected truths;
-    (b) the matching-loss curve. Caption (README) states this is a circular
-    validation of gradient correctness through cooling + self-gravity + external
-    potential — we recover what we inject."""
-    import os
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from utils.figstyle import apply_style, decorate, FIGSIZE
-    apply_style()
-
-    its = np.asarray(its)
-    fig, ax = plt.subplots(1, 2, figsize=(FIGSIZE[0] * 2, FIGSIZE[1]))
-
-    # (a) loading trajectories vs the injected truths.
-    ax[0].axhline(eta_true[0], color="C0", ls="--", lw=1.2,
-                  label=fr"$\eta_M$ injected = {eta_true[0]:.2f}")
-    ax[0].axhline(eta_true[1], color="C1", ls="--", lw=1.2,
-                  label=fr"$\eta_E$ injected = {eta_true[1]:.2f}")
-    ax[0].plot(its, etaM, "-", color="C0", lw=2.0, label=r"$\eta_M$ recovered")
-    ax[0].plot(its, etaE, "-", color="C1", lw=2.0, label=r"$\eta_E$ recovered")
-    ax[0].set_xlabel("iteration")
-    ax[0].set_ylabel(r"loading factor $\eta$")
-    ax[0].legend(loc="best")
-    ax[0].annotate(fr"max rel. err = {res:.1e}" + "\n"
-                   fr"AD vs FD: {max(fd_rel):.0e}",
-                   xy=(0.97, 0.5), xycoords="axes fraction", ha="right",
-                   va="center", fontsize=10)
-    decorate(ax[0])
-
-    # (b) matching-loss convergence.
-    ax[1].semilogy(its, np.asarray(Ls), "-", color="C3", lw=2.0,
-                   label=r"$\|U(\eta)-U_{\rm obs}\|^2$")
-    ax[1].set_xlabel("iteration")
-    ax[1].set_ylabel("state-matching loss")
-    ax[1].legend(loc="best")
-    decorate(ax[1])
-
-    fig.tight_layout()
-    os.makedirs("figures", exist_ok=True)
-    out = f"figures/autodiff_eta_recovery_Nx{cfg.Nx}.png"
-    fig.savefig(out); plt.close(fig)
-    print(f"  wrote {out}", flush=True)
 
 
 def _recovery_rk(delta_est, delta_true):
@@ -734,7 +591,7 @@ def _ic_inversion(simulate, U0, eta_true, cfg, is_main):
     # to high k with the SAME optimizer -> the contrast is pure physics.
     k_max = int(getattr(cfg, "autodiff_ic_kmax", 0) or 0)
     slope = float(getattr(cfg, "autodiff_ic_slope", 0.0) or 0.0)
-    delta_true = _spectral_ic_field(jax.random.PRNGKey(1), shape,
+    delta_true = spectral_ic_field(jax.random.PRNGKey(1), shape,
                                     k_max=k_max, amp=0.05, slope=slope)
     delta_true_np = np.asarray(delta_true)   # host copy BEFORE any sharding:
     # the r(k)/figure diagnostics need a plain addressable array (np.asarray on a
@@ -787,9 +644,7 @@ def _ic_inversion(simulate, U0, eta_true, cfg, is_main):
     if jax.process_count() == 1:
         g = jax.grad(loss)(delta0)
         idx = tuple(int(s // 2) for s in shape)
-        h = 1.0e-4
-        fd = (float(loss(delta0.at[idx].add(h)))
-              - float(loss(delta0.at[idx].add(-h)))) / (2.0 * h)
+        fd = _central_fd(loss, delta0, idx)
         rel = abs(float(g[idx]) - fd) / (abs(fd) + 1e-30)
         if is_main:
             print(f"  ic_inversion: ∂loss/∂(IC field) shape={g.shape}, "
@@ -801,7 +656,7 @@ def _ic_inversion(simulate, U0, eta_true, cfg, is_main):
               "verified single-process", flush=True)
 
     delta = delta0
-    m = jnp.zeros_like(delta); v = jnp.zeros_like(delta)
+    opt = adam_init(delta)
     n_iter = int(getattr(cfg, "autodiff_n_iter", 100))
     lr = float(getattr(cfg, "autodiff_ic_lr", 3.0e-2) or 3.0e-2)
     # jit the norm so its reduction all-reduces to a REPLICATED scalar; eager
@@ -814,21 +669,16 @@ def _ic_inversion(simulate, U0, eta_true, cfg, is_main):
     # rollout mid-optimization). One fused, donation-optimized Adam step instead.
     # U0/U_obs passed as args (see loss_arg) so nothing sharded is a constant.
     vgrad = jax.jit(jax.value_and_grad(loss_arg, argnums=0))
-
-    @jax.jit
-    def adam_step(delta, m, v, gg, it):
-        m = 0.9 * m + 0.1 * gg
-        v = 0.999 * v + 0.001 * gg * gg
-        bc1 = 1.0 - 0.9 ** (it + 1.0)
-        bc2 = 1.0 - 0.999 ** (it + 1.0)
-        delta = delta - lr * (m / bc1) / (jnp.sqrt(v / bc2) + 1e-8)
-        return delta, m, v
+    # shared pytree Adam (b1=0.9, b2=0.999, eps=1e-8, bias-corrected), jitted
+    # so the update stays one fused device step like the inline version it
+    # replaced.
+    _adam_jit = jax.jit(lambda gg, d, s: adam_step(gg, d, s, lr))
 
     _t_loop0 = time.time()
     _t_iter1 = None
     for it in range(n_iter):
         L, gg = vgrad(delta, U0, U_obs)
-        delta, m, v = adam_step(delta, m, v, gg, jnp.asarray(float(it)))
+        delta, opt = _adam_jit(gg, delta, opt)
         if it == 0:
             jax.block_until_ready(delta)          # force compile+first step
             _t_iter1 = time.time()
@@ -866,69 +716,6 @@ def _ic_inversion(simulate, U0, eta_true, cfg, is_main):
             "rk": rk, "delta": delta_host}
 
 
-def _save_inversion_figure(delta_true, delta_est, rk, res, cfg):
-    import os
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from utils.figstyle import apply_style, decorate, FIGSIZE
-    apply_style()
-    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-    dt_np = np.asarray(delta_true); de_np = np.asarray(delta_est)
-    zc = dt_np.shape[2] // 2
-    fig, ax = plt.subplots(1, 3, figsize=(FIGSIZE[0] * 2.2, FIGSIZE[1]),
-                           gridspec_kw=dict(wspace=0.35))
-    vmax = float(np.max(np.abs(dt_np)))
-    for a, fld, lab in ((ax[0], dt_np, r"$\delta_{\rm true}$"),
-                        (ax[1], de_np, fr"$\delta_{{\rm recovered}}$ (res {res:.2f})")):
-        im = a.imshow(fld[:, :, zc].T, origin="lower", vmin=-vmax, vmax=vmax,
-                      cmap="RdBu_r", aspect="auto", interpolation="nearest")
-        a.grid(False); a.set_xticks([]); a.set_yticks([])
-        a.text(0.04, 0.96, lab, transform=a.transAxes, va="top", ha="left",
-               fontsize=10, bbox=dict(boxstyle="round", fc="white", ec="none", alpha=0.8))
-        # thin colorbar inset on the right edge — does not shrink the panel
-        cax = inset_axes(a, width="4.5%", height="100%", loc="lower left",
-                         bbox_to_anchor=(1.02, 0.0, 1, 1), bbox_transform=a.transAxes,
-                         borderpad=0)
-        fig.colorbar(im, cax=cax)
-    ks = np.arange(1, len(rk))
-    rvals = rk[1:]
-    # recovery limit k*: last k before r(k) drops through 0.5 (half-recovery).
-    below = np.where(rvals < 0.5)[0]
-    kstar = int(ks[below[0] - 1]) if len(below) and below[0] > 0 else int(ks[-1])
-    ax[2].axhspan(-0.2, 1.05, xmin=0, xmax=1, color="none")            # keep frame
-    ax[2].axvspan(0.5, kstar + 0.5, color="C0", alpha=0.10)            # recovered band
-    ax[2].axhline(1.0, color="0.6", lw=0.8, ls=":")                    # perfect recovery
-    ax[2].axhline(0.5, color="0.6", lw=0.8, ls="--")                  # half-recovery
-    ax[2].axhline(0, color="k", lw=0.6)
-    ax[2].plot(ks, rvals, "-o", lw=2.0, ms=3.5, color="C0",
-               label=r"$r(k)$")
-    ax[2].axvline(kstar, color="C3", lw=1.2)
-    ax[2].annotate(fr"$k_\ast\!\approx\!{kstar}$", xy=(kstar, 0.5),
-                   xytext=(4, 6), textcoords="offset points",
-                   color="C3", fontsize=9, va="bottom")
-    ax[2].set_ylim(-0.2, 1.05); ax[2].set_xlim(0.5, ks[-1] + 0.5)
-    ax[2].set_xlabel(r"wavenumber $k$"); ax[2].set_ylabel(r"recovery $r(k)$")
-    ax[2].legend(loc="lower left", frameon=False)
-    decorate(ax[2])
-    for a in ax:                       # equal-sized square panels
-        a.set_box_aspect(1)
-    os.makedirs("figures", exist_ok=True)
-    # tag by test problem AND dominant physics so the turbulence / self-gravity /
-    # radiative-cooling / sedov inversions don't overwrite each other (the
-    # gravity and cooling cases both reuse the uniform Jeans-box IC).
-    base = str(getattr(cfg, "test_problem", "ic")).replace("-", "").replace("_", "")
-    if getattr(cfg, "cooling_enabled", False):
-        tag, label = base + "_cool", "radiative-cooling box"
-    elif getattr(cfg, "SELF_GRAVITY", False):
-        tag, label = base + "_selfgrav", f"{getattr(cfg,'test_problem','')} + self-gravity"
-    else:
-        tag, label = base, str(getattr(cfg, "test_problem", ""))
-    out = f"figures/autodiff_ic_inversion_{tag}_Nx{cfg.Nx}.png"
-    fig.tight_layout(); fig.savefig(out); plt.close(fig)
-    print(f"  wrote {out}", flush=True)
-
-
 def _corrector_training(U0, cfg, step_fn, compute_dt_fn, is_main):
     """Solver-in-the-loop CNN flux corrector (#41) through the PRODUCTION
     solver. Coarse rollout uses the production step_fn + IC (U0); the fine
@@ -940,8 +727,7 @@ def _corrector_training(U0, cfg, step_fn, compute_dt_fn, is_main):
     from setup.distributed_setup import (create_distributed_mesh,
                                          initialize_simulation_distributed,
                                          create_solver_distributed)
-    from sources.ml_corrector import (cnn_init, cnn_correction, pool_factor,
-                                       adam_init, adam_step)
+    from sources.ml_corrector import cnn_init, cnn_correction, pool_factor
 
     import os
     f = int(os.environ.get("LUNA_KHC_F", "4"))   # coarse->fine gap (8x for the corrector)
@@ -1056,73 +842,3 @@ def _corrector_training(U0, cfg, step_fn, compute_dt_fn, is_main):
         _save_corrector_figure(c_plain, c_corr, snap_ref, snap_plain, snap_corr,
                                mtimes, dt_c, n_train, cfg)
     return {"coarse_mse": c_plain, "corr_mse": c_corr, "weights": w}
-
-
-def _save_corrector_figure(c_plain, c_corr, snap_ref, snap_plain, snap_corr,
-                           mtimes, dt_c, n_train, cfg):
-    """diffhydro Fig 16/17 analog for the solver-in-the-loop KH corrector.
-    Montage (Fig 16): density and total-energy fields with rows
-    {coarse / coarse+CNN / reference} across the montage times. MSE curve
-    (Fig 17): density MSE vs time for coarse vs corrected, with the training
-    horizon marked (the corrector should track the reference well past it)."""
-    import os
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from utils.figstyle import apply_style, decorate, FIGSIZE
-    apply_style()
-    os.makedirs("figures", exist_ok=True)
-    rows = [("coarse", snap_plain), ("coarse + CNN", snap_corr),
-            ("reference", snap_ref)]
-
-    # ---- Fig 16: density + total-energy montages ----
-    for fld, cmap, name in ((0, "magma", "density"), (-1, "inferno", "energy")):
-        vmin = min(float(s[fld].min()) for s in snap_ref.values())
-        vmax = max(float(s[fld].max()) for s in snap_ref.values())
-        nC = len(mtimes)
-        # Match the kh_grid montage style: square 2.2" panels, in-panel
-        # white time labels on a translucent black box (no titles), row
-        # labels via set_ylabel, shared color range.
-        fig, ax = plt.subplots(3, nC, figsize=(2.2 * nC, 2.2 * 3),
-                               squeeze=False)
-        for r, (rlab, snaps) in enumerate(rows):
-            for c, i in enumerate(mtimes):
-                a = ax[r, c]
-                a.grid(False)
-                if i in snaps:
-                    a.imshow(snaps[i][fld].T, origin="lower", cmap=cmap,
-                             vmin=vmin, vmax=vmax, interpolation="bilinear",
-                             aspect="equal")
-                else:
-                    a.text(0.5, 0.5, "diverged", transform=a.transAxes,
-                           ha="center", va="center", fontsize=11, color="0.6")
-                a.set_xticks([]); a.set_yticks([])
-                if r == 0:
-                    a.text(0.05, 0.92, f"t = {i * dt_c:.1f}",
-                           transform=a.transAxes, fontsize=11, color="white",
-                           fontweight="bold",
-                           bbox=dict(facecolor="black", alpha=0.4,
-                                     edgecolor="none", pad=1.5))
-                if c == 0:
-                    a.set_ylabel(rlab)
-        fig.tight_layout()
-        out = f"figures/autodiff_corrector_{name}_Nc{cfg.Nx}.png"
-        fig.savefig(out); plt.close(fig)
-        print(f"  wrote {out}", flush=True)
-
-    # ---- Fig 17: density MSE vs time ----
-    fig, a = plt.subplots(figsize=FIGSIZE)
-    if c_plain:
-        t, e = zip(*c_plain); a.semilogy(t, e, "o-", color="C3", label="coarse")
-    if c_corr:
-        t, e = zip(*c_corr); a.semilogy(t, e, "s-", color="C0",
-                                        label="coarse + CNN")
-    a.axvline(n_train * dt_c, color="0.5", ls="--", lw=1)
-    a.text(n_train * dt_c, a.get_ylim()[1], " trained to here", fontsize=8,
-           va="top", ha="left", color="0.4")
-    a.set_xlabel("time"); a.set_ylabel("density MSE vs reference")
-    a.legend(loc="lower right"); decorate(a)
-    fig.tight_layout()
-    out = f"figures/autodiff_corrector_mse_Nc{cfg.Nx}.png"
-    fig.savefig(out); plt.close(fig)
-    print(f"  wrote {out}", flush=True)

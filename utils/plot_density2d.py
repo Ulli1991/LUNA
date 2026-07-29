@@ -1,3 +1,5 @@
+"""Render 2D density maps from HDF5 snapshots (single-file or sharded
+multi-process outputs)."""
 import os
 import re
 
@@ -7,23 +9,8 @@ import numpy as np
 
 
 def load_sharded_snapshot(output_dir, base_pattern, snapshot_idx):
-    """
-    Load a sharded snapshot and combine all shards into a single array.
-
-    Parameters
-    ----------
-    output_dir : str
-        Directory containing snapshot files
-    base_pattern : str
-        Base pattern for snapshot files (e.g., "snap")
-    snapshot_idx : int
-        Snapshot index
-
-    Returns
-    -------
-    data : dict
-        Dictionary with combined arrays and attributes
-    """
+    """Load a (possibly sharded) snapshot and return a dict with the
+    combined global density, positions, time, and domain sizes."""
     # Check if snapshots are in subdirectories (distributed case)
     snapshot_subdir = os.path.join(output_dir, f"snapdir_{snapshot_idx:03d}")
     if os.path.isdir(snapshot_subdir):
@@ -116,22 +103,8 @@ def load_sharded_snapshot(output_dir, base_pattern, snapshot_idx):
 
 
 def plot_density2d(output_dir, base_name, process_id=0, num_processes=1):
-    """
-    Load all HDF5 snapshots and produce density plots for 2D fields.
-    Handles both single files and sharded multi-process outputs.
-    Uses the density range from the last snapshot for consistent color scaling.
-
-    Parameters
-    ----------
-    output_dir : str
-        Directory containing snapshot files
-    base_name : str
-        Base name for snapshot files
-    process_id : int
-        ID of the current process (for parallel plotting)
-    num_processes : int
-        Total number of processes (for parallel plotting)
-    """
+    """Plot 2D density maps for all snapshots (color scale fixed from the
+    last snapshot); snapshots are round-robined over num_processes."""
     # Find all unique snapshot indices
     snapshot_indices = set()
 

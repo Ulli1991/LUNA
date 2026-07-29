@@ -91,6 +91,8 @@ class Config:
     a_init: float = 0.3             # initial scale factor (start redshift)
     a_end: float = 1.0              # final scale factor (z=0)
     dloga_max: float = 0.01         # cap on d(ln a) per step
+    cosmo_kick_scheme: str = "strang"  # gravity-kick centering: strang (2nd order, 2 FMG/step,
+                                       # default) | half (1 solve, midpoint coeff) | end (legacy)
     zel_a_caustic: float = 1.5      # pancake caustic scale factor (sets amplitude)
     zel_cs_frac: float = 1.0e-2     # initial sound speed / peak velocity (cold gas)
     cosmo_p_floor: float = 0.0      # pressure/temperature floor (0 = off)

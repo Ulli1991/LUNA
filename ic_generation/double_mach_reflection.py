@@ -2,26 +2,9 @@ import jax.numpy as jnp
 
 
 def double_mach_reflection(cfg, x_slice=None, y_slice=None):
-    """
-    Double Mach reflection test problem (2D).
+    """2D double Mach reflection test: strong shock producing a double Mach stem.
 
-    Strong shock wave reflecting off a wedge, producing complex shock
-    interactions and a double Mach stem structure. Classic test for
-    2D shock-capturing schemes.
-
-    Parameters
-    ----------
-    cfg : Config
-        Configuration object containing Nx, Ny, Lx, Ly, gamma
-    x_slice : tuple (x_start, x_end), optional
-        Generate only this x-range for distributed initialization
-    y_slice : tuple (y_start, y_end), optional
-        Generate only this y-range for distributed initialization
-
-    Returns
-    -------
-    U : jax.numpy.ndarray
-        Conservative variables [rho, rho*ux, rho*uy, E] with shape (4, Nx_local, Ny_local)
+    Returns U = [rho, rho*ux, rho*uy, E], shape (4, Nx_local, Ny_local).
     """
     Nx, Ny, Lx, Ly = cfg.Nx, cfg.Ny, cfg.Lx, cfg.Ly
     gamma = cfg.gamma

@@ -1,32 +1,10 @@
-"""Differentiable Poisson solve via the implicit-function adjoint.
+"""Differentiable Poisson solve via the implicit-function adjoint: the
+backward pass is ONE extra FMG solve with the cotangent Φ̄ as RHS
+(ρ̄ = 4πG·A⁻¹Φ̄), never V-cycle unrolling.
 
-The discrete problem is linear:   A·Φ = b,   b = 4πG·ρ
-with A the 7-point Laplacian under the chosen BC. For reverse-mode AD we
-do NOT differentiate through the FMG iteration (that would store every
-V-cycle intermediate and propagate iteration noise into the gradient).
-Instead we use the exact implicit rule for a linear solve:
-
-    Φ = A⁻¹ b          ⇒        ρ̄ = (∂Φ/∂ρ)ᵀ Φ̄ = 4πG · A⁻ᵀ Φ̄ = 4πG · A⁻¹ Φ̄
-
-(A is symmetric for periodic, Neumann and Dirichlet BCs.) The backward
-pass is therefore ONE additional FMG solve with the cotangent Φ̄ as the
-right-hand side — same cost as the forward solve, exact up to solver
-tolerance, zero stored intermediates.
-
-BC caveats:
-  * boundary 0 (periodic): A is singular on constants. The forward path
-    subtracts the mean of ρ before solving (Jeans swindle, done by the
-    caller); we mirror that by mean-projecting the cotangent, which is
-    the adjoint of the swindle projection.
-  * boundary 3 (isolated): the multipole-Dirichlet face values depend on
-    ρ (through M_tot and the COM). This dependence is FROZEN in the
-    adjoint — the gradient is exact w.r.t. the bulk Laplacian and
-    approximate w.r.t. the far-field BC. For compact mass distributions
-    in boxes ≳ 4R the BC sensitivity is O(face-potential/interior-
-    potential) smaller than the bulk term.
-
-Validation: tests/test_poisson_adjoint.py checks custom-vjp vs central
-FD vs unrolled AD on L(ρ) = ½ Σ Φ² at 32³.
+Caveats: periodic BC mean-projects the cotangent (adjoint of the Jeans
+swindle); for boundary 3 (isolated) the ρ-dependence of the multipole face
+values is FROZEN in the adjoint (gradient approximate w.r.t. the far-field BC).
 """
 from __future__ import annotations
 
@@ -42,24 +20,10 @@ from gravity.poisson_bc import make_halo_3d
 def solve_poisson_fmg_diff(rho, dx, fourpiG, boundary,
                             n_vcycles_per_level=1, n_extra_vcycles=1,
                             n_levels=None, n_pre=2, n_post=2, n_coarsest=50):
-    """Differentiable FMG Poisson solve.
-
-    Identical to solve_poisson_fmg in the forward direction (the full set of
-    multigrid tuning params — n_levels/n_pre/n_post/n_coarsest — is forwarded,
-    so swapping this in for solve_poisson_fmg leaves the forward result bit-
-    identical); reverse-mode uses the implicit adjoint (one extra FMG solve),
-    not V-cycle unrolling.
-
-    The extra tuning params are appended (not inserted) so existing positional
-    callers — e.g. tests/test_poisson_adjoint.py — keep working unchanged.
-
-    Gradient accuracy: the implicit adjoint assumes Φ = A⁻¹(4πGρ) is solved to
-    tight tolerance.  Under PERIODIC BC the constant null-space makes the FMG
-    converge slowly, so a loose forward solve yields an inaccurate gradient (the
-    forward result is fine for physics, but the reverse-mode gradient is wrong).
-    We therefore floor the cycle counts in the differentiable path so both the
-    forward and adjoint solves are tight enough for FD-correct gradients.
-    """
+    """Differentiable FMG Poisson solve: forward-identical to
+    ``solve_poisson_fmg``; reverse-mode uses the implicit adjoint (one extra
+    FMG solve). Cycle counts are floored so both solves are tight enough for
+    FD-correct gradients (the periodic null-space otherwise loosens them)."""
     nvpl = max(int(n_vcycles_per_level), 2)
     nev = max(int(n_extra_vcycles), 12 if boundary == 0 else 4)
     phi = solve_poisson_fmg(
@@ -122,18 +86,10 @@ solve_poisson_fmg_diff.defvjp(_fwd, _bwd)
 # ---------------------------------------------------------------------------
 def solve_poisson_fmg_bidiff(rho, dx, fourpiG, boundary,
                              n_vcycles_per_level=1, n_extra_vcycles=1):
-    """Poisson solve differentiable in BOTH forward and reverse mode.
-
-    The map ρ → Φ is linear (A Φ = 4πG ρ), so jax.lax.custom_linear_solve
-    gives exact jvp AND vjp for free from the matvec (the 7-point Laplacian)
-    and the FMG solver — unlike solve_poisson_fmg_diff, whose custom_vjp is
-    reverse-only and raises on jacfwd. Use this when forward-mode autodiff
-    (jacfwd / few-input Jacobians) through self-gravity is wanted.
-
-    Periodic BC: A has a constant null space, so the operator, RHS and Φ are
-    all projected to zero-mean — this restricts the solve to the invertible
-    zero-mean subspace and makes the implicit-diff rule well-posed (the same
-    gauge fix the custom_vjp path applies)."""
+    """Poisson solve differentiable in BOTH forward and reverse mode via
+    ``jax.lax.custom_linear_solve`` (``solve_poisson_fmg_diff`` is
+    reverse-only and raises on jacfwd). Periodic BC projects operator, RHS
+    and Φ to zero-mean to keep the implicit-diff rule well-posed."""
     halo_fn = make_halo_3d(boundary)
     periodic = boundary == 0
 
