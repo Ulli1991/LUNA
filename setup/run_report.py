@@ -45,3 +45,17 @@ class StepLog:
     def done(self, line):
         if self.is_main:
             print(line, flush=True)
+
+
+def require_finite(value, *, what, step, t, hint=""):
+    """Raise RuntimeError if `value` is not finite.
+
+    A NaN state must fail the job LOUDLY: `t + nan` is nan, and every
+    `while t < t_end` comparison against nan is False, so a NaN'd run would
+    otherwise fall out of its time loop and exit 0 with garbage output.
+    """
+    import numpy as _np
+    if not _np.isfinite(value):
+        raise RuntimeError(
+            f"non-finite {what} at step {step} (t={t:.6e}): the state went "
+            f"NaN/Inf. {hint}".rstrip())

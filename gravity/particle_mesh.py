@@ -129,9 +129,10 @@ class ParticleMeshGravity:
         return self.accel_at_points(self.gas_accel_grid(rho), positions)
 
     # -- Particle-Mesh: particle mass -> grid density (CIC) -----------------
-    def cic_deposit(self, positions, masses, active):
+    def cic_deposit(self, positions, masses, active, dtype=None):
         """Deposit particle masses onto the grid as a density (CIC scatter-add):
-        ∑ρ·dV == ∑ active masses (positions clamped to the box)."""
+        ∑ρ·dV == ∑ active masses (positions clamped to the box). `dtype` sets
+        the grid dtype (float32 halves the scatter cost; default: positions')."""
         w = (masses * active) / self.dV
         fx = positions[:, 0] / self.dx - 0.5
         fy = positions[:, 1] / self.dx - 0.5
@@ -142,6 +143,8 @@ class ParticleMeshGravity:
         tx = jnp.clip(fx - i0, 0.0, 1.0)
         ty = jnp.clip(fy - j0, 0.0, 1.0)
         tz = jnp.clip(fz - k0, 0.0, 1.0)
+        if dtype is not None:
+            w, tx, ty, tz = (q.astype(dtype) for q in (w, tx, ty, tz))
         rho = jnp.zeros((self.Nx, self.Ny, self.Nz), dtype=w.dtype)
         for di in (0, 1):
             for dj in (0, 1):

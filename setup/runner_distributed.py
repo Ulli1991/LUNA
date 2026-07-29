@@ -25,6 +25,7 @@ from file_io.write_checkpoint_distributed import write_checkpoint_distributed
 from file_io.write_snapshot_distributed import write_snapshot_distributed
 from utils.grid_params import GridParams
 from utils.memory_utils import get_memory_usage
+from setup.run_report import require_finite
 from sources.eos_projection import barotropic_project, isothermal_project
 
 
@@ -268,6 +269,10 @@ def run_simulation_distributed(
         if _dbg:
             print(f"[dbg] step {step+1}: --> compute_dt", flush=True)
         dt_cfl = float(compute_dt_fn(U_sharded))
+        require_finite(dt_cfl, what="dt", step=step, t=t,
+                       hint="last good snapshot is the newest snapdir_* in "
+                            "the output dir; lower CFL (3D unsplit needs "
+                            "<=0.5) or check the source terms.")
         if _dbg:
             print(f"[dbg] step {step+1}: compute_dt OK (dt={dt_cfl:.3e}) --> step_fn", flush=True)
         target = min(cfg.t_end, t_snapshot_local)

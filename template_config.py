@@ -104,6 +104,13 @@ class Config:
     dm_eta: float = 0.025           # acceleration-timestep accuracy parameter
     dm_domain_decomp: bool = False  # grid-sharded slab decomposition (>512^3, multi-GPU)
     dm_capacity_factor: float = 1.5  # per-slab particle buffer headroom for clustering
+    # DM PM-gravity fast path (measured 512^3/MI300A: 46 ms/step, 2x tighter than
+    # cold-start V(2,2); set dm_warm_vcycles=0 for the bit-conservative cold FMG).
+    dm_warm_vcycles: int = 1        # >0: warm-start PM gravity — carry phi, k V-cycles/step (0 = cold FMG)
+    dm_mixed_precision: bool = True   # FP32 deposit + FP32 defect-corr V-cycles (FP64 phi carry)
+    dm_warm_extrapolate: int = 2    # warm-solve seed: 1 = rescale phi by a_next/a_prev; 2 = linear extrap from last two phi
+    dm_warm_n_pre: int = 1          # smoother sweeps in the warm V-cycle (DM path only;
+    dm_warm_n_post: int = 1         # global POISSON_N_PRE/POST are untouched)
     dm_fp32: bool = False            # store DM particle pos/mom/mass in fp32 (halves PM comm + deposit/exchange work; grid rho + Poisson stay fp64, stays differentiable)
     CosmoHydro: bool = False        # coupled gas+DM box (gas meshed from MUSIC baryon IC)
     cosmo_jeans_ncell: float = 0.0  # Truelove Jeans-floor cells (0 = off; ~4 for halos)
@@ -188,6 +195,9 @@ class Config:
     #gamma: float = 1.4
 
     # ---------------- Time Integration ----------------
+    # Unsplit scheme: the stable limit scales ~1/ndim. Measured on a smooth
+    # 3D soundwave (2026-07-29): 1D stable to ~0.95, 2D to ~0.6, 3D to ~0.45.
+    # This default is the 1D value — USE 0.4 FOR 3D (all 3D run scripts do).
     CFL: float = 0.8
 
     # Time integration: unsplit MUSCL-Hancock (predictor-corrector, 2nd order)

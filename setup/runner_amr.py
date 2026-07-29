@@ -15,6 +15,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from setup.run_report import require_finite
+
 # Parameter bundles threaded through the setup helpers (grouped so no helper
 # needs a wall of positional arguments).
 _ShardKit = namedtuple("_ShardKit", "shard_amr n_dev mesh repl gather_host")
@@ -816,6 +818,9 @@ def run_simulation_amr(cfg, is_main_process=True):
         if _ldbg:
             print(f"[loop] p{_pi} it{_lit}: chunk+sync OK (taken={taken} t={t:.6f})",
                   flush=True)
+        require_finite(float(t), what="time", step=nstep, t=float(t_prev),
+                       hint="AMR state went NaN; last block dump is the newest "
+                            "blocks_*.npz in the output dir.")
         if taken == 0:
             break                                        # dt collapsed -- don't spin
         if (t - t_prev) / taken < 1e-14 * cfg.t_end:

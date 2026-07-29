@@ -32,6 +32,7 @@ from cosmology import Cosmology
 from gravity.poisson_bc import make_halo_3d
 from gravity.poisson_multigrid import solve_poisson_fmg
 from setup.cosmo_common import CosmoClock
+from setup.run_report import require_finite
 
 
 def run_simulation_cosmo(U, cfg, step_fn, compute_dt_fn,
@@ -130,7 +131,9 @@ def run_simulation_cosmo(U, cfg, step_fn, compute_dt_fn,
                   f"rho[{float(jnp.min(rho)):.2e},{float(jnp.max(rho)):.2e}] "
                   f"Pmin={float(jnp.min(P)):.2e}")
             if not np.isfinite(float(jnp.max(rho)) + float(jnp.min(P))):
-                print("[cosmo] non-finite state — stopping"); break
+                print("[cosmo] non-finite state — stopping", flush=True)
+                require_finite(float(jnp.max(rho)), what="density", step=step,
+                               t=tau, hint="super-comoving run went NaN.")
 
     if is_main_process:
         print(f"[cosmo] done: {step} steps, a={a:.4f} (z={1 / a - 1:.4f}), "

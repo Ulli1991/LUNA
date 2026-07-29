@@ -18,7 +18,7 @@ from gravity.particle_mesh import ParticleMeshGravity
 from gravity.poisson_multigrid import solve_poisson_fmg
 from setup.cosmo_common import (CosmoClock, dtau_accel, poisson_coeff_fac,
                                 softening_from_config)
-from setup.run_report import StepLog
+from setup.run_report import StepLog, require_finite
 
 
 def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
@@ -293,7 +293,9 @@ def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
                      f"{dloga:8.5f} {float(dmax):10.3f} {rho_max:11.3e}",
                      row=[step, a, dloga, float(dmax), rho_max], force=True)
             if not np.isfinite(rho_max):
-                print("[cosmo-hydro] non-finite gas state -- stopping"); break
+                print("[cosmo-hydro] non-finite gas state -- stopping", flush=True)
+                require_finite(rho_max, what="gas density", step=step, t=tau,
+                               hint="coupled gas+DM run went NaN.")
         if is_main_process and snap_every > 0 and step % snap_every == 0:
             write_snap(a, U, dm_pos)
 
@@ -679,8 +681,9 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
                      row=[step, a, dloga, float(dmax), int(max_occ), int(n_bad)],
                      force=True)
             if not np.isfinite(rho_max):
-                print("[cosmo-hydro] non-finite gas state -- stopping")
-                break
+                print("[cosmo-hydro] non-finite gas state -- stopping", flush=True)
+                require_finite(rho_max, what="gas density", step=step, t=tau,
+                               hint="coupled gas+DM slab run went NaN.")
         # write_snap enters a shard_map collective (cic_deposit_slab) -> every
         # rank must call it on the SAME step. step % snap_every is identical on all
         # ranks, so gate only on that (not is_main_process) when multi-process.
