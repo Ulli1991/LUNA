@@ -15,10 +15,12 @@ import numpy as np
 from cosmology import Cosmology
 from cosmology.mesh_gas import mesh_gas_to_grid, mesh_gas_to_grid_slab
 from gravity.particle_mesh import ParticleMeshGravity
-from gravity.poisson_multigrid import solve_poisson_fmg
+from gravity.poisson_multigrid import (laplacian_7pt, solve_poisson,
+                                       solve_poisson_fmg)
 from setup.cosmo_common import (CosmoClock, dtau_accel, poisson_coeff_fac,
                                 softening_from_config)
 from setup.run_report import StepLog, require_finite
+from units import KB_OVER_MP_KMS2_PER_K
 
 
 def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
@@ -69,19 +71,59 @@ def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
 
     clock = CosmoClock(cosmo, a, a_end, H0)
 
-    @jax.jit
-    def forces(U_arr, pos, coeff_val):
-        """One joint solve -> (gas force grid, DM force at particles, delta_max,
-        gas mass, dm mass)."""
-        rho_dm = pm.cic_deposit(pos, dm_mass, active)
-        rho_tot = U_arr[0] + rho_dm
+    warm = int(getattr(cfg, "dm_warm_vcycles", 1))
+    mixed = bool(getattr(cfg, "dm_mixed_precision", True))
+    n_pre_w = int(getattr(cfg, "dm_warm_n_pre", 1))
+    n_post_w = int(getattr(cfg, "dm_warm_n_post", 1))
+
+    def _forces(U_arr, pos, coeff_val, c1, c2, phi_prev, phi_prev2):
+        """One joint gas+DM solve -> (gas force grid, DM force at particles,
+        delta_max, max|g_dm|^2, phi). Warm-started (extrapolated seed) with
+        the FP32 defect correction when phi_prev is carried; cold FMG else."""
+        rho_dm = pm.cic_deposit(pos, dm_mass, active,
+                                dtype=jnp.float32 if mixed else None)
+        rho_tot = U_arr[0].astype(rho_dm.dtype) + rho_dm
         delta = rho_tot / jnp.mean(rho_tot) - 1.0
-        phi = solve_poisson_fmg(delta, dx, coeff_val, boundary=0,
-                                n_levels=n_levels, n_extra_vcycles=n_extra,
-                                n_coarsest=n_coarse)
-        g_gas = pm.grad_phi(phi, order=2)                 # -grad(phi) on the grid
-        g_dm = pm.accel_at_points(pm.grad_phi(phi, order=4), pos)
-        return g_gas, g_dm, jnp.max(delta)
+        if phi_prev is None:                               # cold start
+            phi = solve_poisson_fmg(delta.astype(U_arr.dtype), dx, coeff_val,
+                                    boundary=0, n_levels=n_levels,
+                                    n_extra_vcycles=n_extra,
+                                    n_coarsest=n_coarse)
+        else:
+            seed = c1 * phi_prev - c2 * phi_prev2          # extrapolated seed
+            if mixed:                                      # FP32 defect corr.
+                rhs = (jnp.asarray(coeff_val, jnp.float32) * delta
+                       - laplacian_7pt(seed, dx, pm.halo_fn
+                                       ).astype(jnp.float32))
+                e = solve_poisson(rhs, dx, 1.0, 0, n_levels=n_levels,
+                                  n_cycles=max(warm, 1), n_pre=n_pre_w,
+                                  n_post=n_post_w)
+                phi = seed + e
+            else:
+                phi = solve_poisson(delta, dx, coeff_val, 0,
+                                    n_levels=n_levels, n_cycles=max(warm, 1),
+                                    phi_init=seed, n_pre=n_pre_w,
+                                    n_post=n_post_w)
+        # ONE 4th-order gradient serves both species (gas grid force and
+        # particle interpolation) — the old separate 2nd-order gas gradient
+        # was a second full pass at lower accuracy.
+        g4 = pm.grad_phi(phi, order=4)
+        g_dm = pm.accel_at_points(g4, pos)
+        g2max = jnp.max(jnp.sum(g_dm ** 2, axis=1))
+        return g4, g_dm, jnp.max(delta), g2max, phi
+
+    forces_cold = jax.jit(lambda U_arr, pos, cv: _forces(
+        U_arr, pos, cv, 1.0, 0.0, None, None))
+    forces_warm = jax.jit(_forces)
+
+    @jax.jit
+    def dm_half_kick_drift(dm_p_, g_dm_, dm_pos_, dtau_):
+        p_half = dm_p_ + g_dm_ * (0.5 * dtau_)
+        return p_half, jnp.mod(dm_pos_ + p_half * dtau_, box)
+
+    @jax.jit
+    def dm_close_kick(p_half, g_new, dtau_):
+        return p_half + g_new * (0.5 * dtau_)
 
     @jax.jit
     def gas_kick(U_arr, g_gas, dt):
@@ -120,14 +162,14 @@ def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
         # P~ >= a^2 (kB/m_p) T_floor/mu * rho~   (super-comoving temperature floor)
         if T_floor <= 0.0:
             return 0.0
-        return aa * aa * 8.2543e-3 * T_floor / mu
+        return aa * aa * KB_OVER_MP_KMS2_PER_K * T_floor / mu
 
     def tempmax_coeff(aa):
         # super-comoving e_int ceiling coefficient: e_int <= coeff(a) rho~/(gamma-1)
         # caps T <= T_max, killing the spurious ~1e11 K diffuse cells.
         if T_max <= 0.0:
             return 0.0
-        return aa * aa * 8.2543e-3 * T_max / mu
+        return aa * aa * KB_OVER_MP_KMS2_PER_K * T_max / mu
 
     @jax.jit
     def apply_rho_floor(U_arr, ct, ctmax):
@@ -159,6 +201,19 @@ def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
             eint = jnp.minimum(eint, ctmax * rho_n / (gamma - 1.0))
         E_n = ke + jnp.maximum(eint, 1e-300)
         return jnp.stack([rho_n, mx, my, mz, E_n])
+
+    @jax.jit
+    def gas_kick_floors(U_arr, g_gas, dt, cj, ct, ctmax):
+        """Gravity kick + all active floors fused into ONE pass over U (the
+        split version streamed the full 5-field state once per stage). Also
+        returns next step's gas CFL dt — the reduction rides this pass, so
+        the standalone compute_dt call disappears from the loop."""
+        U_arr = gas_kick(U_arr, g_gas, dt)
+        if rho_floor > 0.0:
+            U_arr = apply_rho_floor(U_arr, ct, ctmax)
+        if p_floor > 0.0 or jeans_N > 0.0 or T_floor > 0.0:
+            U_arr = apply_floor(U_arr, cj, ct)
+        return U_arr
 
     # --- Bryan+1995 dual-energy (operator-split, super-comoving) -------------
     inv_dx = 1.0 / dx
@@ -237,10 +292,14 @@ def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
     rep = StepLog(cfg, is_main_process,
                   history_fields=["step", "a", "dloga", "delta_max",
                                   "rho_max"])
+    extrap = int(getattr(cfg, "dm_warm_extrapolate", 2))
     tau, step, t0 = 0.0, 0, time.time()
-    g_gas, g_dm, dmax = forces(U, dm_pos, coeff_fac * a)
+    g_gas, g_dm, dmax, g2, phi = forces_cold(U, dm_pos, coeff_fac * a)
+    g2max = float(g2)
+    phi2 = phi                                    # extrapolation carry
+    a_prev, a_prev2 = a, None
     while a < a_end - 1e-9:
-        gmax = float(jnp.max(jnp.sqrt(jnp.sum(g_dm ** 2, axis=1))))
+        gmax = float(np.sqrt(g2max))
         dt_cfl = float(compute_dt_fn(U))                          # gas CFL
         dt_dloga = clock.dtau_expansion(a, dloga_max)             # expansion cap
         dt_accel = dtau_accel(eta, eps_soft, gmax)                # DM acceleration
@@ -257,7 +316,7 @@ def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
             i = jnp.argmax(sig)                                   # worst-CFL cell
             rf, Pf, ef = rho.reshape(-1)[i], P.reshape(-1)[i], eint.reshape(-1)[i]
             vf, cf = vmag.reshape(-1)[i], cs.reshape(-1)[i]
-            Tcell = float(Pf) / (float(rf) + 1e-300) * mu / 8.2543e-3 / (a * a)
+            Tcell = float(Pf) / (float(rf) + 1e-300) * mu / KB_OVER_MP_KMS2_PER_K / (a * a)
             ke_eint = float(ke.reshape(-1)[i]) / (abs(float(ef)) + 1e-300)
             lim = ("cfl", "dloga", "accel")[int(np.argmin([dt_cfl, dt_dloga, dt_accel]))]
             print(f"[dbg] s={step} z={1/a-1:.2f} dt[cfl={dt_cfl:.2e} dl={dt_dloga:.2e} "
@@ -272,18 +331,36 @@ def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
         dloga = np.log(a_next / a)
         # DM half-kick @a, DM drift, gas hydro flux, JOINT solve @a_next,
         # gas operator-split kick, DM closing half-kick (one solve/step).
-        dm_p = dm_p + g_dm * (0.5 * dtau)
-        dm_pos = jnp.mod(dm_pos + dm_p * dtau, box)
+        dm_p, dm_pos = dm_half_kick_drift(dm_p, g_dm, dm_pos, dtau)
         U = step_fn(U, dtau)
-        g_gas, g_dm, dmax = forces(U, dm_pos, coeff_fac * a_next)
-        U = gas_kick(U, g_gas, dtau)
-        if rho_floor > 0.0:
-            U = apply_rho_floor(U, temp_coeff(a_next), tempmax_coeff(a_next))
+        if extrap == 2 and a_prev2 is not None:
+            c1, c2 = 2.0 * a_next / a_prev, a_next / a_prev2
+        elif extrap >= 1:
+            c1, c2 = a_next / a_prev, 0.0
+        else:
+            c1, c2 = 1.0, 0.0
+        if warm == 0:                              # reference: cold FMG/step
+            g_gas, g_dm, dmax, g2, phi_new = forces_cold(
+                U, dm_pos, coeff_fac * a_next)
+        else:
+            g_gas, g_dm, dmax, g2, phi_new = forces_warm(
+                U, dm_pos, coeff_fac * a_next, float(c1), float(c2), phi,
+                phi2)
+        phi2, a_prev2 = phi, a_prev
+        phi, a_prev = phi_new, a_next
+        g2max = float(g2)
         if dual_energy:
-            U, ie = dual_energy_update(U, ie, dtau, temp_coeff(a_next), jeans_coeff(a_next))
-        elif p_floor > 0.0 or jeans_N > 0.0 or T_floor > 0.0:
-            U = apply_floor(U, jeans_coeff(a_next), temp_coeff(a_next))
-        dm_p = dm_p + g_dm * (0.5 * dtau)
+            U = gas_kick(U, g_gas, dtau)
+            if rho_floor > 0.0:
+                U = apply_rho_floor(U, temp_coeff(a_next),
+                                    tempmax_coeff(a_next))
+            U, ie = dual_energy_update(U, ie, dtau, temp_coeff(a_next),
+                                       jeans_coeff(a_next))
+        else:
+            # fused epilogue: kick + floors in ONE jit.
+            U = gas_kick_floors(U, g_gas, dtau, jeans_coeff(a_next),
+                                temp_coeff(a_next), tempmax_coeff(a_next))
+        dm_p = dm_close_kick(dm_p, g_dm, dtau)
         tau += dtau
         a = a_next
         step += 1
@@ -498,12 +575,12 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     def temp_coeff(aa):
         if T_floor <= 0.0:
             return 0.0
-        return aa * aa * 8.2543e-3 * T_floor / mu
+        return aa * aa * KB_OVER_MP_KMS2_PER_K * T_floor / mu
 
     def tempmax_coeff(aa):
         if T_max <= 0.0:
             return 0.0
-        return aa * aa * 8.2543e-3 * T_max / mu
+        return aa * aa * KB_OVER_MP_KMS2_PER_K * T_max / mu
 
     snap_every = int(getattr(cfg, "cosmo_snap_every", 0))
     out_dir = getattr(cfg, "output_dir", "snapshots/cosmo_hydro")
@@ -616,7 +693,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
             rf, Pf, ef = rho.reshape(-1)[i], Pr.reshape(-1)[i], eint.reshape(-1)[i]
             kf, vf, cf = ke.reshape(-1)[i], vmag.reshape(-1)[i], cs.reshape(-1)[i]
             # T_phys ~ (P/rho)*mu/(kB/m_p)/a^2 ; ke/eint flags cold KE-dominated cells
-            Tcell = float(Pf) / (float(rf) + 1e-300) * mu / 8.2543e-3 / (a * a)
+            Tcell = float(Pf) / (float(rf) + 1e-300) * mu / KB_OVER_MP_KMS2_PER_K / (a * a)
             ke_eint = float(kf) / (abs(float(ef)) + 1e-300)
             lim = ("cfl", "dloga", "accel")[int(np.argmin([dt_cfl, dt_dloga, dt_accel]))]
             print(f"[dbg] s={step} z={1/a-1:.2f} dt[cfl={dt_cfl:.2e} dl={dt_dloga:.2e} "
@@ -763,7 +840,7 @@ def run_simulation_cosmo_hydro_music(cfg, is_main_process=True):
         mu = float(getattr(cfg, "cosmo_mu", 1.22))
         gamma = float(cfg.gamma)
         # u = kB T / ((gamma-1) mu m_p), in (km/s)^2 (Gadget velocity units)
-        u_init = 8.2543e-3 * T_init / ((gamma - 1.0) * mu)
+        u_init = KB_OVER_MP_KMS2_PER_K * T_init / ((gamma - 1.0) * mu)
         gas.u_int = np.full(gas.n_part, u_init, dtype=np.float64)
         if is_main_process:
             print(f"[cosmo-hydro] seeding gas T_init={T_init:.1f} K "

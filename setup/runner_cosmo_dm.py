@@ -41,8 +41,11 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     # spatially; needed for >~512^3. Falls through to the particle-parallel
     # (replicated-grid) path below for the single-device / small-grid case.
     if getattr(cfg, "dm_domain_decomp", False) and jax.device_count() > 1:
-        return _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end,
-                         dloga_max, eta, n_extra, is_main_process)
+        if getattr(cfg, "dm_decomp", "blocks") == "slab":
+            return _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end,
+                             dloga_max, eta, n_extra, is_main_process)
+        return _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end,
+                           dloga_max, eta, n_extra, is_main_process)
 
     pm = ParticleMeshGravity(cfg)
     pos = jnp.asarray(ic.pos)                              # comoving kpc/h
@@ -56,9 +59,9 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     # Warm start (cfg.dm_warm_vcycles = k > 0): carry phi between steps and apply
     # k V-cycles as a defect correction on last step's potential instead of a
     # cold full-FMG solve -- the field barely changes per step (dloga <= 0.02),
-    # so 1-2 cycles recover the FMG answer at a fraction of the cost
-    # (Horowitz 2026, arXiv:2607.10983). Default 0 = cold FMG, bit-identical
-    # to the previous behavior.
+    # so 1-2 cycles recover the FMG answer at a fraction of the cost. This is
+    # the standard warm start of time-dependent multigrid (RAMSES does the
+    # same). Default 0 = cold FMG, bit-identical to the previous behavior.
     ndev = jax.device_count()
     coeff_fac = poisson_coeff_fac(Om, H0)
     warm = int(getattr(cfg, "dm_warm_vcycles", 0))
@@ -210,6 +213,168 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     return {"a": a, "n_steps": step}
 
 
+def _balanced_pdims(ndev):
+    """Factor ndev into a balanced (px,py,pz), largest factors first."""
+    pdims = [1, 1, 1]
+    n = ndev
+    axis = 0
+    while n > 1:
+        f = 2
+        while n % f:
+            f += 1
+        pdims[axis % 3] *= f
+        n //= f
+        axis += 1
+    return tuple(sorted(pdims, reverse=True))
+
+
+def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
+                n_extra, is_main_process):
+    """3D-block DM N-body on the hydro's meshblock decomposition: deposit /
+    solve / grad / gather all on one (px,py,pz)-sharded grid, particles
+    owned per block with a per-axis ring-exchange cascade
+    (docs/SCALING_DESIGN.md). Same fused KDK + warm/mixed gravity as the
+    single-device path; conservation watchdog on every step."""
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    from gravity.particle_mesh_blocks import (
+        assemble_blocks_sharded, cic_deposit_blocks,
+        exchange_particles_blocks, gather_accel_blocks, grad_phi_blocks,
+        make_block_mesh, resort_blocks)
+    from gravity.poisson_multigrid import solve_poisson_fmg_shardmap
+
+    N = cfg.Nx
+    dx = box / N
+    ndev = jax.device_count()
+    pdims = tuple(getattr(cfg, "dm_pdims", None) or _balanced_pdims(ndev))
+    if any(N % p for p in pdims):
+        raise ValueError(f"block decomposition {pdims} must divide Nx={N}")
+    mesh = make_block_mesh(jax.devices(), pdims)
+    coeff_fac = poisson_coeff_fac(Om, H0)
+    warm = int(getattr(cfg, "dm_warm_vcycles", 1))
+    mixed = bool(getattr(cfg, "dm_mixed_precision", True))
+    eps_soft = softening_from_config(cfg, dx)
+    cap = float(getattr(cfg, "dm_capacity_factor", 1.5))
+    resort_every = int(getattr(cfg, "dm_resort_every", 4))  # in EXCHANGES
+
+    posS, pS, massS, actS, C = assemble_blocks_sharded(
+        np.asarray(ic.pos), np.asarray(ic.vel) * (a ** 1.5),
+        np.asarray(ic.mass), N, pdims, dx, box, mesh, cap)
+    clock = CosmoClock(cosmo, a, a_end, H0)
+
+    def _force(pos, mass, active, a_kick, phi_prev):
+        rho = cic_deposit_blocks(pos, mass, active, N, dx, mesh,
+                                 dtype=jnp.float32 if mixed else None)
+        delta = rho / jnp.mean(rho) - 1.0
+        if phi_prev is None:
+            phi = solve_poisson_fmg_shardmap(
+                delta.astype(jnp.float64), dx, coeff_fac * a_kick,
+                boundary=0, mesh=mesh, n_extra_vcycles=n_extra)
+        else:
+            phi = solve_poisson_fmg_shardmap(
+                delta.astype(jnp.float64), dx, coeff_fac * a_kick,
+                boundary=0, mesh=mesh, phi_init=phi_prev,
+                warm_cycles=max(warm, 1))
+        g = grad_phi_blocks(phi, dx, mesh, order=4)
+        return (gather_accel_blocks(g, pos, N, dx, mesh),
+                jnp.max(delta), phi)
+
+    from functools import partial
+
+    force_cold = jax.jit(lambda pos, m, act_, ak: _force(pos, m, act_, ak,
+                                                         None))
+
+    def _kdk_core(pos, p, g, dtau, mass, active, a_kick, phi_prev,
+                  do_exchange):
+        p_half = p + g * (0.5 * dtau)
+        pos = jnp.mod(pos + p_half * dtau, box)
+        if do_exchange:
+            pos, p_half, mass, active, n_over = exchange_particles_blocks(
+                pos, p_half, mass, active, N, dx, box, mesh)
+        else:
+            # cadenced exchange: skip while cumulative drift since the last
+            # exchange stays inside the one-ghost-cell margin the deposit
+            # and gather tolerate (halo-margin ownership, HACC-style).
+            n_over = jnp.zeros((), jnp.int32)
+        g_new, dmax, phi = _force(pos, mass, active, a_kick,
+                                  phi_prev if warm > 0 else None)
+        p_new = p_half + g_new * (0.5 * dtau)
+        g2max = jnp.max(jnp.where(active > 0,
+                                  jnp.sum(g_new ** 2, axis=1), 0.0))
+        p2max = jnp.max(jnp.where(active > 0,
+                                  jnp.sum(p_half ** 2, axis=1), 0.0))
+        if do_exchange:
+            # conservation watchdog: only exchanges can create/drop
+            # particles; quiet steps merely rearrange fixed buffers.
+            n_act = jnp.sum(active > 0)
+            m_tot = jnp.sum(mass * (active > 0))
+        else:
+            n_act = jnp.zeros((), jnp.int32)
+            m_tot = jnp.zeros(())
+        return (pos, p_new, g_new, phi, mass, active,
+                dmax, g2max, p2max, n_over, n_act, m_tot)
+
+    kdk_ex = jax.jit(partial(_kdk_core, do_exchange=True),
+                     donate_argnums=(0, 1, 2, 4, 5, 7))
+    kdk_noex = jax.jit(partial(_kdk_core, do_exchange=False),
+                       donate_argnums=(0, 1, 2, 4, 5, 7))
+    drift_margin = 0.9 * dx          # trigger before the ghost cell fills
+
+    if is_main_process:
+        print(f"[cosmo-dm] 3D-block decomposition {pdims} across {ndev} "
+              f"devices (capacity {ndev * C} for {ic.n_part} particles)")
+    tau, step, t0 = 0.0, 0, time.time()
+    g, dmax, phi = force_cold(posS, massS, actS, a)
+    jax.block_until_ready(g)
+    rep = StepLog(cfg, is_main_process,
+                  history_fields=["step", "a", "dloga", "delta_max"])
+    g2max = float(jnp.max(jnp.where(actS > 0, jnp.sum(g ** 2, axis=1), 0.0)))
+    p2max = float(jnp.max(jnp.where(actS > 0, jnp.sum(pS ** 2, axis=1), 0.0)))
+    n_act0 = int(jnp.sum(actS > 0))
+    m_tot0 = float(jnp.sum(massS * (actS > 0)))
+    cum_drift, n_exchanges = 0.0, 0
+    while a < a_end - 1e-9:
+        dtau = clock.cap_expansion(dtau_accel(eta, eps_soft, np.sqrt(g2max)),
+                                   a, dloga_max)
+        dtau = clock.cap_to_table(dtau, tau)
+        a_next = clock.a_of_tau(tau + dtau)
+        dloga = np.log(a_next / a)
+        # will this step's worst-case drift overflow the ghost margin?
+        # p_half = p + g*dtau/2, so bound |p_half| by last step's maxima.
+        step_drift = (np.sqrt(p2max) + 0.5 * np.sqrt(g2max) * dtau) * dtau
+        do_ex = (cum_drift + step_drift) > drift_margin
+        kdk = kdk_ex if do_ex else kdk_noex
+        (posS, pS, g, phi, massS, actS, dmax, g2, p2, n_over, n_act,
+         m_tot) = kdk(posS, pS, g, dtau, massS, actS, a_next, phi)
+        g2max = float(g2)
+        p2max = float(p2)
+        cum_drift = 0.0 if do_ex else cum_drift + step_drift
+        n_exchanges += int(do_ex)
+        # cell-order resort cadence: keep deposit/gather memory-local as
+        # clustering decays the IC ordering (measured 4-8x effect).
+        if resort_every and do_ex and n_exchanges % resort_every == 0:
+            posS, pS, massS, actS = resort_blocks(
+                posS, pS, massS, actS, N, dx, mesh)
+        tau += dtau
+        a = a_next
+        step += 1
+        if do_ex and (int(n_over) != 0 or int(n_act) != n_act0
+                      or abs(float(m_tot) - m_tot0) > 1e-8 * m_tot0):
+            raise RuntimeError(
+                f"[cosmo-dm] block exchange conservation violated at step "
+                f"{step}: overflow={int(n_over)}, n_active {int(n_act)} vs "
+                f"{n_act0}, mass {float(m_tot):.15e} vs {m_tot0:.15e}")
+        rep.step(step, f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} "
+                 f"{dloga:8.5f} {float(dmax):10.3f}",
+                 row=[step, a, dloga, float(dmax)],
+                 force=a >= a_end - 1e-9)
+    if is_main_process:
+        print(f"[cosmo-dm] done: {step} steps ({n_exchanges} exchanges), "
+              f"a={a:.4f} (z={1/a-1:.4f}), {time.time()-t0:.1f}s")
+    return {"a": a, "n_steps": step, "n_exchanges": n_exchanges}
+
+
 def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
               n_extra, is_main_process):
     """Grid-sharded (1-D slab) DM N-body. Mesh + MG shard along x; particles are
@@ -253,18 +418,50 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
 
     clock = CosmoClock(cosmo, a, a_end, H0)
 
-    @jax.jit
-    def force(pos, mass, active, a_kick):
-        # MUST be jitted: solve_poisson_fmg_shardmap rebuilds a fresh jitted FMG
-        # closure each call, so an unjitted force recompiles the multigrid every
-        # step. Jitting traces the body once -> FMG compiles once, steps cache-hit.
+    warm = int(getattr(cfg, "dm_warm_vcycles", 0))
+
+    def _force(pos, mass, active, a_kick, phi_prev):
+        # MUST be jitted by the caller: solve_poisson_fmg_shardmap rebuilds a
+        # fresh jitted FMG closure each call; jitting the caller traces once.
         rho = cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh)
         delta = rho / jnp.mean(rho) - 1.0
-        phi = solve_poisson_fmg_shardmap(
-            delta, dx, coeff_fac * a_kick, boundary=0, mesh=mesh,
-            n_levels=n_levels, n_extra_vcycles=n_extra)
+        if phi_prev is None:                                # cold FMG (startup)
+            phi = solve_poisson_fmg_shardmap(
+                delta, dx, coeff_fac * a_kick, boundary=0, mesh=mesh,
+                n_levels=n_levels, n_extra_vcycles=n_extra)
+        else:                                               # warm carried phi
+            phi = solve_poisson_fmg_shardmap(
+                delta, dx, coeff_fac * a_kick, boundary=0, mesh=mesh,
+                n_levels=n_levels, phi_init=phi_prev,
+                warm_cycles=max(warm, 1))
         g = grad_phi_slab(phi, dx, mesh, order=4)
-        return gather_accel_slab(g, pos, Nx, Ny, Nz, dx, mesh), jnp.max(delta)
+        return (gather_accel_slab(g, pos, Nx, Ny, Nz, dx, mesh),
+                jnp.max(delta), phi)
+
+    from functools import partial
+
+    force_cold = jax.jit(lambda pos, m, act, ak: _force(pos, m, act, ak, None))
+
+    @partial(jax.jit, donate_argnums=(0, 1, 2, 4, 5, 7))
+    def kdk(pos, p, g, dtau, mass, active, a_kick, phi_prev):
+        # fused KDK: half-kick, drift, exchange to owning slab, warm force,
+        # half-kick — one jit, no eager 134M temporaries. Also returns the
+        # conservation watchdogs (total active count + mass) and max|g|^2.
+        p_half = p + g * (0.5 * dtau)
+        pos = jnp.mod(pos + p_half * dtau, box)
+        pos, p_half, mass, active, n_bad, max_occ = exchange_particles_slab(
+            pos, p_half, mass, active, Nx, dx, box, mesh)
+        if warm > 0:
+            g_new, dmax, phi = _force(pos, mass, active, a_kick, phi_prev)
+        else:
+            g_new, dmax, phi = _force(pos, mass, active, a_kick, None)
+        p_new = p_half + g_new * (0.5 * dtau)
+        g2max = jnp.max(jnp.where(active > 0,
+                                  jnp.sum(g_new ** 2, axis=1), 0.0))
+        n_act = jnp.sum(active > 0)
+        m_tot = jnp.sum(mass * (active > 0))
+        return (pos, p_new, g_new, phi, mass, active,
+                dmax, g2max, n_bad, max_occ, n_act, m_tot)
 
     if is_main_process:
         print(f"[cosmo-dm] grid-sharded slab decomposition across {ndev} devices "
@@ -280,7 +477,7 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         print("[cosmo-dm] compiling first PM force "
               "(deposit -> FMG -> grad -> gather) ...", flush=True)
     tc = time.time()
-    g, dmax = force(posS, massS, actS, a)
+    g, dmax, phi = force_cold(posS, massS, actS, a)
     jax.block_until_ready(g)
     if is_main_process:
         print(f"[cosmo-dm] first force compiled+ran in {time.time()-tc:.1f}s", flush=True)
@@ -288,24 +485,29 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
                   history_fields=["step", "a", "dloga", "delta_max",
                                   "max_occ", "n_bad"])
     n_bad_tot = 0
+    g2max = float(jnp.max(jnp.where(actS > 0, jnp.sum(g ** 2, axis=1), 0.0)))
+    n_act0 = int(jnp.sum(actS > 0))
+    m_tot0 = float(jnp.sum(massS * (actS > 0)))
     while a < a_end - 1e-9:
-        gmag = jnp.sqrt(jnp.sum(g ** 2, axis=1))
-        gmax = float(jnp.max(jnp.where(actS > 0, gmag, 0.0)))   # active slots only
-        dtau = clock.cap_expansion(dtau_accel(eta, eps_soft, gmax), a, dloga_max)
+        dtau = clock.cap_expansion(dtau_accel(eta, eps_soft, np.sqrt(g2max)),
+                                   a, dloga_max)
         dtau = clock.cap_to_table(dtau, tau)
         a_next = clock.a_of_tau(tau + dtau)
         dloga = np.log(a_next / a)
-        # KDK: half-kick @a, drift, exchange to owning slab, refresh force @a_next, half-kick.
-        pS = pS + g * (0.5 * dtau)
-        posS = jnp.mod(posS + pS * dtau, box)
-        posS, pS, massS, actS, n_bad, max_occ = exchange_particles_slab(
-            posS, pS, massS, actS, Nx, dx, box, mesh)
-        g, dmax = force(posS, massS, actS, a_next)
-        pS = pS + g * (0.5 * dtau)
+        (posS, pS, g, phi, massS, actS, dmax, g2, n_bad, max_occ,
+         n_act, m_tot) = kdk(posS, pS, g, dtau, massS, actS, a_next, phi)
+        g2max = float(g2)
         tau += dtau
         a = a_next
         step += 1
         n_bad_tot += int(n_bad)
+        # conservation watchdog: the exchange must not create or drop
+        # particles/mass (historical bug class; user directive).
+        if int(n_act) != n_act0 or abs(float(m_tot) - m_tot0) > 1e-8 * m_tot0:
+            raise RuntimeError(
+                f"[cosmo-dm] slab exchange conservation violated at step "
+                f"{step}: n_active {int(n_act)} vs {n_act0}, mass "
+                f"{float(m_tot):.15e} vs {m_tot0:.15e}")
         rep.step(step, f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} "
                  f"{dloga:8.5f} {float(dmax):10.3f} {int(max_occ):8d} "
                  f"{int(n_bad):6d} {(time.time()-t0)/step:6.2f}s/step",

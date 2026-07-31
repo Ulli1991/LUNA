@@ -16,6 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from setup.run_report import require_finite
+from units import KB_OVER_MP_KMS2_PER_K
 
 # Parameter bundles threaded through the setup helpers (grouped so no helper
 # needs a wall of positional arguments).
@@ -49,7 +50,7 @@ def _load_music_ic(cfg, is_main_process):
         z = 1.0 / a0_music - 1.0
         T_init = float(getattr(cfg, "cosmo_T_init", 0.0)) or 2.725 * (1.0 + z)
         mu = float(getattr(cfg, "cosmo_mu", 1.22))
-        u_init = 8.2543e-3 * T_init / ((float(cfg.gamma) - 1.0) * mu)
+        u_init = KB_OVER_MP_KMS2_PER_K * T_init / ((float(cfg.gamma) - 1.0) * mu)
         gas.u_int = _np.full(gas.n_part, u_init, dtype=_np.float64)
         if is_main_process:
             print(f"  cosmo-AMR DM: seeding gas T_init={T_init:.1f} K")
