@@ -16,8 +16,11 @@ import math
 # CGS Physical Constants
 # ============================================================================
 GRAVITY_CGS = 6.67430e-8          # cm^3 g^-1 s^-2
-BOLTZMANN_CGS = 1.38065e-16       # erg K^-1
-PROTON_MASS_CGS = 1.67262e-24     # g
+BOLTZMANN_CGS = 1.380649e-16      # erg K^-1 (CODATA exact)
+PROTON_MASS_CGS = 1.6726219e-24   # g (CODATA)
+# kB/mp in (km/s)^2 per K — the T <-> specific-energy factor used by
+# the cosmo floors/ceilings everywhere.
+KB_OVER_MP_KMS2_PER_K = BOLTZMANN_CGS / PROTON_MASS_CGS / 1e10
 ELECTRON_MASS_CGS = 9.10938e-28   # g
 SPEED_OF_LIGHT_CGS = 2.99792e10   # cm s^-1
 THOMPSON_CGS = 6.65246e-25        # cm^2
