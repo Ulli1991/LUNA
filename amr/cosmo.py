@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 import numpy as np
+from units import KB_OVER_MP_KMS2_PER_K
 
 
 def make_cosmo_amr(cfg, acfg, rho_bar, *, is_main_process=True):
@@ -72,7 +73,7 @@ def make_cosmo_amr(cfg, acfg, rho_bar, *, is_main_process=True):
         #     blows up as rho -> floor); reset e_int to the T-floor value.
         if rho_floor > 0.0:
             bad = rho < rho_floor * floor_buffer
-            ct0 = aa * aa * 8.2543e-3 * T_floor / mu if T_floor > 0.0 else 0.0
+            ct0 = aa * aa * KB_OVER_MP_KMS2_PER_K * T_floor / mu if T_floor > 0.0 else 0.0
             eint_fl = jnp.maximum(ct0 * rho_floor / (gamma - 1.0), 1e-300)
             rho = jnp.where(bad, rho_floor, rho)
             mom = jnp.where(bad, 0.0, mom)
@@ -90,12 +91,12 @@ def make_cosmo_amr(cfg, acfg, rho_bar, *, is_main_process=True):
 
         # (3) temperature ceiling on e_int (spurious hot diffuse cells).
         if T_max > 0.0:
-            ctmax = aa * aa * 8.2543e-3 * T_max / mu
+            ctmax = aa * aa * KB_OVER_MP_KMS2_PER_K * T_max / mu
             eint = jnp.minimum(eint, ctmax * rho / (gamma - 1.0))
 
         # (4) pressure floor: P >= max(p_floor, ct*rho [T_floor], cj*rho^2 [Jeans]).
         P = (gamma - 1.0) * eint
-        ct = aa * aa * 8.2543e-3 * T_floor / mu if T_floor > 0.0 else 0.0
+        ct = aa * aa * KB_OVER_MP_KMS2_PER_K * T_floor / mu if T_floor > 0.0 else 0.0
         cj = (coeff_fac * aa * (jeans_N * dx) ** 2 / (4.0 * np.pi ** 2 * rho_bar)
               if jeans_N > 0.0 else 0.0)
         Pmin = jnp.maximum(jnp.maximum(p_floor0, ct * rho), cj * rho * rho)
