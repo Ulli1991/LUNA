@@ -92,23 +92,36 @@ class ParticleMeshGravity:
 
     # -- trilinear (CIC) interpolation, vectorized over particles -----------
     def _interp_one(self, field, p):
-        """Trilinear interpolation of `field` at a single position `p`."""
+        """Trilinear interpolation of `field` at a single position `p`
+        (periodic wrap for boundary 0, face-clamped otherwise)."""
         fx = p[0] / self.dx - 0.5
         fy = p[1] / self.dx - 0.5
         fz = p[2] / self.dx - 0.5
-        i0 = jnp.clip(jnp.floor(fx).astype(jnp.int32), 0, self.Nx - 2)
-        j0 = jnp.clip(jnp.floor(fy).astype(jnp.int32), 0, self.Ny - 2)
-        k0 = jnp.clip(jnp.floor(fz).astype(jnp.int32), 0, self.Nz - 2)
-        tx = jnp.clip(fx - i0, 0.0, 1.0)
-        ty = jnp.clip(fy - j0, 0.0, 1.0)
-        tz = jnp.clip(fz - k0, 0.0, 1.0)
+        i0 = jnp.floor(fx).astype(jnp.int32)
+        j0 = jnp.floor(fy).astype(jnp.int32)
+        k0 = jnp.floor(fz).astype(jnp.int32)
+        tx = fx - i0
+        ty = fy - j0
+        tz = fz - k0
+        if self.boundary != 0:
+            i0 = jnp.clip(i0, 0, self.Nx - 2)
+            j0 = jnp.clip(j0, 0, self.Ny - 2)
+            k0 = jnp.clip(k0, 0, self.Nz - 2)
+            tx = jnp.clip(fx - i0, 0.0, 1.0)
+            ty = jnp.clip(fy - j0, 0.0, 1.0)
+            tz = jnp.clip(fz - k0, 0.0, 1.0)
         out = 0.0
         for di in (0, 1):
             for dj in (0, 1):
                 for dk in (0, 1):
                     w = ((tx if di else 1 - tx) * (ty if dj else 1 - ty)
                          * (tz if dk else 1 - tz))
-                    out = out + w * field[i0 + di, j0 + dj, k0 + dk]
+                    ix, jy, kz = i0 + di, j0 + dj, k0 + dk
+                    if self.boundary == 0:
+                        ix = jnp.mod(ix, self.Nx)
+                        jy = jnp.mod(jy, self.Ny)
+                        kz = jnp.mod(kz, self.Nz)
+                    out = out + w * field[ix, jy, kz]
         return out
 
     def sample_at_points(self, field, positions):
@@ -137,12 +150,19 @@ class ParticleMeshGravity:
         fx = positions[:, 0] / self.dx - 0.5
         fy = positions[:, 1] / self.dx - 0.5
         fz = positions[:, 2] / self.dx - 0.5
-        i0 = jnp.clip(jnp.floor(fx).astype(jnp.int32), 0, self.Nx - 2)
-        j0 = jnp.clip(jnp.floor(fy).astype(jnp.int32), 0, self.Ny - 2)
-        k0 = jnp.clip(jnp.floor(fz).astype(jnp.int32), 0, self.Nz - 2)
-        tx = jnp.clip(fx - i0, 0.0, 1.0)
-        ty = jnp.clip(fy - j0, 0.0, 1.0)
-        tz = jnp.clip(fz - k0, 0.0, 1.0)
+        i0 = jnp.floor(fx).astype(jnp.int32)
+        j0 = jnp.floor(fy).astype(jnp.int32)
+        k0 = jnp.floor(fz).astype(jnp.int32)
+        tx = fx - i0
+        ty = fy - j0
+        tz = fz - k0
+        if self.boundary != 0:                 # non-periodic: clamp to faces
+            i0 = jnp.clip(i0, 0, self.Nx - 2)
+            j0 = jnp.clip(j0, 0, self.Ny - 2)
+            k0 = jnp.clip(k0, 0, self.Nz - 2)
+            tx = jnp.clip(fx - i0, 0.0, 1.0)
+            ty = jnp.clip(fy - j0, 0.0, 1.0)
+            tz = jnp.clip(fz - k0, 0.0, 1.0)
         if dtype is not None:
             w, tx, ty, tz = (q.astype(dtype) for q in (w, tx, ty, tz))
         rho = jnp.zeros((self.Nx, self.Ny, self.Nz), dtype=w.dtype)
@@ -151,7 +171,12 @@ class ParticleMeshGravity:
                 for dk in (0, 1):
                     wt = ((tx if di else 1 - tx) * (ty if dj else 1 - ty)
                           * (tz if dk else 1 - tz)) * w
-                    rho = rho.at[i0 + di, j0 + dj, k0 + dk].add(wt)
+                    ix, jy, kz = i0 + di, j0 + dj, k0 + dk
+                    if self.boundary == 0:     # periodic wrap at the faces
+                        ix = jnp.mod(ix, self.Nx)
+                        jy = jnp.mod(jy, self.Ny)
+                        kz = jnp.mod(kz, self.Nz)
+                    rho = rho.at[ix, jy, kz].add(wt)
         return rho
 
     def particles_potential(self, positions, masses, active):

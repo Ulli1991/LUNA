@@ -29,11 +29,11 @@ def make_scalar_halo_3d_shardmap(mesh):
             )
         periodic = boundary == 0
 
-        def halo(phi):
+        def halo(phi, width=1):
             # x → y → z axis-by-axis; chaining populates corners.
-            phi_padded = _pad_axis(phi, axis=0, axis_name="x", n_proc=nx, periodic=periodic)
-            phi_padded = _pad_axis(phi_padded, axis=1, axis_name="y", n_proc=ny, periodic=periodic)
-            phi_padded = _pad_axis(phi_padded, axis=2, axis_name="z", n_proc=nz, periodic=periodic)
+            phi_padded = _pad_axis(phi, axis=0, axis_name="x", n_proc=nx, periodic=periodic, width=width)
+            phi_padded = _pad_axis(phi_padded, axis=1, axis_name="y", n_proc=ny, periodic=periodic, width=width)
+            phi_padded = _pad_axis(phi_padded, axis=2, axis_name="z", n_proc=nz, periodic=periodic, width=width)
             return phi_padded
 
         return halo

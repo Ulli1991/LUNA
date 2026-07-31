@@ -77,6 +77,69 @@ def rbgs_smoother(phi, rhs, dx, halo_fn, n_iter):
     return jax.lax.fori_loop(0, n_iter, body, phi)
 
 
+def rbgs_smoother_ca(phi, rhs, dx, halo_w_fn, n_iter):
+    """Communication-avoiding red-black Gauss-Seidel: ONE width-2·n_iter halo
+    exchange, then 2·n_iter stencil applications on a shrinking extended
+    frame — the same update sequence as ``n_iter`` standard RBGS iterations
+    with 1 exchange instead of 2·n_iter. Periodic/Neumann shards with even
+    local dims and even shard offsets (parity is then compile-time static).
+    ``halo_w_fn(field, width)`` supplies the wide halo."""
+    w = 2 * n_iter
+    E = halo_w_fn(phi, w)
+    R = halo_w_fn(rhs, w)
+    dx2 = dx * dx
+    for k in range(w):
+        nbr = (E[2:, 1:-1, 1:-1] + E[:-2, 1:-1, 1:-1]
+               + E[1:-1, 2:, 1:-1] + E[1:-1, :-2, 1:-1]
+               + E[1:-1, 1:-1, 2:] + E[1:-1, 1:-1, :-2])
+        o = k + 1                                # frame origin offset so far
+        Rc = R[o:-o, o:-o, o:-o]
+        target = (nbr - dx2 * Rc) / 6.0
+        red = _make_red_mask(target.shape)
+        if (3 * o) % 2 == 1:                     # frame origin parity flip
+            red = ~red
+        want_red = (k % 2 == 0)                  # red app, then black, ...
+        E = jnp.where(red if want_red else ~red, target, E[1:-1, 1:-1, 1:-1])
+    return E
+
+
+def cheb_smoother_ca(phi, rhs, dx, halo_w_fn, n_iter, alpha=4.0):
+    """Communication-avoiding Chebyshev-Jacobi smoother: ONE width-2·n_iter
+    halo exchange, then a degree-2·n_iter Chebyshev iteration on the
+    shrinking frame — same halo budget as ``rbgs_smoother_ca(n_iter)``, but
+    every stencil application advances the polynomial (no red/black halves).
+    Smooths D⁻¹A over [λmax/α, λmax]; λmax = 2 exactly for the 7-pt
+    Laplacian (Adams et al. 2003; Baker et al. 2011)."""
+    k = 2 * n_iter
+    E = halo_w_fn(phi, k)
+    R = halo_w_fn(rhs, k)
+    lmax = 2.0
+    lmin = lmax / alpha
+    theta = 0.5 * (lmax + lmin)
+    delta = 0.5 * (lmax - lmin)
+    inv_diag = -(dx * dx) / 6.0
+    sigma = theta / delta
+    rho = 1.0 / sigma
+    d = None
+    for j in range(k):
+        nbr = (E[2:, 1:-1, 1:-1] + E[:-2, 1:-1, 1:-1]
+               + E[1:-1, 2:, 1:-1] + E[1:-1, :-2, 1:-1]
+               + E[1:-1, 1:-1, 2:] + E[1:-1, 1:-1, :-2])
+        core = E[1:-1, 1:-1, 1:-1]
+        o = j + 1
+        lap = (nbr - 6.0 * core) / (dx * dx)
+        r = (R[o:-o, o:-o, o:-o] - lap) * inv_diag
+        if d is None:
+            d = r / theta
+        else:
+            rho_new = 1.0 / (2.0 * sigma - rho)
+            d = rho_new * rho * d[1:-1, 1:-1, 1:-1] \
+                + (2.0 * rho_new / delta) * r
+            rho = rho_new
+        E = core + d
+    return E
+
+
 # ---------------------------------------------------------------------------
 # Inter-grid transfer
 # ---------------------------------------------------------------------------
@@ -143,7 +206,8 @@ def _finish(phi, rhs, dx, halo_fn, return_residual):
     return phi
 
 
-def vcycle(phi, rhs, dx, halo_fn, level, n_pre, n_post, n_coarsest, halo_inner=None):
+def vcycle(phi, rhs, dx, halo_fn, level, n_pre, n_post, n_coarsest, halo_inner=None,
+           coarse_fn=None, smoother=None):
     """Recursive V-cycle. `level` counts down to 0 (coarsest).
 
     `halo_fn` is passed to both the smoother *and* the prolongation —
@@ -155,20 +219,28 @@ def vcycle(phi, rhs, dx, halo_fn, level, n_pre, n_post, n_coarsest, halo_inner=N
     the recursive error subproblem and the prolongation use this halo
     (zero Dirichlet) while this level's smoothing keeps `halo_fn`
     (multipole Dirichlet). None → use `halo_fn` throughout.
+
+    `coarse_fn(phi, rhs, dx)` replaces the level-0 heavy smoothing when set
+    (shard_map agglomeration: gather the small coarse grid and finish the
+    ladder locally, comm-free).
     """
     if level == 0:
+        if coarse_fn is not None:
+            return coarse_fn(phi, rhs, dx)
         return rbgs_smoother(phi, rhs, dx, halo_fn, n_coarsest)
 
+    smooth = (smoother if smoother is not None
+              else lambda p, r, d, n: rbgs_smoother(p, r, d, halo_fn, n))
     inner = halo_fn if halo_inner is None else halo_inner
-    phi = rbgs_smoother(phi, rhs, dx, halo_fn, n_pre)
+    phi = smooth(phi, rhs, dx, n_pre)
     r = residual(phi, rhs, dx, halo_fn)
     r_c = restrict(r)
     e_c = vcycle(
         jnp.zeros_like(r_c), r_c, 2.0 * dx, inner, level - 1, n_pre, n_post, n_coarsest,
-        halo_inner=halo_inner,
+        halo_inner=halo_inner, coarse_fn=coarse_fn, smoother=smoother,
     )
     phi = phi + prolong(e_c, halo_fn=inner)
-    phi = rbgs_smoother(phi, rhs, dx, halo_fn, n_post)
+    phi = smooth(phi, rhs, dx, n_post)
     return phi
 
 
@@ -259,20 +331,78 @@ def solve_poisson_fmg_shardmap(
     n_post=2,
     n_coarsest=50,
     subtract_mean=True,
+    agg_n=32,
+    phi_init=None,
+    warm_cycles=1,
 ):
     """shard_map-wrapped FMG Poisson solve: each device runs FMG on its local
     shard with ppermute halos. ``subtract_mean`` applies the periodic-BC Jeans
-    swindle globally before entering shard_map."""
+    swindle globally before entering shard_map.
+
+    ``agg_n``: coarse-level agglomeration — once the global grid is this
+    small, all_gather it and finish the ladder locally (redundantly) on
+    every device: no communication on any coarser level, and full ladder
+    depth independent of slab thickness. 0 disables.
+
+    ``phi_init``: warm start — skip FMG entirely and apply ``warm_cycles``
+    V-cycles from this carried potential (the per-step production path)."""
     from functools import partial
     from jax.experimental.shard_map import shard_map
     from jax.sharding import PartitionSpec as P
 
+    from gravity.poisson_bc import make_halo_3d
     from gravity.poisson_bc_shardmap import make_scalar_halo_3d_shardmap
 
-    n_levels = _resolve_n_levels(rho, n_levels)
+    N = rho.shape[0]
+    axis_shards = [("x", 0), ("y", 1), ("z", 2)]
+    max_shards = max(int(mesh.shape[a]) for a, _ in axis_shards)
+    coarse_fn = None
+    if agg_n and max_shards > 1:
+        agg_eff = max(int(agg_n), 2 * max_shards)      # keep >=2 cells/shard
+        # sharded levels: N -> agg_eff by factors of 2, then agglomerate
+        n_levels = max(1, (max(N // agg_eff, 1)).bit_length())
+        plain_halo = make_halo_3d(boundary)
+
+        def coarse_fn(phi_l, rhs_l, dxc):
+            g_phi, g_rhs = phi_l, rhs_l
+            for name, ax in axis_shards:
+                if int(mesh.shape[name]) > 1:
+                    g_phi = jax.lax.all_gather(g_phi, name, axis=ax, tiled=True)
+                    g_rhs = jax.lax.all_gather(g_rhs, name, axis=ax, tiled=True)
+            depth = _max_levels(g_rhs.shape[0]) - 1
+            e = vcycle(g_phi, g_rhs, dxc, plain_halo, depth,
+                       n_pre, n_post, n_coarsest)
+            for name, ax in axis_shards:
+                nsh = int(mesh.shape[name])
+                if nsh > 1:
+                    i = jax.lax.axis_index(name)
+                    loc = e.shape[ax] // nsh
+                    e = jax.lax.dynamic_slice_in_dim(e, i * loc, loc, axis=ax)
+            return e
+    else:
+        n_levels = _resolve_n_levels(rho, n_levels)
 
     halo_factory = make_scalar_halo_3d_shardmap(mesh)
     halo_fn = halo_factory(boundary)
+
+    # Communication-avoiding smoothing: one wide halo exchange per smoothing
+    # block instead of 2 per red-black iteration. Falls back to the sync
+    # smoother on levels whose local shard is thinner than the wide slab.
+    # Default "auto": ON for multi-node runs (measured -24%/-29% at 4/8 GPUs
+    # over the network), OFF intra-node (XGMI latency is tiny; measured
+    # slightly slower there). LUNA_MG_CA=0/1 forces.
+    import os as _os
+    _ca = _os.environ.get("LUNA_MG_CA", "auto")
+    ca_on = (_ca == "1") or (_ca == "auto" and jax.process_count() > 1)
+    _smoo = _os.environ.get("LUNA_MG_SMOOTHER", "rbgs")   # rbgs | cheb
+    smoother = None
+    if ca_on and max_shards > 1 and boundary in (0, 1):
+        _ca_fn = cheb_smoother_ca if _smoo == "cheb" else rbgs_smoother_ca
+
+        def smoother(p, r, d, n):
+            if min(p.shape) < 2 * n:
+                return rbgs_smoother(p, r, d, halo_fn, n)
+            return _ca_fn(p, r, d, halo_fn, n)
 
     # Jeans-swindle subtraction. Under auto-sharding `jnp.mean` works
     # globally; do it before shard_map so each shard sees the centred
@@ -281,6 +411,41 @@ def solve_poisson_fmg_shardmap(
         rho_src = rho - jnp.mean(rho)
     else:
         rho_src = rho
+
+    if phi_init is not None:
+        # LUNA_MG_MIXED=1: FP64 residual of the carried phi, FP32 V-cycle on
+        # the correction, FP64 accumulate — same converged residual at ~2/3
+        # the cycle cost (measured single-GPU), and it halves every halo and
+        # agglomeration-gather byte on the sharded ladder.
+        mixed = _os.environ.get("LUNA_MG_MIXED", "0") == "1"
+
+        @partial(jax.jit, static_argnames=())
+        @partial(shard_map, mesh=mesh,
+                 in_specs=(P("x", "y", "z"), P("x", "y", "z")),
+                 out_specs=P("x", "y", "z"))
+        def _local_vcycles(rho_local, phi_local):
+            rhs_local = fourpiG * rho_local
+            for _ in range(max(1, n_extra_vcycles) if warm_cycles is None
+                           else warm_cycles):
+                if mixed:
+                    r = (rhs_local
+                         - laplacian_7pt(phi_local, dx, halo_fn)
+                         ).astype(jnp.float32)
+                    e = vcycle(
+                        jnp.zeros_like(r), r, dx, halo_fn, n_levels - 1,
+                        n_pre, n_post, n_coarsest, coarse_fn=coarse_fn,
+                        smoother=smoother,
+                    )
+                    phi_local = phi_local + e
+                else:
+                    phi_local = vcycle(
+                        phi_local, rhs_local, dx, halo_fn, n_levels - 1,
+                        n_pre, n_post, n_coarsest, coarse_fn=coarse_fn,
+                        smoother=smoother,
+                    )
+            return phi_local
+
+        return _local_vcycles(rho_src, phi_init)
 
     @partial(jax.jit, static_argnames=())
     @partial(
@@ -292,11 +457,13 @@ def solve_poisson_fmg_shardmap(
     def _local_fmg(rho_local):
         rhs_local = fourpiG * rho_local
         phi_local = fmg_solve(
-            rhs_local, dx, halo_fn, n_levels, n_pre, n_post, n_coarsest, n_vcycles_per_level
+            rhs_local, dx, halo_fn, n_levels, n_pre, n_post, n_coarsest,
+            n_vcycles_per_level, coarse_fn=coarse_fn, smoother=smoother,
         )
         for _ in range(n_extra_vcycles):
             phi_local = vcycle(
-                phi_local, rhs_local, dx, halo_fn, n_levels - 1, n_pre, n_post, n_coarsest
+                phi_local, rhs_local, dx, halo_fn, n_levels - 1, n_pre, n_post,
+                n_coarsest, coarse_fn=coarse_fn, smoother=smoother,
             )
         return phi_local
 
@@ -304,75 +471,6 @@ def solve_poisson_fmg_shardmap(
 
 
 # ---------------------------------------------------------------------------
-# Multigrid-preconditioned Conjugate Gradient
-# ---------------------------------------------------------------------------
-def solve_poisson_pcg(
-    rho,
-    dx,
-    fourpiG,
-    boundary,
-    n_levels=None,
-    n_pcg_iter=20,
-    n_pre=2,
-    n_post=2,
-    n_coarsest=50,
-    return_residual=False,
-):
-    """Preconditioned CG with one V-cycle as the preconditioner.
-
-    Algorithm (Hestenes-Stiefel CG, M^{-1} = single V-cycle):
-        r_0 = rhs - A x_0   (with x_0 = 0, so r_0 = rhs)
-        z_0 = M^{-1} r_0    (one V-cycle on r_0)
-        p_0 = z_0
-        for k = 0, 1, ...:
-            α = (r_k · z_k) / (p_k · A p_k)
-            x_{k+1} = x_k + α p_k
-            r_{k+1} = r_k - α A p_k
-            z_{k+1} = M^{-1} r_{k+1}
-            β = (r_{k+1} · z_{k+1}) / (r_k · z_k)
-            p_{k+1} = z_{k+1} + β p_k
-
-    The Laplacian is SPD (with the zero-mean constraint imposed by
-    periodic BC, or modulo a constant for Neumann). With a multigrid
-    preconditioner the condition number stays O(1) independent of N, so
-    PCG converges in ~5-15 iterations to high accuracy regardless of
-    resolution. Each iteration is one V-cycle + a handful of BLAS dots,
-    so the per-step cost matches a single V-cycle.
-
-    For pure forward (no autodiff) self-grav this is overkill vs FMG;
-    most use cases will prefer FMG. PCG shines for very tight tolerances
-    or for hard problems (e.g. cosmological boxes where one mode is
-    millions of times stronger than the others).
-    """
-    n_levels = _resolve_n_levels(rho, n_levels)
-    halo_fn = make_halo_3d(boundary)
-    rhs = fourpiG * rho
-
-    def apply_A(phi):
-        return laplacian_7pt(phi, dx, halo_fn)
-
-    def precond(r):
-        # One V-cycle starting from zero gives z ≈ A^{-1} r
-        return vcycle(jnp.zeros_like(r), r, dx, halo_fn, n_levels - 1, n_pre, n_post, n_coarsest)
-
-    x = jnp.zeros_like(rhs)
-    r = rhs - apply_A(x)
-    z = precond(r)
-    p = z
-    rz = jnp.sum(r * z)
-
-    for _ in range(n_pcg_iter):
-        Ap = apply_A(p)
-        alpha = rz / jnp.sum(p * Ap)
-        x = x + alpha * p
-        r = r - alpha * Ap
-        z = precond(r)
-        rz_new = jnp.sum(r * z)
-        beta = rz_new / rz
-        p = z + beta * p
-        rz = rz_new
-
-    return _finish(x, rhs, dx, halo_fn, return_residual)
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +485,8 @@ def fmg_solve(
     n_post=2,
     n_coarsest=50,
     n_vcycles_per_level=1,
+    coarse_fn=None,
+    smoother=None,
 ):
     """Full Multigrid Poisson solve: restrict the RHS down the hierarchy,
     solve coarsest with heavy smoothing, then prolong upward with
@@ -402,12 +502,14 @@ def fmg_solve(
     # 2-4) Coarsest heavy smooth, then prolong + V-cycle up the ladder.
     return _fmg_ladder(
         rhs_levels, dx_levels, [halo_fn] * n_levels, None,
-        n_pre, n_post, n_coarsest, n_vcycles_per_level,
+        n_pre, n_post, n_coarsest, n_vcycles_per_level, coarse_fn=coarse_fn,
+        smoother=smoother,
     )
 
 
 def _fmg_ladder(rhs_levels, dx_levels, halo_tops, halo_inner,
-                n_pre, n_post, n_coarsest, n_vcycles_per_level):
+                n_pre, n_post, n_coarsest, n_vcycles_per_level, coarse_fn=None,
+                smoother=None):
     """Shared FMG walk-up: heavy smooth at the coarsest level, then
     prolong + n_vcycles_per_level V-cycles at each finer level.
 
@@ -417,7 +519,10 @@ def _fmg_ladder(rhs_levels, dx_levels, halo_tops, halo_inner,
     """
     n_levels = len(rhs_levels)
     phi = jnp.zeros_like(rhs_levels[-1])
-    phi = rbgs_smoother(phi, rhs_levels[-1], dx_levels[-1], halo_tops[-1], n_coarsest)
+    if coarse_fn is not None:
+        phi = coarse_fn(phi, rhs_levels[-1], dx_levels[-1])
+    else:
+        phi = rbgs_smoother(phi, rhs_levels[-1], dx_levels[-1], halo_tops[-1], n_coarsest)
 
     for L in range(n_levels - 2, -1, -1):
         phi = prolong(phi, halo_fn=halo_tops[L] if halo_inner is None else halo_inner)
@@ -425,7 +530,8 @@ def _fmg_ladder(rhs_levels, dx_levels, halo_tops, halo_inner,
         for _ in range(n_vcycles_per_level):
             phi = vcycle(
                 phi, rhs_levels[L], dx_levels[L], halo_tops[L], depth,
-                n_pre, n_post, n_coarsest, halo_inner=halo_inner,
+                n_pre, n_post, n_coarsest, halo_inner=halo_inner, coarse_fn=coarse_fn,
+                smoother=smoother,
             )
 
     return phi
