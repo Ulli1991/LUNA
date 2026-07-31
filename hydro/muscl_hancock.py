@@ -102,39 +102,45 @@ def _axis_bc_slabs(W_pad, d):
 
 
 def _muscl_hancock_3d(W_pad, dt, *, gamma, limiter, riemann_solver, inv_dx, inv_dy, inv_dz, boundary,
-                      exact_wrap=False):
+                      exact_wrap=False, recon32=False):
     """3D unsplit MUSCL-Hancock (full transverse predictor). Predictor and
     flux sweeps are built one direction at a time with
     ``optimization_barrier`` between contributions so only one direction's
     intermediates are alive; bit-equivalent to the triple-slope version up
-    to floating-point reduction order."""
+    to floating-point reduction order.
+
+    ``recon32``: run slopes/predictor/face states in FP32 (halves the
+    dominant memory traffic, ~2x step speed at 512^3 FP64); face states are
+    cast back so the Riemann fluxes and the update stay in the state dtype
+    (exact FP64 flux telescoping)."""
     import jax.lax as lax
 
     flux_fn = _pick_riemann(riemann_solver)
-    Wc = W_pad[:, 1:-1, 1:-1, 1:-1]
+    Wp = W_pad.astype(jnp.float32) if recon32 else W_pad
+    Wc = Wp[:, 1:-1, 1:-1, 1:-1]
 
     # ---- Predictor: build full A_dW one direction at a time, with barriers.
-    dWx = compute_slope_x_3d_from_padded(W_pad, limiter)
+    dWx = compute_slope_x_3d_from_padded(Wp, limiter)
     A_dW = apply_primitive_jacobian_3d_x(Wc, dWx * inv_dx, gamma)
     A_dW = lax.optimization_barrier(A_dW)
 
-    dWy = compute_slope_y_3d_from_padded(W_pad, limiter)
+    dWy = compute_slope_y_3d_from_padded(Wp, limiter)
     A_dW = A_dW + apply_primitive_jacobian_3d_y(Wc, dWy * inv_dy, gamma)
     A_dW = lax.optimization_barrier(A_dW)
 
-    dWz = compute_slope_z_3d_from_padded(W_pad, limiter)
+    dWz = compute_slope_z_3d_from_padded(Wp, limiter)
     A_dW = A_dW + apply_primitive_jacobian_3d_z(Wc, dWz * inv_dz, gamma)
 
-    W_half = Wc - 0.5 * dt * A_dW
+    W_half = Wc - 0.5 * jnp.asarray(dt, Wp.dtype) * A_dW
     W_half = lax.optimization_barrier(W_half)
 
     # ---- Flux phase: per-direction sweeps, slope recomputed inside each.
     def _sweep(d):
         """Axis-``d`` flux-divergence contribution (slope recomputed locally)."""
         lo, hi, first, last = _axis_face_slices(d)
-        dW = _SLOPE_3D[d](W_pad, limiter)
-        Wr = W_half + 0.5 * dW
-        Wl = W_half - 0.5 * dW
+        dW = _SLOPE_3D[d](Wp, limiter)
+        Wr = (W_half + 0.5 * dW).astype(W_pad.dtype)
+        Wl = (W_half - 0.5 * dW).astype(W_pad.dtype)
         F_int = flux_fn(Wr[lo], Wl[hi], axis=d, gamma=gamma)
         if exact_wrap:
             # Single-process periodic: the wrap seam is ONE physical face
@@ -462,6 +468,7 @@ def muscl_hancock_divergence(
     order,
     exact_wrap=False,
     fused=False,
+    recon32=False,
 ):
     """Compute dU/dt = -∇·F(U) using MUSCL-Hancock (second-order) or plain
     Godunov on primitives (first-order, order=0). All arguments after the
@@ -501,6 +508,7 @@ def muscl_hancock_divergence(
             inv_dz=inv_dz,
             boundary=boundary,
             exact_wrap=exact_wrap,
+            recon32=recon32,
         )
 
     # 1D and 2D paths: face fluxes + divergence assembly (same states, same
