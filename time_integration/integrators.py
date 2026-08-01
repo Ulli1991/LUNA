@@ -92,6 +92,11 @@ def create_muscl_hancock_modular_step(
     import os as _os
     fused = (_os.environ.get("LUNA_HYDRO_FUSED", "0") == "1"
              and order >= 1 and spatial_dim == 3 and boundary in (0, 1))
+    # FP32 reconstruction (slopes/predictor/face states) with FP64 fluxes:
+    # ~2x step speed at 512^3 FP64 (measured MI300A), state and flux
+    # telescoping stay FP64. 3D non-fused path only.
+    recon32 = (_os.environ.get("LUNA_HYDRO_RECON32", "0") == "1"
+               and order >= 1 and spatial_dim == 3 and not fused)
 
     # Inner step (semantics-only — same body whether dispatched per-shard
     # via shard_map or globally via auto-sharding).
@@ -113,6 +118,7 @@ def create_muscl_hancock_modular_step(
             order=order,
             exact_wrap=exact_wrap,
             fused=fused,
+            recon32=recon32,
         )
         U_new = U + dt * dU
         if sharding is not None and not use_shardmap:
