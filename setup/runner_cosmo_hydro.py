@@ -847,9 +847,10 @@ def run_simulation_cosmo_hydro_music(cfg, is_main_process=True):
                   f"-> u={u_init:.3e} (km/s)^2 (MUSIC wrote no InternalEnergy)")
 
     grid = GridParams.from_config(cfg)
-    # >512^3: grid-sharded slab path -- gas grid + joint MG solve shard along x,
-    # DM decomposed into per-slab buffers. The hydro step_fn carries its own halos.
-    slab = bool(getattr(cfg, "dm_domain_decomp", False)) and jax.device_count() > 1
+    # Multi-device is always grid-sharded: gas grid + joint MG solve shard along
+    # x, DM decomposed into per-slab buffers. The hydro step_fn carries its own
+    # halos. (cfg.dm_domain_decomp is kept only to force it on a single device.)
+    slab = jax.device_count() > 1 or bool(getattr(cfg, "dm_domain_decomp", False))
     if slab:
         from gravity.particle_mesh_shardmap import make_slab_mesh
         mesh = make_slab_mesh(jax.devices())

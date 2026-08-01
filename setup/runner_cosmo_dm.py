@@ -1,7 +1,8 @@
 """DM-only cosmological N-body runner (cfg.CosmoDM): MUSIC ICs, super-comoving
 KDK leapfrog, comoving PM gravity (CIC deposit -> MG Poisson -> 4th-order force
--> gather; one solve/step). Particle-parallel across devices (psum'd density,
-replicated solve); grid-sharded slab path via cfg.dm_domain_decomp. Gadget
+-> gather; one solve/step). Multi-device ALWAYS goes through the grid-sharded
+decomposition (cfg.dm_decomp: 3D blocks, or legacy slab) -- the mesh is never
+replicated per device. The particle-parallel path is single-device only. Gadget
 units: x kpc/h comoving, p = a^2 x_dot km/s (= MUSIC u * a^1.5 at the IC)."""
 import time
 
@@ -37,10 +38,11 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     n_levels = getattr(cfg, "POISSON_N_LEVELS", None)
 
     # Grid-sharded (slab domain decomposition) path for grids beyond a single
-    # device. Shards the mesh + MG solve along x and decomposes the particles
-    # spatially; needed for >~512^3. Falls through to the particle-parallel
-    # (replicated-grid) path below for the single-device / small-grid case.
-    if getattr(cfg, "dm_domain_decomp", False) and jax.device_count() > 1:
+    # Any multi-device run is grid-sharded: the mesh + MG solve are decomposed
+    # and the particles owned per sub-domain. The particle-parallel path below
+    # replicates the whole mesh on every device, which caps the grid at what one
+    # device holds -- so it is single-device only, never a multi-node route.
+    if jax.device_count() > 1:
         if getattr(cfg, "dm_decomp", "blocks") == "slab":
             return _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end,
                              dloga_max, eta, n_extra, is_main_process)
