@@ -1,6 +1,6 @@
 # LUNA
 
-**A differentiable astrophysical MHD code for turbulence, shocks, ISM, and galaxy evolution**
+**A differentiable astrophysical hydrodynamics code for turbulence, shocks, ISM, cosmology, and galaxy evolution**
 
 A high-performance JAX-based hydrodynamics simulation code for solving the Euler equations in 1D, 2D, and 3D with **single-GPU and multi-GPU support**.
 
@@ -180,7 +180,7 @@ srun python -u -m scripts.validation.runs.sedov3d_run
 
 For long-running production campaigns:
 
-- **NaN abort guard**: the time loop checks for non-finite state after every step (free piggyback on `compute_dt`). On detection it retries the step with halved CFL up to **8 times** (i.e., `dt → dt/256`). If the state is still bad it dumps an emergency checkpoint (`cfg.enable_checkpointing` is default-on) and raises `RuntimeError` so SLURM exits non-zero. No more silent multi-hour NaN'd runs.
+- **NaN abort guard**: a non-finite state propagates into the next step's `compute_dt`, where `require_finite` raises `RuntimeError` with the failing step, time, and a remediation hint (e.g. "3D unsplit needs CFL <= 0.5") so SLURM exits non-zero. No silent multi-hour NaN'd runs; the newest `snapdir_*` in the output dir is the last good state.
 - **Periodic diagnostics**: every `cfg.diag_interval` steps the runner prints `min(rho), min(P), max(|v|), max(M)` and appends a row to `<output_dir>/history.csv` (Athena++-style `.hst` analog) for offline analysis.
 - **Determinism**: validated submit scripts in `submit/` export `XLA_FLAGS="--xla_gpu_deterministic_ops=true"`. Together with `enable_x64=True` (set in run scripts) this gives bitwise-reproducible runs at fixed sharding.
 - **Source terms** live in `sources/` (`ou_forcing`, `cc85`, `external_gravity`, `cooling`, `self_gravity`). Each returns a `{"apply": fn(U, dt)}` callable that the runner operator-splits after the hydro step. Adding a new source term means writing one `sources/X.py` and one line in `setup/runner_distributed.py`.

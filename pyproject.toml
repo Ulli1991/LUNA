@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "BSD-3-Clause"}
 authors = [{name = "Ulrich Philipp Steinwandel"}]
-keywords = ["hydrodynamics", "JAX", "GPU", "astrophysics", "ISM", "MHD"]
+keywords = ["hydrodynamics", "JAX", "GPU", "astrophysics", "ISM", "cosmology"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",

@@ -43,7 +43,7 @@ class Config:
     # ---------------- Domain ----------------
     # 1 = 1D
     # 2 = 2D
-    # 3 = 3D (not meaningfully implemented yet)
+    # 3 = 3D (production path; use CFL <= 0.5, see validate())
     SPATIAL_DIMENSION: int = 1
     # 0 = Periodic
     # 1 = von Neumann (zero-gradient; NOTE: permits boundary inflow under an
@@ -75,8 +75,8 @@ class Config:
     MESH_SHAPE: tuple = None
 
     # Self-gravity (multigrid V-cycle Poisson solve each step, applied as
-    # an operator-split source on momentum + energy). Phase 1: single-
-    # process, periodic + Neumann BC only. See docs/multigrid_poisson_plan.md
+    # an operator-split source on momentum + energy); periodic + Neumann
+    # + isolated (multipole) boundaries — see docs/ARCHITECTURE.md.
     SELF_GRAVITY: bool = False
     GRAVITATIONAL_G: float = 1.0          # G in code units (set per problem)
     # Cosmological (comoving) integration. When False (default) the code
@@ -111,6 +111,8 @@ class Config:
     dm_warm_extrapolate: int = 2    # warm-solve seed: 1 = rescale phi by a_next/a_prev; 2 = linear extrap from last two phi
     dm_warm_n_pre: int = 1          # smoother sweeps in the warm V-cycle (DM path only;
     dm_warm_n_post: int = 1         # global POISSON_N_PRE/POST are untouched)
+    dm_decomp: str = "blocks"       # multi-GPU DM layout: "blocks" (3D, production) | "slab" (legacy)
+    dm_resort_every: int = 4        # cell-order resort every N particle exchanges (0 = off)
     dm_fp32: bool = False            # store DM particle pos/mom/mass in fp32 (halves PM comm + deposit/exchange work; grid rho + Poisson stay fp64, stays differentiable)
     CosmoHydro: bool = False        # coupled gas+DM box (gas meshed from MUSIC baryon IC)
     cosmo_jeans_ncell: float = 0.0  # Truelove Jeans-floor cells (0 = off; ~4 for halos)
@@ -559,3 +561,29 @@ class Config:
         """Pre-computed snapshot times (using numpy, not JAX, to avoid GPU allocation)."""
         return np.arange(self.t_start, self.t_end + self.time_bet_snaps/2, self.time_bet_snaps)
 
+
+    def validate(self):
+        """Fail fast on the known config traps (called by main.run)."""
+        errs = []
+        if self.SPATIAL_DIMENSION >= 2 and self.CFL > 0.5:
+            errs.append(f"CFL={self.CFL} with SPATIAL_DIMENSION="
+                        f"{self.SPATIAL_DIMENSION}: unsplit MUSCL-Hancock "
+                        "needs CFL <= 0.5 in 2D/3D (0.4 recommended; the "
+                        "template default 0.8 is the 1D value)")
+        if self.BOUNDARY not in (0, 1, 2, 3, 4):
+            errs.append(f"BOUNDARY={self.BOUNDARY}: valid codes are "
+                        "0 periodic, 1 zero-gradient, 2 reflective, "
+                        "3 isolated, 4 diode")
+        if getattr(self, "dm_decomp", "blocks") not in ("blocks", "slab"):
+            errs.append(f"dm_decomp={self.dm_decomp!r}: 'blocks' or 'slab'")
+        if getattr(self, "cosmo_kick_scheme", "strang") not in (
+                "strang", "half", "end"):
+            errs.append(f"cosmo_kick_scheme={self.cosmo_kick_scheme!r}: "
+                        "'strang', 'half' or 'end'")
+        if (getattr(self, "CosmoDM", False)
+                or getattr(self, "CosmoHydro", False)) \
+                and not getattr(self, "music_ic_path", ""):
+            errs.append("CosmoDM/CosmoHydro requires music_ic_path")
+        if errs:
+            raise ValueError("Config validation failed:\n  - "
+                             + "\n  - ".join(errs))
