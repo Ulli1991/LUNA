@@ -88,6 +88,8 @@ class ParticleMeshGravity:
 
     def gas_accel_grid(self, rho):
         """Gravitational acceleration field of a density: -∇(MG(ρ))."""
+        # 2nd order on purpose: this force feeds the 2nd-order MUSCL-Hancock
+        # gas update, so a higher-order gradient adds cost without accuracy.
         return self.grad_phi(self.gas_potential(rho))
 
     # -- trilinear (CIC) interpolation, vectorized over particles -----------
