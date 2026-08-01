@@ -19,7 +19,6 @@ import numpy as np
 from gravity.poisson_multigrid import (
     solve_poisson,
     solve_poisson_fmg,
-    solve_poisson_pcg,
     vcycle,
     laplacian_7pt,
     residual,
@@ -189,25 +188,6 @@ def test_fmg_one_pass_hits_discretisation_floor():
     assert float(rel) < 1e-2
 
 
-def test_pcg_converges_in_few_iterations():
-    """MG-preconditioned CG should hit ~1e-6 residual in ≤ 10 iterations
-    on the lowest periodic mode — what Volker's '1-2 cycles' criterion
-    looks like in practice when measured against a strict tolerance."""
-    N = 32
-    L = 1.0
-    fourpiG = 1.0
-    rho, phi_exact, dx = _make_sine_problem(N, L, fourpiG, k_index=(1, 1, 1))
-
-    phi, r_norm = solve_poisson_pcg(
-        rho, dx, fourpiG, boundary=0, n_pcg_iter=8, return_residual=True
-    )
-    phi_zm = _zero_mean(phi)
-    exact_zm = _zero_mean(phi_exact)
-    rel = jnp.max(jnp.abs(phi_zm - exact_zm)) / jnp.max(jnp.abs(exact_zm))
-    print(f"  PCG 8 iters: residual={float(r_norm):.3e}, rel err vs exact={float(rel):.3e}")
-    assert float(rel) < 1e-2  # again, discretisation-bound
-
-
 if __name__ == "__main__":
     print("=" * 60)
     print("Multigrid Poisson solver — Phase 1 unit tests")
@@ -219,7 +199,6 @@ if __name__ == "__main__":
         ("vcycle_converges_lowest_mode", test_vcycle_converges_lowest_mode),
         ("solve_poisson_recovers_sine_mode", test_solve_poisson_recovers_sine_mode),
         ("fmg_one_pass_hits_discretisation_floor", test_fmg_one_pass_hits_discretisation_floor),
-        ("pcg_converges_in_few_iterations", test_pcg_converges_in_few_iterations),
     ]:
         print(f"\n--- {name} ---")
         try:

@@ -37,7 +37,7 @@ def _make_rho(N, key, boundary):
     c = (jax.random.normal(kr, (N, N, N)) + 1j * jax.random.normal(ki, (N, N, N))) * mask
     f = jnp.fft.ifftn(c).real
     f = f / jnp.std(f)
-    if boundary == 0:
+    if boundary in (0, 1):   # both BCs are singular up to a constant
         return f                  # zero-mean field (periodic needs it)
     return f + 2.0                # positive offset fine for Neumann
 
@@ -55,7 +55,7 @@ def _check(boundary, name):
     def loss_unrolled(r):
         phi = solve_poisson_fmg(r, dx, fourpiG, boundary=boundary,
                                  n_vcycles_per_level=1, n_extra_vcycles=6)
-        if boundary == 0:
+        if boundary in (0, 1):   # both BCs are singular up to a constant
             phi = phi - jnp.mean(phi)   # same gauge pinning as the custom op
         return 0.5 * jnp.sum(phi * phi)
 
