@@ -6,7 +6,12 @@ JAX's automatic sharding with NamedSharding.
 """
 from dataclasses import dataclass, field
 
-from config import Config
+try:
+    from config import Config
+except ImportError as e:
+    raise ImportError(
+        "no config.py found — create one with: cp template_config.py "
+        "config.py  (then edit it; config.py is gitignored)") from e
 from utils.grid_params import GridParams
 from utils.logo import print_LUNA_banner
 from setup import (
@@ -51,6 +56,8 @@ def run(cfg):
     (super-comoving gas), else the standard dense HPC loop
     (run_simulation_distributed). Every path returns a RunResult.
     """
+    if hasattr(cfg, "validate"):
+        cfg.validate()
     # Cosmological problems must be integrated in comoving coordinates. Abort
     # early (before any output side effects) if the comoving integrator is off.
     from ic_generation.ic import is_cosmological
