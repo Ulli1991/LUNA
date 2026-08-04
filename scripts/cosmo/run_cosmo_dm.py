@@ -17,6 +17,9 @@ import jax
 
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.getcwd())
+if int(os.environ.get("SLURM_NTASKS", "1")) > 1:
+    from setup import initialize_jax_distributed
+    initialize_jax_distributed(enable_x64=True)
 from dataclasses import replace
 
 from main import run

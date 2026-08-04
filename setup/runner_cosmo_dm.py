@@ -38,11 +38,14 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     n_levels = getattr(cfg, "POISSON_N_LEVELS", None)
 
     # Grid-sharded (slab domain decomposition) path for grids beyond a single
-    # Any multi-device run is grid-sharded: the mesh + MG solve are decomposed
-    # and the particles owned per sub-domain. The particle-parallel path below
-    # replicates the whole mesh on every device, which caps the grid at what one
-    # device holds -- so it is single-device only, never a multi-node route.
-    if jax.device_count() > 1:
+    # Dispatch by size (measured, dm_timing_matrix 2026-08-03): the
+    # particle-parallel path (replicated mesh, below) wins where the mesh fits
+    # comfortably on every device -- 39.2 ms/step at 512^3/2 GPU vs 62.5 for
+    # the grid-sharded split. Beyond that (mesh > ~512^3, or multi-process)
+    # the grid-sharded decomposition is the only route: the replicated grid
+    # caps at single-device memory and its fused graph stops compiling.
+    if jax.device_count() > 1 and (cfg.Nx > 512 or jax.process_count() > 1
+                                   or getattr(cfg, "dm_force_blocks", False)):
         if getattr(cfg, "dm_decomp", "blocks") == "slab":
             return _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end,
                              dloga_max, eta, n_extra, is_main_process)
@@ -237,6 +240,7 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     owned per block with a per-axis ring-exchange cascade
     (docs/SCALING_DESIGN.md). Same fused KDK + warm/mixed gravity as the
     single-device path; conservation watchdog on every step."""
+    from jax.experimental.shard_map import shard_map
     from jax.sharding import NamedSharding
     from jax.sharding import PartitionSpec as P
 
@@ -265,77 +269,91 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         np.asarray(ic.mass), N, pdims, dx, box, mesh, cap)
     clock = CosmoClock(cosmo, a, a_end, H0)
 
-    def _force(pos, mass, active, a_kick, phi_prev):
-        rho = cic_deposit_blocks(pos, mass, active, N, dx, mesh,
-                                 dtype=jnp.float32 if mixed else None)
-        delta = rho / jnp.mean(rho) - 1.0
-        if phi_prev is None:
-            phi = solve_poisson_fmg_shardmap(
-                delta.astype(jnp.float64), dx, coeff_fac * a_kick,
-                boundary=0, mesh=mesh, n_extra_vcycles=n_extra)
-        else:
-            phi = solve_poisson_fmg_shardmap(
-                delta.astype(jnp.float64), dx, coeff_fac * a_kick,
-                boundary=0, mesh=mesh, phi_init=phi_prev,
-                warm_cycles=max(warm, 1))
-        g = grad_phi_blocks(phi, dx, mesh, order=4)
-        return (gather_accel_blocks(g, pos, N, dx, mesh),
-                jnp.max(delta), phi)
-
     from functools import partial
 
-    force_cold = jax.jit(lambda pos, m, act_, ak: _force(pos, m, act_, ak,
-                                                         None))
+    # --- SPLIT step, all-shard_map: the MG solve is NOT inlined into the
+    # step programs. The fused variant asked XLA's SPMD partitioner to
+    # swallow the whole multigrid pyramid inside one step graph — compile
+    # exploded (12 h at 1024^3, no program) while the SAME solve compiles in
+    # minutes standalone. Sequence per step: kick_drift -> [exchange] ->
+    # deposit -> field_stats -> solve -> grad+gather -> close_kick. Every
+    # program is an explicit shard_map on the hydro's (x,y,z) block mesh
+    # (NO auto-sharding, reductions are psum/pmax), built once and reused.
+    # We solve the UNSCALED equation lap(psi) = delta and scale the force by
+    # coeff_fac*a_kick in close_kick, so the solver's closure constants are
+    # step-invariant (one trace/compile ever) and the carried warm seed psi
+    # excludes the growth factor (better extrapolation for free).
+    S = ("x", "y", "z")
+    Pp, Ps, Pg = P(S, None), P(S), P("x", "y", "z")
 
-    def _kdk_core(pos, p, g, dtau, mass, active, a_kick, phi_prev,
-                  do_exchange):
-        p_half = p + g * (0.5 * dtau)
-        pos = jnp.mod(pos + p_half * dtau, box)
-        if do_exchange:
-            pos, p_half, mass, active, n_over = exchange_particles_blocks(
-                pos, p_half, mass, active, N, dx, box, mesh)
-        else:
-            # cadenced exchange: skip while cumulative drift since the last
-            # exchange stays inside the one-ghost-cell margin the deposit
-            # and gather tolerate (halo-margin ownership, HACC-style).
-            n_over = jnp.zeros((), jnp.int32)
-        g_new, dmax, phi = _force(pos, mass, active, a_kick,
-                                  phi_prev if warm > 0 else None)
-        p_new = p_half + g_new * (0.5 * dtau)
-        g2max = jnp.max(jnp.where(active > 0,
-                                  jnp.sum(g_new ** 2, axis=1), 0.0))
-        p2max = jnp.max(jnp.where(active > 0,
-                                  jnp.sum(p_half ** 2, axis=1), 0.0))
-        if do_exchange:
-            # conservation watchdog: only exchanges can create/drop
-            # particles; quiet steps merely rearrange fixed buffers.
-            n_act = jnp.sum(active > 0)
-            m_tot = jnp.sum(mass * (active > 0))
-        else:
-            n_act = jnp.zeros((), jnp.int32)
-            m_tot = jnp.zeros(())
-        return (pos, p_new, g_new, phi, mass, active,
-                dmax, g2max, p2max, n_over, n_act, m_tot)
+    @partial(jax.jit, donate_argnums=(0, 1, 2))
+    @partial(shard_map, mesh=mesh, in_specs=(Pp, Pp, Pp, P()),
+             out_specs=(Pp, Pp))
+    def kick_drift(pos_l, p_l, g_l, dtau_):
+        p_half = p_l + g_l * (0.5 * dtau_)
+        return jnp.mod(pos_l + p_half * dtau_, box), p_half
 
-    kdk_ex = jax.jit(partial(_kdk_core, do_exchange=True),
-                     donate_argnums=(0, 1, 2, 4, 5, 7))
-    kdk_noex = jax.jit(partial(_kdk_core, do_exchange=False),
-                       donate_argnums=(0, 1, 2, 4, 5, 7))
+    @partial(jax.jit, static_argnames=())
+    @partial(shard_map, mesh=mesh, in_specs=(Pg, Pp, Ps, Ps),
+             out_specs=(Pg, P(), P(), P(), P()))
+    def field_stats(rho_l, p_half_l, mass_l, act_l):
+        ssum = jax.lax.psum(jnp.sum(rho_l), S)
+        cnt = jax.lax.psum(jnp.asarray(rho_l.size, rho_l.dtype), S)
+        delta_l = rho_l / (ssum / cnt) - 1.0
+        dmax = jax.lax.pmax(jnp.max(delta_l), S)
+        p2 = jax.lax.pmax(jnp.max(jnp.where(
+            act_l > 0, jnp.sum(p_half_l ** 2, axis=1), 0.0)), S)
+        # conservation watchdog inputs: only exchanges can create/drop
+        # particles; quiet steps merely rearrange fixed buffers.
+        n_act = jax.lax.psum(jnp.sum((act_l > 0).astype(jnp.int32)), S)
+        m_tot = jax.lax.psum(jnp.sum(mass_l * (act_l > 0)), S)
+        return delta_l.astype(jnp.float64), dmax, p2, n_act, m_tot
+
+    @partial(jax.jit, donate_argnums=(0, 1))
+    @partial(shard_map, mesh=mesh, in_specs=(Pp, Pp, Ps, P(), P()),
+             out_specs=(Pp, Pp, P()))
+    def close_kick(graw_l, p_half_l, act_l, dtau_, scale_):
+        g_l = graw_l * scale_
+        p_new = p_half_l + g_l * (0.5 * dtau_)
+        g2 = jax.lax.pmax(jnp.max(jnp.where(
+            act_l > 0, jnp.sum(g_l ** 2, axis=1), 0.0)), S)
+        return p_new, g_l, g2
+
+    def _solve(delta64, psi_prev):
+        if psi_prev is None:
+            return solve_poisson_fmg_shardmap(
+                delta64, dx, 1.0, boundary=0, mesh=mesh,
+                n_extra_vcycles=n_extra)
+        return solve_poisson_fmg_shardmap(
+            delta64, dx, 1.0, boundary=0, mesh=mesh,
+            phi_init=psi_prev, warm_cycles=max(warm, 1))
+
+    def _grad_gather(psi, pos):
+        return gather_accel_blocks(grad_phi_blocks(psi, dx, mesh, order=4),
+                                   pos, N, dx, mesh)
     drift_margin = 0.9 * dx          # trigger before the ghost cell fills
 
     if is_main_process:
         print(f"[cosmo-dm] 3D-block decomposition {pdims} across {ndev} "
               f"devices (capacity {ndev * C} for {ic.n_part} particles)")
     tau, step, t0 = 0.0, 0, time.time()
-    g, dmax, phi = force_cold(posS, massS, actS, a)
+    # cold start via the split path: deposit + stats, FMG solve, close_kick
+    # with dtau=0 (p unchanged, returns the opening force).
+    rho = cic_deposit_blocks(posS, massS, actS, N, dx, mesh,
+                             dtype=jnp.float32 if mixed else None)
+    delta64, dmax, p2, n_act, m_tot = field_stats(rho, pS, massS, actS)
+    psi = _solve(delta64, None)
+    pS, g, g2 = close_kick(_grad_gather(psi, posS), pS, actS, 0.0,
+                           coeff_fac * a)
     jax.block_until_ready(g)
     rep = StepLog(cfg, is_main_process,
                   history_fields=["step", "a", "dloga", "delta_max"])
-    g2max = float(jnp.max(jnp.where(actS > 0, jnp.sum(g ** 2, axis=1), 0.0)))
-    p2max = float(jnp.max(jnp.where(actS > 0, jnp.sum(pS ** 2, axis=1), 0.0)))
-    n_act0 = int(jnp.sum(actS > 0))
-    m_tot0 = float(jnp.sum(massS * (actS > 0)))
+    g2max = float(g2)
+    p2max = float(p2)
+    n_act0 = int(n_act)
+    m_tot0 = float(m_tot)
     cum_drift, n_exchanges = 0.0, 0
+    t_prev = time.time()                       # in-flight per-step wall timing
     while a < a_end - 1e-9:
         dtau = clock.cap_expansion(dtau_accel(eta, eps_soft, np.sqrt(g2max)),
                                    a, dloga_max)
@@ -346,9 +364,27 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         # p_half = p + g*dtau/2, so bound |p_half| by last step's maxima.
         step_drift = (np.sqrt(p2max) + 0.5 * np.sqrt(g2max) * dtau) * dtau
         do_ex = (cum_drift + step_drift) > drift_margin
-        kdk = kdk_ex if do_ex else kdk_noex
-        (posS, pS, g, phi, massS, actS, dmax, g2, p2, n_over, n_act,
-         m_tot) = kdk(posS, pS, g, dtau, massS, actS, a_next, phi)
+        posS, p_half = kick_drift(posS, pS, g, dtau)
+        if do_ex:
+            posS, p_half, massS, actS, n_over = exchange_particles_blocks(
+                posS, p_half, massS, actS, N, dx, box, mesh)
+        else:
+            # cadenced exchange: skip while cumulative drift since the last
+            # exchange stays inside the one-ghost-cell margin the deposit
+            # and gather tolerate (halo-margin ownership, HACC-style).
+            n_over = 0
+        rho = cic_deposit_blocks(posS, massS, actS, N, dx, mesh,
+                                 dtype=jnp.float32 if mixed else None)
+        delta64, dmax, p2, n_act, m_tot = field_stats(rho, p_half, massS,
+                                                      actS)
+        # ROCm: an unsynced burst of eager dispatches can wedge the queue
+        # permanently (async-pileup, quirks ledger; hit at 64^3 where kernels
+        # are us-scale). One mid-step sync bounds the burst; ~free at
+        # production sizes. CUDA-retest candidate.
+        jax.block_until_ready(delta64)
+        psi = _solve(delta64, psi if warm > 0 else None)
+        pS, g, g2 = close_kick(_grad_gather(psi, posS), p_half, actS, dtau,
+                               coeff_fac * a_next)
         g2max = float(g2)
         p2max = float(p2)
         cum_drift = 0.0 if do_ex else cum_drift + step_drift
@@ -361,6 +397,11 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         tau += dtau
         a = a_next
         step += 1
+        t_now = time.time()                    # loop is host-synced (float(g2))
+        if is_main_process:
+            print(f"[cosmo-dm] stepms {step:5d} {(t_now - t_prev) * 1e3:10.1f}"
+                  f" ex={int(do_ex)}", flush=True)
+        t_prev = t_now
         if do_ex and (int(n_over) != 0 or int(n_act) != n_act0
                       or abs(float(m_tot) - m_tot0) > 1e-8 * m_tot0):
             raise RuntimeError(
@@ -374,6 +415,10 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     if is_main_process:
         print(f"[cosmo-dm] done: {step} steps ({n_exchanges} exchanges), "
               f"a={a:.4f} (z={1/a-1:.4f}), {time.time()-t0:.1f}s")
+    if jax.process_count() == 1 and is_main_process:
+        sel = np.asarray(actS) > 0
+        write_gadget_dm_snapshot(cfg, np.asarray(posS)[sel],
+                                 np.asarray(pS)[sel] / a ** 1.5, a, ic)
     return {"a": a, "n_steps": step, "n_exchanges": n_exchanges}
 
 
