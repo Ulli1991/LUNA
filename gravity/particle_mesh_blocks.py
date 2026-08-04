@@ -111,6 +111,18 @@ def assemble_blocks_sharded(pos, vel, mass, N, pdims, dx, box, mesh,
     return posS, pS, massS, actS, C
 
 
+# Build-once memo for the jitted shard_map programs below: rebuilding on
+# every call hands jax.jit a fresh function identity -> retrace per call,
+# fatal for per-step eager use in the split KDK. Keyed on every closure
+# constant that shapes the traced program.
+_PROGRAM_CACHE = {}
+
+
+def _mesh_key(mesh):
+    return (tuple(sorted((k, int(v)) for k, v in mesh.shape.items())),
+            tuple(str(d) for d in mesh.devices.flat))
+
+
 def _block_origin(pdims, nloc):
     """Per-axis global cell offset of this device's block (traced)."""
     return [jax.lax.axis_index(AXES[a]) * nloc[a] for a in range(3)]
@@ -155,35 +167,49 @@ def cic_deposit_blocks(pos, mass, active, N, dx, mesh, dtype=None):
     nloc = [N // p for p in pdims]
     inv_dV = 1.0 / dx ** 3
 
-    @partial(jax.jit, static_argnames=())
-    @partial(shard_map, mesh=mesh,
-             in_specs=(P(("x", "y", "z"), None), P(("x", "y", "z")),
-                       P(("x", "y", "z"))),
-             out_specs=P("x", "y", "z"))
-    def _body(pos_l, mass_l, active_l):
-        org = _block_origin(pdims, nloc)
-        w = (mass_l * active_l) * inv_dV
-        f = [pos_l[:, a] / dx - 0.5 for a in range(3)]
-        i0 = [jnp.floor(f[a]).astype(jnp.int32) for a in range(3)]
-        t = [f[a] - i0[a] for a in range(3)]
-        # local ghosted index; clip keeps inactive slots harmless (w=0)
-        il = [jnp.clip(i0[a] - org[a] + 1, 0, nloc[a]) for a in range(3)]
-        if dtype is not None:
-            w = w.astype(dtype)
-            t = [q.astype(dtype) for q in t]
-        rho_g = jnp.zeros((nloc[0] + 2, nloc[1] + 2, nloc[2] + 2),
-                          dtype=w.dtype)
-        for di in (0, 1):
-            wx = t[0] if di else (1.0 - t[0])
-            for dj in (0, 1):
-                wy = t[1] if dj else (1.0 - t[1])
-                for dk in (0, 1):
-                    wz = t[2] if dk else (1.0 - t[2])
-                    rho_g = rho_g.at[il[0] + di, il[1] + dj,
-                                     il[2] + dk].add(wx * wy * wz * w)
-        return _fold_ghosts(rho_g, mesh)
+    _pk = ("dep", _mesh_key(mesh), N, float(dx), str(dtype))
+    _b = _PROGRAM_CACHE.get(_pk)
+    if _b is None:
+        @partial(jax.jit, static_argnames=())
+        @partial(shard_map, mesh=mesh,
+                 in_specs=(P(("x", "y", "z"), None), P(("x", "y", "z")),
+                           P(("x", "y", "z"))),
+                 out_specs=P("x", "y", "z"))
+        def _body(pos_l, mass_l, active_l):
+            org = _block_origin(pdims, nloc)
+            w = (mass_l * active_l) * inv_dV
+            f = [pos_l[:, a] / dx - 0.5 for a in range(3)]
+            i0 = [jnp.floor(f[a]).astype(jnp.int32) for a in range(3)]
+            t = [f[a] - i0[a] for a in range(3)]
+            # local ghosted index; clip keeps inactive slots harmless (w=0)
+            il = [jnp.clip(i0[a] - org[a] + 1, 0, nloc[a]) for a in range(3)]
+            # SPREAD the inactive slots' target cells across the local grid:
+            # padding tends to be degenerate (all slots at one point), and
+            # 500M zero-weight atomic adds onto 8 addresses SERIALIZE the
+            # scatter (measured 2.6 s vs ~0.1 s at 512^3). Zero weight means
+            # the field is unchanged; only the traffic pattern matters.
+            sid = jnp.arange(pos_l.shape[0], dtype=jnp.int32)
+            spread = (sid % nloc[0], (sid // nloc[0]) % nloc[1],
+                      (sid // (nloc[0] * nloc[1])) % nloc[2])
+            act = active_l > 0
+            il = [jnp.where(act, il[a], spread[a]) for a in range(3)]
+            if dtype is not None:
+                w = w.astype(dtype)
+                t = [q.astype(dtype) for q in t]
+            rho_g = jnp.zeros((nloc[0] + 2, nloc[1] + 2, nloc[2] + 2),
+                              dtype=w.dtype)
+            for di in (0, 1):
+                wx = t[0] if di else (1.0 - t[0])
+                for dj in (0, 1):
+                    wy = t[1] if dj else (1.0 - t[1])
+                    for dk in (0, 1):
+                        wz = t[2] if dk else (1.0 - t[2])
+                        rho_g = rho_g.at[il[0] + di, il[1] + dj,
+                                         il[2] + dk].add(wx * wy * wz * w)
+            return _fold_ghosts(rho_g, mesh)
 
-    return _body(pos, mass, active)
+        _PROGRAM_CACHE[_pk] = _b = _body
+    return _b(pos, mass, active)
 
 
 def _halo(phi_l, mesh, width):
@@ -201,30 +227,34 @@ def grad_phi_blocks(phi, dx, mesh, order=4):
     inv_2dx = 0.5 / dx
     h = 2 if order == 4 else 1
 
-    @partial(jax.jit, static_argnames=())
-    @partial(shard_map, mesh=mesh,
-             in_specs=(P("x", "y", "z"),),
-             out_specs=(P("x", "y", "z"),) * 3)
-    def _body(phi_l):
-        pp = _halo(phi_l, mesh, h)
-        c = [slice(h, -h)] * 3
+    _pk = ("grad", _mesh_key(mesh), float(dx), order)
+    _b = _PROGRAM_CACHE.get(_pk)
+    if _b is None:
+        @partial(jax.jit, static_argnames=())
+        @partial(shard_map, mesh=mesh,
+                 in_specs=(P("x", "y", "z"),),
+                 out_specs=(P("x", "y", "z"),) * 3)
+        def _body(phi_l):
+            pp = _halo(phi_l, mesh, h)
+            c = [slice(h, -h)] * 3
 
-        def sl(axis, off):
-            s = list(c)
-            s[axis] = slice(h + off, -h + off if -h + off else None)
-            return pp[tuple(s)]
+            def sl(axis, off):
+                s = list(c)
+                s[axis] = slice(h + off, -h + off if -h + off else None)
+                return pp[tuple(s)]
 
-        out = []
-        for a in range(3):
-            if order == 4:
-                g = (sl(a, 2) - 8.0 * sl(a, 1) + 8.0 * sl(a, -1)
-                     - sl(a, -2)) * inv_12dx
-            else:
-                g = -(sl(a, 1) - sl(a, -1)) * inv_2dx
-            out.append(g)
-        return tuple(out)
+            out = []
+            for a in range(3):
+                if order == 4:
+                    g = (sl(a, 2) - 8.0 * sl(a, 1) + 8.0 * sl(a, -1)
+                         - sl(a, -2)) * inv_12dx
+                else:
+                    g = -(sl(a, 1) - sl(a, -1)) * inv_2dx
+                out.append(g)
+            return tuple(out)
 
-    return _body(phi)
+        _PROGRAM_CACHE[_pk] = _b = _body
+    return _b(phi)
 
 
 def gather_accel_blocks(g, pos, N, dx, mesh):
@@ -233,31 +263,35 @@ def gather_accel_blocks(g, pos, N, dx, mesh):
     pdims = [int(mesh.shape[a]) for a in AXES]
     nloc = [N // p for p in pdims]
 
-    @partial(jax.jit, static_argnames=())
-    @partial(shard_map, mesh=mesh,
-             in_specs=((P("x", "y", "z"),) * 3, P(("x", "y", "z"), None)),
-             out_specs=P(("x", "y", "z"), None))
-    def _body(g_l, pos_l):
-        gp = [_halo(q, mesh, 1) for q in g_l]
-        org = _block_origin(pdims, nloc)
-        f = [pos_l[:, a] / dx - 0.5 for a in range(3)]
-        i0 = [jnp.floor(f[a]).astype(jnp.int32) for a in range(3)]
-        t = [jnp.clip(f[a] - i0[a], 0.0, 1.0) for a in range(3)]
-        il = [jnp.clip(i0[a] - org[a] + 1, 0, nloc[a]) for a in range(3)]
-        acc = [0.0, 0.0, 0.0]
-        for di in (0, 1):
-            wx = t[0] if di else (1.0 - t[0])
-            for dj in (0, 1):
-                wy = t[1] if dj else (1.0 - t[1])
-                for dk in (0, 1):
-                    wz = t[2] if dk else (1.0 - t[2])
-                    wgt = wx * wy * wz
-                    for a in range(3):
-                        acc[a] = acc[a] + wgt * gp[a][il[0] + di, il[1] + dj,
-                                                      il[2] + dk]
-        return jnp.stack(acc, axis=1)
+    _pk = ("gath", _mesh_key(mesh), N, float(dx))
+    _b = _PROGRAM_CACHE.get(_pk)
+    if _b is None:
+        @partial(jax.jit, static_argnames=())
+        @partial(shard_map, mesh=mesh,
+                 in_specs=((P("x", "y", "z"),) * 3, P(("x", "y", "z"), None)),
+                 out_specs=P(("x", "y", "z"), None))
+        def _body(g_l, pos_l):
+            gp = [_halo(q, mesh, 1) for q in g_l]
+            org = _block_origin(pdims, nloc)
+            f = [pos_l[:, a] / dx - 0.5 for a in range(3)]
+            i0 = [jnp.floor(f[a]).astype(jnp.int32) for a in range(3)]
+            t = [jnp.clip(f[a] - i0[a], 0.0, 1.0) for a in range(3)]
+            il = [jnp.clip(i0[a] - org[a] + 1, 0, nloc[a]) for a in range(3)]
+            acc = [0.0, 0.0, 0.0]
+            for di in (0, 1):
+                wx = t[0] if di else (1.0 - t[0])
+                for dj in (0, 1):
+                    wy = t[1] if dj else (1.0 - t[1])
+                    for dk in (0, 1):
+                        wz = t[2] if dk else (1.0 - t[2])
+                        wgt = wx * wy * wz
+                        for a in range(3):
+                            acc[a] = acc[a] + wgt * gp[a][il[0] + di, il[1] + dj,
+                                                          il[2] + dk]
+            return jnp.stack(acc, axis=1)
 
-    return _body(tuple(g), pos)
+        _PROGRAM_CACHE[_pk] = _b = _body
+    return _b(tuple(g), pos)
 
 
 def resort_blocks(pos, p, mass, active, N, dx, mesh):
@@ -268,22 +302,26 @@ def resort_blocks(pos, p, mass, active, N, dx, mesh):
     pdims = [int(mesh.shape[a]) for a in AXES]
     nloc = [N // p_ for p_ in pdims]
 
-    @partial(jax.jit, static_argnames=())
-    @partial(shard_map, mesh=mesh,
-             in_specs=(P(("x", "y", "z"), None), P(("x", "y", "z"), None),
-                       P(("x", "y", "z")), P(("x", "y", "z"))),
-             out_specs=(P(("x", "y", "z"), None), P(("x", "y", "z"), None),
-                        P(("x", "y", "z")), P(("x", "y", "z"))))
-    def _body(pos_l, p_l, mass_l, act_l):
-        org = _block_origin(pdims, nloc)
-        idx = [jnp.clip(jnp.floor(pos_l[:, a] / dx).astype(jnp.int32)
-                        - org[a] + 1, 0, nloc[a] + 1) for a in range(3)]
-        key = ((idx[0] * (nloc[1] + 2) + idx[1]) * (nloc[2] + 2) + idx[2])
-        key = jnp.where(act_l > 0, key, jnp.iinfo(jnp.int32).max)
-        order = jnp.argsort(key, stable=True)
-        return (pos_l[order], p_l[order], mass_l[order], act_l[order])
+    _pk = ("resort", _mesh_key(mesh), N, float(dx))
+    _b = _PROGRAM_CACHE.get(_pk)
+    if _b is None:
+        @partial(jax.jit, static_argnames=())
+        @partial(shard_map, mesh=mesh,
+                 in_specs=(P(("x", "y", "z"), None), P(("x", "y", "z"), None),
+                           P(("x", "y", "z")), P(("x", "y", "z"))),
+                 out_specs=(P(("x", "y", "z"), None), P(("x", "y", "z"), None),
+                            P(("x", "y", "z")), P(("x", "y", "z"))))
+        def _body(pos_l, p_l, mass_l, act_l):
+            org = _block_origin(pdims, nloc)
+            idx = [jnp.clip(jnp.floor(pos_l[:, a] / dx).astype(jnp.int32)
+                            - org[a] + 1, 0, nloc[a] + 1) for a in range(3)]
+            key = ((idx[0] * (nloc[1] + 2) + idx[1]) * (nloc[2] + 2) + idx[2])
+            key = jnp.where(act_l > 0, key, jnp.iinfo(jnp.int32).max)
+            order = jnp.argsort(key, stable=True)
+            return (pos_l[order], p_l[order], mass_l[order], act_l[order])
 
-    return _body(pos, p, mass, active)
+        _PROGRAM_CACHE[_pk] = _b = _body
+    return _b(pos, p, mass, active)
 
 
 def _exchange_axis(pos, p, mass, active, axis, N, dx, box, mesh, Cf):
@@ -301,76 +339,80 @@ def _exchange_axis(pos, p, mass, active, axis, N, dx, box, mesh, Cf):
     to_right = [(i, (i + 1) % npx) for i in range(npx)]
     to_left = [(i, (i - 1) % npx) for i in range(npx)]
 
-    @partial(jax.jit, static_argnames=())
-    @partial(shard_map, mesh=mesh,
-             in_specs=(P(("x", "y", "z"), None), P(("x", "y", "z"), None),
-                       P(("x", "y", "z")), P(("x", "y", "z"))),
-             out_specs=(P(("x", "y", "z"), None), P(("x", "y", "z"), None),
-                        P(("x", "y", "z")), P(("x", "y", "z")), P()))
-    def _body(pos_l, p_l, mass_l, active_l):
-        C = pos_l.shape[0]
-        d = jax.lax.axis_index(name)
-        xw = jnp.mod(pos_l[:, axis], box)
-        act = active_l > 0
-        target = jnp.clip((xw / bw).astype(jnp.int32), 0, npx - 1)
-        diff = jnp.mod(target - d, npx)
-        go_right = act & (diff == 1)
-        go_left = act & (diff == npx - 1) & (npx > 2)
-        stay = act & (~go_left) & (~go_right)
+    _pk = ("ex", _mesh_key(mesh), axis, N, float(dx), float(box), Cf)
+    _b = _PROGRAM_CACHE.get(_pk)
+    if _b is None:
+        @partial(jax.jit, static_argnames=())
+        @partial(shard_map, mesh=mesh,
+                 in_specs=(P(("x", "y", "z"), None), P(("x", "y", "z"), None),
+                           P(("x", "y", "z")), P(("x", "y", "z"))),
+                 out_specs=(P(("x", "y", "z"), None), P(("x", "y", "z"), None),
+                            P(("x", "y", "z")), P(("x", "y", "z")), P()))
+        def _body(pos_l, p_l, mass_l, active_l):
+            C = pos_l.shape[0]
+            d = jax.lax.axis_index(name)
+            xw = jnp.mod(pos_l[:, axis], box)
+            act = active_l > 0
+            target = jnp.clip((xw / bw).astype(jnp.int32), 0, npx - 1)
+            diff = jnp.mod(target - d, npx)
+            go_right = act & (diff == 1)
+            go_left = act & (diff == npx - 1) & (npx > 2)
+            stay = act & (~go_left) & (~go_right)
 
-        def _pack(sel):
-            """Movers -> fixed (Cf, ...) face buffers + count (+overflow)."""
-            slot = jnp.cumsum(sel.astype(jnp.int32)) - 1
-            dest = jnp.where(sel, slot, Cf)
+            def _pack(sel):
+                """Movers -> fixed (Cf, ...) face buffers + count (+overflow)."""
+                slot = jnp.cumsum(sel.astype(jnp.int32)) - 1
+                dest = jnp.where(sel, slot, Cf)
 
-            def tk(a):
-                z = jnp.zeros((Cf,) + a.shape[1:], a.dtype)
+                def tk(a):
+                    z = jnp.zeros((Cf,) + a.shape[1:], a.dtype)
+                    return z.at[dest].set(a, mode="drop")
+
+                cnt = jnp.sum(sel.astype(jnp.int32))
+                return (tk(pos_l), tk(p_l), tk(mass_l), jnp.minimum(cnt, Cf),
+                        jnp.maximum(cnt - Cf, 0))
+
+            bufR = _pack(go_right)
+            sendover = bufR[4]
+            arrs = [jax.lax.ppermute(q, name, to_right) for q in bufR[:4]]
+            if npx > 2:
+                bufL = _pack(go_left)
+                sendover = sendover + bufL[4]
+                arrs_l = [jax.lax.ppermute(q, name, to_left) for q in bufL[:4]]
+            kR = jnp.arange(Cf) < arrs[3]
+            pos_all = [pos_l, arrs[0]]
+            p_all = [p_l, arrs[1]]
+            mass_all = [mass_l, arrs[2]]
+            act_all = [stay, kR]
+            if npx > 2:
+                kL = jnp.arange(Cf) < arrs_l[3]
+                pos_all.append(arrs_l[0])
+                p_all.append(arrs_l[1])
+                mass_all.append(arrs_l[2])
+                act_all.append(kL)
+            pos_a = jnp.concatenate(pos_all, axis=0)
+            p_a = jnp.concatenate(p_all, axis=0)
+            mass_a = jnp.concatenate(mass_all, axis=0)
+            act_a = jnp.concatenate(act_all, axis=0)
+
+            slot = jnp.cumsum(act_a.astype(jnp.int32)) - 1
+            dest = jnp.where(act_a, slot, C)
+
+            def _take(a):
+                z = jnp.zeros((C,) + a.shape[1:], a.dtype)
                 return z.at[dest].set(a, mode="drop")
 
-            cnt = jnp.sum(sel.astype(jnp.int32))
-            return (tk(pos_l), tk(p_l), tk(mass_l), jnp.minimum(cnt, Cf),
-                    jnp.maximum(cnt - Cf, 0))
+            pos_n = _take(pos_a)
+            p_n = _take(p_a)
+            mass_n = _take(mass_a)
+            nact = jnp.maximum(slot[-1] + 1, 0)
+            n_overflow = jnp.maximum(nact - C, 0).astype(jnp.int32) + sendover
+            act_n = (jnp.arange(C) < jnp.minimum(nact, C)).astype(active_l.dtype)
+            n_over = jax.lax.psum(n_overflow, AXES)
+            return pos_n, p_n, mass_n, act_n, n_over
 
-        bufR = _pack(go_right)
-        sendover = bufR[4]
-        arrs = [jax.lax.ppermute(q, name, to_right) for q in bufR[:4]]
-        if npx > 2:
-            bufL = _pack(go_left)
-            sendover = sendover + bufL[4]
-            arrs_l = [jax.lax.ppermute(q, name, to_left) for q in bufL[:4]]
-        kR = jnp.arange(Cf) < arrs[3]
-        pos_all = [pos_l, arrs[0]]
-        p_all = [p_l, arrs[1]]
-        mass_all = [mass_l, arrs[2]]
-        act_all = [stay, kR]
-        if npx > 2:
-            kL = jnp.arange(Cf) < arrs_l[3]
-            pos_all.append(arrs_l[0])
-            p_all.append(arrs_l[1])
-            mass_all.append(arrs_l[2])
-            act_all.append(kL)
-        pos_a = jnp.concatenate(pos_all, axis=0)
-        p_a = jnp.concatenate(p_all, axis=0)
-        mass_a = jnp.concatenate(mass_all, axis=0)
-        act_a = jnp.concatenate(act_all, axis=0)
-
-        slot = jnp.cumsum(act_a.astype(jnp.int32)) - 1
-        dest = jnp.where(act_a, slot, C)
-
-        def _take(a):
-            z = jnp.zeros((C,) + a.shape[1:], a.dtype)
-            return z.at[dest].set(a, mode="drop")
-
-        pos_n = _take(pos_a)
-        p_n = _take(p_a)
-        mass_n = _take(mass_a)
-        nact = jnp.maximum(slot[-1] + 1, 0)
-        n_overflow = jnp.maximum(nact - C, 0).astype(jnp.int32) + sendover
-        act_n = (jnp.arange(C) < jnp.minimum(nact, C)).astype(active_l.dtype)
-        n_over = jax.lax.psum(n_overflow, AXES)
-        return pos_n, p_n, mass_n, act_n, n_over
-
-    return _body(pos, p, mass, active)
+        _PROGRAM_CACHE[_pk] = _b = _body
+    return _b(pos, p, mass, active)
 
 
 def exchange_particles_blocks(pos, p, mass, active, N, dx, box, mesh,
