@@ -59,8 +59,21 @@ These cost us days on viper. Verify each on GH200 before trusting any number:
    - hydro is the control: it strong- AND weak-scales cleanly (4096³ on 256
      GPUs on viper), so any deviation on GH200 is a machine/env problem, not
      an algorithm one. **Run it first as the environment sanity check.**
-3. **Then** weak + strong ladders for both, ≥256³ per-GPU tiles (small tiles
-   ran at 7% peak on viper and polluted the curve).
+3. **Hydro scale-out on the Sedov test — weak AND strong**, the full ladder:
+   - **weak**: fixed per-GPU tile (≥256³, ideally 512³) with the global grid
+     growing with GPU count — 1 → 4 → 16 → 64 → 256 → 1024 GPUs and as far
+     as the allocation allows. Ideal is a flat ms/step and linearly growing
+     Gcell/s; report parallel efficiency vs the 1-GPU point.
+   - **strong**: fixed global grid (1024³ and 2048³), GPU count doubling —
+     shows where the per-GPU tile gets too small and halo/latency takes over.
+   - both at FP64 and FP32/recon32, and both plotted against the single-GPU
+     roofline from item 2 so the ladder and the ceiling are one figure.
+   - viper anchors to compare against: 4096³ on 256 GPUs ran; strong scaling
+     88-89% to 4 GPUs with an unexplained regression at 8 (task #12) —
+     **re-check that regression on GH200; if it does not reproduce it was a
+     ROCm/interconnect artifact.**
+4. **Then** the gravity ladders, ≥256³ per-GPU tiles (small tiles ran at 7%
+   peak on viper and polluted the curve).
 
 ## viper reference numbers (MI300A) — what to beat/compare
 
