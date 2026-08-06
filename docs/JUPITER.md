@@ -61,10 +61,30 @@ unless noted:
 |---|---|---|
 | **LUNA full step** | **34.6 ms** (resid 2.96e-3) | **27.4 ms** (61% eff) |
 | LUNA production (FP64 carry) | 45.0 ms (resid 2.93e-3) | — |
-| Horowitz JaxPM MG | 43.3 ms (resid 4.96e-3) | 74.3 ms (91% eff) |
+| Horowitz, his best (MG + absolute painting) | 43.3 ms (resid 4.96e-3) | **not available** |
+| Horowitz, multi-device (MG + displacement painting) | 135.1 ms | 74.3 ms (91% eff) |
+| Horowitz FFT (displacement painting) | 145.5 ms | pending |
 
-Components, 1 GPU, all-FP32: deposit 15.25 (his 9.12 — **our 1.66× gap**),
-solve 7.14 (his 9.50), gradient 1.95, gather 10.02 (his 16.03).
+**His painting method, not his solver, dominates his cost.** Absolute
+painting: deposit 9.12 / gather 16.03 ms. Displacement painting: deposit
+27.27 / gather 95.21 ms — ~3× and ~6× worse. Upstream warns against absolute
+painting multi-device, so **going to 2+ GPUs forces him onto the expensive
+path**: his 91% scaling efficiency starts from 135 ms, not 43.
+
+**His FFT is slower than his own MG**, so we benchmarked him at his best:
+FFT Poisson+gradient 24.19 ms vs warm V-cycle 11.29 ms (2.14×). The FFT
+budget is exactly 1 forward (5.08) + 3 inverse (6.32) transforms = 24.0
+predicted vs 24.19 measured — no room in it. His two solvers agree on the
+force to 0.27% relative RMS, which also independently validates our unit
+bridge. **Multigrid beats FFT on his own code at 512³/1 GPU, before the
+all-to-all penalty even enters** — the FFT-at-2-GPU point (where the
+transpose wall should appear) is queued and must be measured, not assumed.
+
+Components, 1 GPU, all-FP32, vs his *best* config: deposit 15.25 (his 9.12 —
+**our one clear loss, 1.66×**), solve 7.14 (his 9.50), gradient 1.95 (his
+1.98), gather 10.02 (his 16.03). We win everything except the deposit, and
+`GRAVITY_PLAN.md` P0.1 (R1: stop streaming FP64 positions in the FP32 path,
+fuse the 8 scatters) targets exactly that gap before any exotic work.
 
 Solve alone, sharded blocks path: 18.1 → 12.9 → 5.7 ms at 1/2/8 GPUs (3.2×).
 Component rooflines, 512³ 1 GPU: hydro 2194 Mcell/s FP64 / 2453 FP32;
