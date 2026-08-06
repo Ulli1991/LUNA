@@ -49,7 +49,17 @@ These cost us days on viper. Verify each on GH200 before trusting any number:
      (`LUNA_SEDOV_NX`, `LUNA_MESH_SHAPE`, `LUNA_X64`, max-steps cap).
    - **Gravity components separately** — CIC deposit, one warm V-cycle, cold
      FMG. *Not* the full step (explicit user instruction).
-2. **Then** weak + strong ladders for both, ≥256³ per-GPU tiles (small tiles
+2. **Roofline SCALING for hydro** — the saturation scan, then the same curve
+   at increasing GPU count:
+   - single GPU, size sweep 32³ → 512³ → 1024³ (find where a GH200
+     saturates; viper MI300A saturated near 256³ at 1.11 Gcell/s FP64)
+   - FP64 vs FP32 vs recon32 (mixed) at each size — viper refs below
+   - then the same throughput curve at 1/4/16/64 GPUs with a fixed per-GPU
+     tile, so the roofline and the scaling are one plot rather than two
+   - hydro is the control: it strong- AND weak-scales cleanly (4096³ on 256
+     GPUs on viper), so any deviation on GH200 is a machine/env problem, not
+     an algorithm one. **Run it first as the environment sanity check.**
+3. **Then** weak + strong ladders for both, ≥256³ per-GPU tiles (small tiles
    ran at 7% peak on viper and polluted the curve).
 
 ## viper reference numbers (MI300A) — what to beat/compare
