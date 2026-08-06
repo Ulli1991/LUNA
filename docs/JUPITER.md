@@ -86,7 +86,15 @@ unless noted:
 | LUNA production (FP64 carry) | 45.0 ms (resid 2.93e-3) | — |
 | Horowitz, his best (MG + absolute painting) | 43.3 ms (resid 4.96e-3) | **not available** |
 | Horowitz, multi-device (MG + displacement painting) | 135.1 ms | 74.3 ms (91% eff) |
-| Horowitz FFT (displacement painting) | 145.5 ms | pending |
+| Horowitz FFT (absolute painting) | 93.2 ms | not available |
+| Horowitz FFT (displacement painting) | 145.5 ms | 84.7 ms (86% eff) |
+
+**His MG beats his FFT in every configuration measured** — 2.15× in his
+fastest 1-GPU mode (43.3 vs 93.2), 7.7% with displacement painting at 1 GPU,
+14% at 2 GPUs — and scales better (91% vs 86%). Deposit and gather match to
+0.4% between his FFT and MG rows, so the difference is purely the solver:
+24.18 ms of FFT (1 fwd 5.27 + 3 inv 6.11) vs 11.48 ms of warm V-cycle +
+4th-order gradient. **The LUNA comparison used his best configuration.**
 
 **His painting method, not his solver, dominates his cost.** Absolute
 painting: deposit 9.12 / gather 16.03 ms. Displacement painting: deposit
