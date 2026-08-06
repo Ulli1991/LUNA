@@ -73,8 +73,40 @@ These cost us days on viper. Verify each on GH200 before trusting any number:
      88-89% to 4 GPUs with an unexplained regression at 8 (task #12) —
      **re-check that regression on GH200; if it does not reproduce it was a
      ROCm/interconnect artifact.**
-4. **Then** the gravity ladders, ≥256³ per-GPU tiles (small tiles ran at 7%
-   peak on viper and polluted the curve).
+4. **Gravity optimizations** against the GH200 ceilings from item 1 —
+   `GRAVITY_PLAN.md` P0.1 (R1 deposit dtype/fusion, our one component loss),
+   P0.2 (contention ceiling, which gates all further atomics work), P3.1
+   (pmwd-style int32 cell id + FP32 sub-cell offset, then full uint32
+   positions), P4.1 (`gravity_precision`). Do this BEFORE the gravity
+   ladders — otherwise the ladder measures a configuration we are about to
+   change.
+
+5. **Gravity scale-out — weak first, then strong.** This is the mission test
+   and the central claim of the design.
+   - **weak**: fixed per-GPU tile (≥256³, ideally 512³ cells + 512³
+     particles) with global grid AND particle count growing with GPU count:
+     l9 @ 1 GPU → l10 @ 8 → l11 @ 64 → l12 @ 512, and as far as the
+     allocation goes. Ideal: flat ms/step, linearly growing Mpart/s.
+   - report the **solve** separately from the full step at every rung. The
+     solve is the only component that does not scale in either code
+     (measured 1→2 GPU: his FFT 1.09×, his MG 1.18×, LUNA replicated 1.00×,
+     LUNA sharded 3.2× on 8 GPUs). **The whole design rests on LUNA's
+     sharded V-cycle holding its scaling where FFT-PM flattens — this ladder
+     confirms or refutes it.**
+   - **which path**: LUNA's dispatch sends ≥4 GPUs / multi-process to the
+     grid-sharded blocks path. That is the one that must scale; the
+     particle-parallel path replicates the mesh and is capped by
+     construction. Measure blocks at every rung, and pp only where it still
+     fits, to locate the crossover (P1.3).
+   - **strong** (last): fixed 1024³ and 2048³, GPU count doubling — expected
+     to flatten once per-GPU tiles get small; run for completeness, not as
+     the headline.
+   - **head-to-head at scale**: the same rungs for JaxPM where his path
+     allows. His multi-device mode costs him 3.1× up front (135.1 vs
+     43.3 ms at 1 GPU), so his 91% efficiency starts far behind; whether it
+     ever catches LUNA is the open question these rungs answer.
+   - ≥256³ per-GPU tiles throughout (small tiles ran at 7% peak on viper and
+     polluted the curve).
 
 ## viper reference numbers (MI300A) — what to beat/compare
 
