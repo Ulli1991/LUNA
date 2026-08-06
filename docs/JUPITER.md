@@ -59,7 +59,8 @@ These cost us days on viper. Verify each on GH200 before trusting any number:
    - hydro is the control: it strong- AND weak-scales cleanly (4096³ on 256
      GPUs on viper), so any deviation on GH200 is a machine/env problem, not
      an algorithm one. **Run it first as the environment sanity check.**
-3. **Hydro scale-out on the Sedov test — weak AND strong**, the full ladder:
+3. **Hydro scale-out on the Sedov test — weak first, then strong** (user's
+   order: rooflines → gravity optimizations → weak → strong last):
    - **weak**: fixed per-GPU tile (≥256³, ideally 512³) with the global grid
      growing with GPU count — 1 → 4 → 16 → 64 → 256 → 1024 GPUs and as far
      as the allocation allows. Ideal is a flat ms/step and linearly growing
@@ -182,9 +183,21 @@ the result the whole design rests on.
   1024³-particle multi-node run.**
 - **LUNA ≥4 GPUs needs the blocks-path unit bridge + δ_max gate built** for
   the head-to-head harness (`horowitz_bench/h2h_l9_mgpu.py` covers 1–2 GPU).
-- ICs beyond l10 must be generated with MUSIC (l11 = 2048³, l12 = 4096³ —
-  the user notes MUSIC handles up to 4096³; 4096³ ≈ 69 G particles ≈ 3.3 TB,
-  needs a big-memory node and the chunked reader).
+- **MUSIC must be built and running on JUPITER.** The wide weak-scaling rungs
+  need ICs bigger than l10, and 57 GB (l10) is already awkward to copy — the
+  large ones must be *generated on the machine*, not transferred.
+  - build MUSIC there (FFTW + GSL + HDF5; it is a CPU code, so build for the
+    Grace side and run on a big-memory/CPU node, not the GPUs)
+  - carry over the exact config used for l9/l10 so the new ICs are the same
+    cosmology and realization family: box 25000 kpc/h, Ωm=0.3, ΩΛ=0.7,
+    h=0.6711, z_init=50, Arepo/Gadget HDF5 output, PartType1 (+PartType0 for
+    the coupled runs). The l9 config lives with the existing ICs — copy it,
+    change only the level.
+  - sizes: l11 = 2048³ ≈ 8.6 G particles (~410 GB), l12 = 4096³ ≈ 69 G
+    particles (~3.3 TB). Both need the chunked per-rank reader; l12 needs a
+    plan for where 3.3 TB lives (scratch quota) before it is generated.
+  - verify each new IC the same way l9 was: neutral numpy CIC δ_max on the
+    file, and lattice-order/ID check. Do this BEFORE any timed run uses it.
 
 ## Carry-over rules
 
