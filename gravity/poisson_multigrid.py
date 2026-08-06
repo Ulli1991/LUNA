@@ -342,6 +342,23 @@ def solve_poisson(
 AXIS_SHARDS = [("x", 0), ("y", 1), ("z", 2)]
 
 
+_MG_MIXED = False       # set by the runners from cfg.gravity_precision
+
+
+def set_mg_mixed(flag):
+    """Default for the sharded solve's mixed-precision cycle (FP64 residual +
+    carry, FP32 V-cycle on the correction). The runners call this from
+    cfg.gravity_precision; LUNA_MG_MIXED=0/1 still overrides it."""
+    global _MG_MIXED
+    _MG_MIXED = bool(flag)
+
+
+def _mg_mixed():
+    import os as _os
+    env = _os.environ.get("LUNA_MG_MIXED")
+    return _MG_MIXED if env is None else env == "1"
+
+
 def _shardmap_ladder(gshape, boundary, mesh, n_levels, n_pre, n_post,
                      n_coarsest, agg_n):
     """Build the sharded ladder: how many levels stay sharded, the
@@ -451,13 +468,13 @@ def solve_poisson_fmg_shardmap(
     else:
         rho_src = rho
 
-    _mixed_env = _os.environ.get("LUNA_MG_MIXED", "0")
+    _mixed = _mg_mixed()
     _key = (tuple(sorted((k, int(v)) for k, v in mesh.shape.items())),
             tuple(str(d) for d in mesh.devices.flat), tuple(rho.shape),
             float(dx),
             float(fourpiG), boundary, n_levels, n_vcycles_per_level,
             n_extra_vcycles, n_pre, n_post, n_coarsest, agg_n,
-            phi_init is not None, warm_cycles, _ca, _smoo, _mixed_env,
+            phi_init is not None, warm_cycles, _ca, _smoo, _mixed,
             str(rho_src.dtype))
     _hit = _SHARDMAP_PROGRAM_CACHE.get(_key)
     if _hit is not None:
@@ -465,11 +482,12 @@ def solve_poisson_fmg_shardmap(
                 else _hit(rho_src))
 
     if phi_init is not None:
-        # LUNA_MG_MIXED=1: FP64 residual of the carried phi, FP32 V-cycle on
+        # mixed (gravity_precision != double, or LUNA_MG_MIXED=1): FP64
+        # residual of the carried phi, FP32 V-cycle on
         # the correction, FP64 accumulate — same converged residual at ~2/3
         # the cycle cost (measured single-GPU), and it halves every halo and
         # agglomeration-gather byte on the sharded ladder.
-        mixed = _os.environ.get("LUNA_MG_MIXED", "0") == "1"
+        mixed = _mixed
 
         @partial(jax.jit, static_argnames=())
         @partial(shard_map, mesh=mesh,

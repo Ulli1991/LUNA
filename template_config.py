@@ -107,13 +107,24 @@ class Config:
     # DM PM-gravity fast path (measured 512^3/MI300A: 46 ms/step, 2x tighter than
     # cold-start V(2,2); set dm_warm_vcycles=0 for the bit-conservative cold FMG).
     dm_warm_vcycles: int = 1        # >0: warm-start PM gravity — carry phi, k V-cycles/step (0 = cold FMG)
-    dm_mixed_precision: bool = True   # FP32 deposit + FP32 defect-corr V-cycles (FP64 phi carry)
+    # ONE switch for the whole gravity path (docs/PRECISION_SURVEY.md R6).
+    # 'double': FP64 everywhere.  'mixed' (default): FP64 particles + FP64 phi
+    # carry/residual, FP32 deposit + FP32 defect-correction V-cycle (textbook
+    # 3-precision iterative refinement).  'single': FP32 throughout.
+    gravity_precision: str = "mixed"  # 'double' | 'mixed' | 'single'
+    # Fixed-point CIC accumulation (QuanTaichi 2021 / OpenMM 2012; survey R3):
+    # deposit round(w*S) in units of the mean density into an integer grid.
+    # Bitwise reproducible under particle reordering (integer add is
+    # associative) and exact-mass by construction; int32@2^17 in mixed/single,
+    # int64@2^40 in double.
+    gravity_deposit_fixed: bool = False
+    dm_mixed_precision: bool = True   # DEPRECATED alias, use gravity_precision
     dm_warm_extrapolate: int = 2    # warm-solve seed: 1 = rescale phi by a_next/a_prev; 2 = linear extrap from last two phi
     dm_warm_n_pre: int = 1          # smoother sweeps in the warm V-cycle (DM path only;
     dm_warm_n_post: int = 1         # global POISSON_N_PRE/POST are untouched)
     dm_decomp: str = "blocks"       # multi-GPU DM layout: "blocks" (3D, production) | "slab" (legacy)
     dm_resort_every: int = 4        # cell-order resort every N particle exchanges (0 = off)
-    dm_fp32: bool = False            # store DM particle pos/mom/mass in fp32 (halves PM comm + deposit/exchange work; grid rho + Poisson stay fp64, stays differentiable)
+    dm_fp32: bool = False            # DEPRECATED alias for gravity_precision='single' (fp32 particle state)
     CosmoHydro: bool = False        # coupled gas+DM box (gas meshed from MUSIC baryon IC)
     cosmo_jeans_ncell: float = 0.0  # Truelove Jeans-floor cells (0 = off; ~4 for halos)
     cosmo_T_floor: float = 0.0      # temperature floor [K] (10 K is standard for cosmo runs)
@@ -576,6 +587,10 @@ class Config:
                         "3 isolated, 4 diode")
         if getattr(self, "dm_decomp", "blocks") not in ("blocks", "slab"):
             errs.append(f"dm_decomp={self.dm_decomp!r}: 'blocks' or 'slab'")
+        if getattr(self, "gravity_precision", "mixed") not in (
+                "double", "mixed", "single"):
+            errs.append(f"gravity_precision={self.gravity_precision!r}: "
+                        "'double', 'mixed' or 'single'")
         if getattr(self, "cosmo_kick_scheme", "strang") not in (
                 "strang", "half", "end"):
             errs.append(f"cosmo_kick_scheme={self.cosmo_kick_scheme!r}: "

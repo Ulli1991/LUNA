@@ -144,10 +144,21 @@ class ParticleMeshGravity:
         return self.accel_at_points(self.gas_accel_grid(rho), positions)
 
     # -- Particle-Mesh: particle mass -> grid density (CIC) -----------------
-    def cic_deposit(self, positions, masses, active, dtype=None):
+    def cic_deposit(self, positions, masses, active, dtype=None, fixed=None,
+                    fixed_bits=17, mass_unit=None):
         """Deposit particle masses onto the grid as a density (CIC scatter-add):
         ∑ρ·dV == ∑ active masses (positions clamped to the box). `dtype` sets
-        the grid dtype (float32 halves the scatter cost; default: positions')."""
+        the grid dtype (float32 halves the scatter cost; default: positions').
+
+        `fixed` = jnp.int32/int64 switches to fixed-point accumulation with
+        S = 2**fixed_bits integer units per mean-density cell: bitwise
+        reproducible under particle reordering and exact in mass (see
+        _cic_deposit_fixed). `mass_unit` = mean mass per cell, if the caller
+        already knows it (it is constant while no particle is created).
+        """
+        if fixed is not None:
+            return self._cic_deposit_fixed(positions, masses, active, fixed,
+                                           fixed_bits, dtype, mass_unit)
         w = (masses * active) / self.dV
         fx = positions[:, 0] / self.dx - 0.5
         fy = positions[:, 1] / self.dx - 0.5
@@ -180,6 +191,60 @@ class ParticleMeshGravity:
                         kz = jnp.mod(kz, self.Nz)
                     rho = rho.at[ix, jy, kz].add(wt)
         return rho
+
+    def _cic_deposit_fixed(self, positions, masses, active, int_dtype,
+                           bits, dtype=None, mass_unit=None):
+        """Fixed-point CIC: accumulate round(w·S) into an integer grid, S =
+        2**bits integer units per mean-density cell, then scale back to a
+        density. Integer addition is associative, so the field is bitwise
+        identical whatever order the atomics land in — a float scatter is not
+        (7% of cells move under a mere particle reordering, measured 512^3).
+        The 8 corner weights are split by a rounding tree, so they sum to the
+        particle's integer weight EXACTLY: no mass is created or lost.
+        Overflow: (1+delta) must stay below 2**31/S (16384 at S=2^17).
+        Technique: QuanTaichi (SIGGRAPH 2021) for MPM grid nodes, OpenMM 2012
+        for MD forces; the exact-mass split and the PM use are LUNA's.
+        """
+        w = (masses * active) / self.dV
+        if mass_unit is None:                      # mean density (= 1 unit)
+            mass_unit = jnp.sum(w) / float(self.Nx * self.Ny * self.Nz)
+        S = float(1 << bits)
+        fx = positions[:, 0] / self.dx - 0.5
+        fy = positions[:, 1] / self.dx - 0.5
+        fz = positions[:, 2] / self.dx - 0.5
+        i0 = jnp.floor(fx).astype(jnp.int32)
+        j0 = jnp.floor(fy).astype(jnp.int32)
+        k0 = jnp.floor(fz).astype(jnp.int32)
+        tx, ty, tz = fx - i0, fy - j0, fz - k0
+        if self.boundary != 0:                     # non-periodic: clamp to faces
+            i0 = jnp.clip(i0, 0, self.Nx - 2)
+            j0 = jnp.clip(j0, 0, self.Ny - 2)
+            k0 = jnp.clip(k0, 0, self.Nz - 2)
+            tx = jnp.clip(fx - i0, 0.0, 1.0)
+            ty = jnp.clip(fy - j0, 0.0, 1.0)
+            tz = jnp.clip(fz - k0, 0.0, 1.0)
+        ftype = jnp.float32 if int_dtype == jnp.int32 else jnp.float64
+        tx, ty, tz = (q.astype(ftype) for q in (tx, ty, tz))
+        W = jnp.rint((w / mass_unit).astype(ftype) * ftype(S)).astype(int_dtype)
+        grid = jnp.zeros((self.Nx, self.Ny, self.Nz), int_dtype)
+        for di in (0, 1):
+            lo = jnp.rint(W.astype(ftype) * (1.0 - tx)).astype(int_dtype)
+            Wx = lo if di == 0 else W - lo
+            for dj in (0, 1):
+                lo = jnp.rint(Wx.astype(ftype) * (1.0 - ty)).astype(int_dtype)
+                Wxy = lo if dj == 0 else Wx - lo
+                for dk in (0, 1):
+                    lo = jnp.rint(Wxy.astype(ftype) * (1.0 - tz)).astype(int_dtype)
+                    upd = lo if dk == 0 else Wxy - lo
+                    ix, jy, kz = i0 + di, j0 + dj, k0 + dk
+                    if self.boundary == 0:         # periodic wrap at the faces
+                        ix = jnp.mod(ix, self.Nx)
+                        jy = jnp.mod(jy, self.Ny)
+                        kz = jnp.mod(kz, self.Nz)
+                    grid = grid.at[ix, jy, kz].add(upd)
+        out = jnp.float32 if dtype is None and int_dtype == jnp.int32 else \
+            (dtype or jnp.float64)
+        return grid.astype(out) * jnp.asarray(mass_unit / S, dtype=out)
 
     def particles_potential(self, positions, masses, active):
         """φ_star: CIC-deposit the particle masses → MG Poisson solve."""

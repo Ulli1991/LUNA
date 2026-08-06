@@ -16,9 +16,16 @@ from gravity.particle_mesh import ParticleMeshGravity
 from gravity.poisson_multigrid import (laplacian_7pt, solve_poisson,
                                        solve_poisson_fmg)
 from file_io.write_gadget import write_gadget_dm_snapshot
-from setup.cosmo_common import (CosmoClock, dtau_accel, poisson_coeff_fac,
-                                softening_from_config)
+from setup.cosmo_common import (CosmoClock, dtau_accel,
+                                gravity_precision_from_config,
+                                poisson_coeff_fac, softening_from_config)
 from setup.run_report import StepLog, require_finite
+
+
+def _fixed_ceiling(prec):
+    """Largest 1+delta a fixed-point deposit can hold before integer overflow."""
+    bits = 63 if prec.fixed_int is jnp.int64 else 31
+    return float(2 ** bits - 1) / float(2 ** prec.fixed_bits)
 
 
 def run_simulation_cosmo_dm(cfg, is_main_process=True):
@@ -53,10 +60,14 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
                            dloga_max, eta, n_extra, is_main_process)
 
     pm = ParticleMeshGravity(cfg)
-    pos = jnp.asarray(ic.pos)                              # comoving kpc/h
-    mass = jnp.asarray(ic.mass)
-    active = jnp.ones(ic.n_part)
-    p = jnp.asarray(ic.vel) * (a ** 1.5)                  # canonical momentum p=a^2 xdot
+    prec = gravity_precision_from_config(cfg)             # one precision switch
+    pos = jnp.asarray(ic.pos, prec.particles)             # comoving kpc/h
+    mass = jnp.asarray(ic.mass, prec.particles)
+    active = jnp.ones(ic.n_part, prec.particles)
+    p = jnp.asarray(ic.vel, prec.particles) * (a ** 1.5)  # canonical momentum p=a^2 xdot
+    # mean density: the fixed-point deposit's integer unit (mass is conserved,
+    # so this is a constant of the run).
+    mass_unit = float(jnp.sum(mass * active)) / (box ** 3)
 
     clock = CosmoClock(cosmo, a, a_end, H0)
 
@@ -71,15 +82,19 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     coeff_fac = poisson_coeff_fac(Om, H0)
     warm = int(getattr(cfg, "dm_warm_vcycles", 0))
 
-    mixed = bool(getattr(cfg, "dm_mixed_precision", False))
+    mixed = prec.cycle_mixed
     n_pre = int(getattr(cfg, "dm_warm_n_pre", 1))
     n_post = int(getattr(cfg, "dm_warm_n_post", 1))
 
     extrap = int(getattr(cfg, "dm_warm_extrapolate", 0))
+    if is_main_process:
+        print(f"[cosmo-dm] {prec}")
 
     def force_core(pos, mass, active, a_kick, c1, c2, phi_prev, phi_prev2):
         rho = pm.cic_deposit(pos, mass, active,            # this shard's particles
-                             dtype=jnp.float32 if mixed else None)
+                             dtype=prec.deposit,
+                             fixed=prec.fixed_int if prec.fixed_deposit else None,
+                             fixed_bits=prec.fixed_bits, mass_unit=mass_unit)
         if ndev > 1:
             rho = jax.lax.psum(rho, "p")                   # global density (Allreduce)
         delta = rho / jnp.mean(rho) - 1.0
@@ -110,7 +125,8 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
                                     coeff_fac * a_kick, boundary=0,
                                     n_levels=n_levels, n_extra_vcycles=n_extra)
         g = pm.grad_phi(phi, order=4)
-        return pm.accel_at_points(g, pos), jnp.max(delta), phi
+        acc = pm.accel_at_points(g, pos).astype(prec.particles)
+        return acc, jnp.max(delta), phi
 
     def kdk_core(pos, p, g, mass, active, a_kick, dtau, c1, c2,
                  phi_prev, phi_prev2):
@@ -181,8 +197,9 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     rep = StepLog(cfg, is_main_process,
                   history_fields=["step", "a", "dloga", "delta_max"])
 
-    phi = jnp.zeros((cfg.Nx,) * 3)                         # warm-start carry
-    phi2 = jnp.zeros((cfg.Nx,) * 3) if extrap == 2 else jnp.float64(0.0)
+    phi = jnp.zeros((cfg.Nx,) * 3, prec.phi)               # warm-start carry
+    phi2 = (jnp.zeros((cfg.Nx,) * 3, prec.phi) if extrap == 2
+            else jnp.zeros((), prec.phi))
     g, dmax, phi = force(pos, a, 1.0, 0.0, phi, phi2)      # force + delta_max
     g2max = float(jnp.max(jnp.sum(g ** 2, axis=1)))        # max |accel|^2 (host)
     a_prev, a_prev2 = a, None                              # epochs of phi, phi2
@@ -207,6 +224,13 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
         step += 1
         require_finite(float(dmax), what="DM overdensity", step=step, t=tau,
                        hint="PM N-body state went NaN.")
+        if prec.fixed_deposit and 1.0 + float(dmax) > 0.5 * _fixed_ceiling(prec):
+            raise RuntimeError(
+                f"fixed-point deposit: 1+delta_max = {1 + float(dmax):.0f} is "
+                f"within 2x of the integer ceiling {_fixed_ceiling(prec):.0f} "
+                f"({prec.fixed_int.__name__} at S=2^{prec.fixed_bits}). Lower "
+                "gravity_deposit_fixed's scale or use gravity_precision="
+                "'double' (int64).")
         rep.step(step, f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} "
                  f"{dloga:8.5f} {float(dmax):10.3f}",
                  row=[step, a, dloga, float(dmax)], force=a >= a_end - 1e-9)
@@ -248,7 +272,8 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         assemble_blocks_sharded, cic_deposit_blocks,
         exchange_particles_blocks, gather_accel_blocks, grad_phi_blocks,
         make_block_mesh, resort_blocks)
-    from gravity.poisson_multigrid import solve_poisson_fmg_shardmap
+    from gravity.poisson_multigrid import (set_mg_mixed,
+                                           solve_poisson_fmg_shardmap)
 
     N = cfg.Nx
     dx = box / N
@@ -259,7 +284,12 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     mesh = make_block_mesh(jax.devices(), pdims)
     coeff_fac = poisson_coeff_fac(Om, H0)
     warm = int(getattr(cfg, "dm_warm_vcycles", 1))
-    mixed = bool(getattr(cfg, "dm_mixed_precision", True))
+    prec = gravity_precision_from_config(cfg)
+    mixed = prec.cycle_mixed
+    set_mg_mixed(mixed)          # same precision policy inside the sharded solve
+    if prec.fixed_deposit and is_main_process:
+        print("[cosmo-dm] NOTE: gravity_deposit_fixed is not wired into the "
+              "block-sharded deposit yet; using the float scatter.")
     eps_soft = softening_from_config(cfg, dx)
     cap = float(getattr(cfg, "dm_capacity_factor", 1.5))
     resort_every = int(getattr(cfg, "dm_resort_every", 4))  # in EXCHANGES
@@ -340,7 +370,7 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     # cold start via the split path: deposit + stats, FMG solve, close_kick
     # with dtau=0 (p unchanged, returns the opening force).
     rho = cic_deposit_blocks(posS, massS, actS, N, dx, mesh,
-                             dtype=jnp.float32 if mixed else None)
+                             dtype=prec.deposit)
     delta64, dmax, p2, n_act, m_tot = field_stats(rho, pS, massS, actS)
     psi = _solve(delta64, None)
     pS, g, g2 = close_kick(_grad_gather(psi, posS), pS, actS, 0.0,
@@ -374,7 +404,7 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
             # and gather tolerate (halo-margin ownership, HACC-style).
             n_over = 0
         rho = cic_deposit_blocks(posS, massS, actS, N, dx, mesh,
-                                 dtype=jnp.float32 if mixed else None)
+                                 dtype=prec.deposit)
         delta64, dmax, p2, n_act, m_tot = field_stats(rho, p_half, massS,
                                                       actS)
         # ROCm: an unsynced burst of eager dispatches can wedge the queue

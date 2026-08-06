@@ -17,8 +17,9 @@ from cosmology.mesh_gas import mesh_gas_to_grid, mesh_gas_to_grid_slab
 from gravity.particle_mesh import ParticleMeshGravity
 from gravity.poisson_multigrid import (laplacian_7pt, solve_poisson,
                                        solve_poisson_fmg)
-from setup.cosmo_common import (CosmoClock, dtau_accel, poisson_coeff_fac,
-                                softening_from_config)
+from setup.cosmo_common import (CosmoClock, dtau_accel,
+                                gravity_precision_from_config,
+                                poisson_coeff_fac, softening_from_config)
 from setup.run_report import StepLog, require_finite
 from units import KB_OVER_MP_KMS2_PER_K
 
@@ -72,7 +73,8 @@ def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
     clock = CosmoClock(cosmo, a, a_end, H0)
 
     warm = int(getattr(cfg, "dm_warm_vcycles", 1))
-    mixed = bool(getattr(cfg, "dm_mixed_precision", True))
+    prec = gravity_precision_from_config(cfg)   # cfg.gravity_precision
+    mixed = prec.cycle_mixed
     n_pre_w = int(getattr(cfg, "dm_warm_n_pre", 1))
     n_post_w = int(getattr(cfg, "dm_warm_n_post", 1))
 
@@ -80,8 +82,7 @@ def run_simulation_cosmo_hydro(U, cfg, step_fn, compute_dt_fn,
         """One joint gas+DM solve -> (gas force grid, DM force at particles,
         delta_max, max|g_dm|^2, phi). Warm-started (extrapolated seed) with
         the FP32 defect correction when phi_prev is carried; cold FMG else."""
-        rho_dm = pm.cic_deposit(pos, dm_mass, active,
-                                dtype=jnp.float32 if mixed else None)
+        rho_dm = pm.cic_deposit(pos, dm_mass, active, dtype=prec.deposit)
         rho_tot = U_arr[0].astype(rho_dm.dtype) + rho_dm
         delta = rho_tot / jnp.mean(rho_tot) - 1.0
         if phi_prev is None:                               # cold start
@@ -465,7 +466,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     # weak-typed python floats so the drift/CIC math stays fp32. Still
     # differentiable (fp32, not integer). fp32 over a 25 Mpc box = ~2.5 pc edge
     # resolution << the 49 kpc PM cell, so PM accuracy is unaffected.
-    if bool(getattr(cfg, "dm_fp32", False)):
+    if gravity_precision_from_config(cfg).particles is jnp.float32:
         posS = posS.astype(jnp.float32)
         pS = pS.astype(jnp.float32)
         massS = massS.astype(jnp.float32)
