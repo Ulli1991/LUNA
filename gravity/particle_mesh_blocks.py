@@ -123,6 +123,13 @@ def _mesh_key(mesh):
             tuple(str(d) for d in mesh.devices.flat))
 
 
+def _ncells(N):
+    """Global cell counts per axis. ``N`` may be a scalar (cubic grid) or a
+    3-tuple — non-cubic grids are what a fixed per-GPU tile needs when the
+    device count is not a cube (e.g. 512x512x1024 on 2 GPUs)."""
+    return (int(N),) * 3 if np.isscalar(N) else tuple(int(v) for v in N)
+
+
 def _block_origin(pdims, nloc):
     """Per-axis global cell offset of this device's block (traced)."""
     return [jax.lax.axis_index(AXES[a]) * nloc[a] for a in range(3)]
@@ -164,10 +171,11 @@ def cic_deposit_blocks(pos, mass, active, N, dx, mesh, dtype=None):
     P("x") flat-per-block; output P("x","y","z"). ``dtype`` float32 halves
     scatter cost (weights from cell-relative offsets stay exact)."""
     pdims = [int(mesh.shape[a]) for a in AXES]
-    nloc = [N // p for p in pdims]
+    Ng = _ncells(N)
+    nloc = [Ng[a] // pdims[a] for a in range(3)]
     inv_dV = 1.0 / dx ** 3
 
-    _pk = ("dep", _mesh_key(mesh), N, float(dx), str(dtype))
+    _pk = ("dep", _mesh_key(mesh), Ng, float(dx), str(dtype))
     _b = _PROGRAM_CACHE.get(_pk)
     if _b is None:
         @partial(jax.jit, static_argnames=())
@@ -261,9 +269,10 @@ def gather_accel_blocks(g, pos, N, dx, mesh):
     """Trilinear force interpolation at particle positions; particles may sit
     up to one ghost cell outside their block (post-drift, pre-exchange)."""
     pdims = [int(mesh.shape[a]) for a in AXES]
-    nloc = [N // p for p in pdims]
+    Ng = _ncells(N)
+    nloc = [Ng[a] // pdims[a] for a in range(3)]
 
-    _pk = ("gath", _mesh_key(mesh), N, float(dx))
+    _pk = ("gath", _mesh_key(mesh), Ng, float(dx))
     _b = _PROGRAM_CACHE.get(_pk)
     if _b is None:
         @partial(jax.jit, static_argnames=())
