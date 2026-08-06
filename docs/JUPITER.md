@@ -136,6 +136,32 @@ against JaxPM at scale (his multi-device path costs him 3.1× — 135.1 vs
 43.3 ms at 1 GPU — so his 91% efficiency starts from far behind; whether it
 catches us is an open, measurable question).
 
+### The solver-scaling asymmetry — the thing to prove at scale
+
+Measured at 2 GPUs, both codes: **everything local scales ~1.9×, and the
+Poisson solve is the only component that does not.**
+
+| solve component, 1 → 2 GPU | speedup |
+|---|---|
+| Horowitz FFT (1 fwd + 3 inv transforms) | **1.09×** (fwd 1.15, inv 1.21) |
+| Horowitz MG | 1.18× |
+| LUNA particle-parallel (mesh **replicated**) | **1.00× by construction** |
+| LUNA blocks (mesh **sharded**) | 18.1 → 12.9 → 5.7 ms at 1/2/8 GPU = **3.2×** |
+
+His step still shows 91% because his gather (49 of his 74 ms) is large and
+parallelizes well — a big scaling component masks a small non-scaling one.
+That mask comes off as GPU count rises and the local work per device shrinks.
+
+His FFT transposes are inter-device all-to-alls already at 2 GPUs **on one
+package with the fastest interconnect in the machine** — the classic FFT-PM
+wall at the smallest possible scale. LUNA's sharded V-cycle exchanges halos
+instead, and measures 3.2× on 8 GPUs.
+
+**This is the central claim JUPITER must confirm or refute:** multigrid with
+a sharded mesh keeps scaling where FFT-PM does not. If LUNA's blocks path
+holds its solve scaling out to hundreds of GPUs while his flattens, that is
+the result the whole design rests on.
+
 ## Blockers / prerequisites
 
 - **SSH channel from the user** — JUPITER auth is interactive; needs a
