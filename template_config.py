@@ -117,7 +117,7 @@ class Config:
     # Bitwise reproducible under particle reordering (integer add is
     # associative) and exact-mass by construction; int32@2^17 in mixed/single,
     # int64@2^40 in double.
-    gravity_deposit_fixed: bool = False
+    gravity_deposit_fixed: bool = False  # fixed-point CIC: bitwise reproducible + exact mass (int32@2^17, int64@2^40 in 'double')
     dm_mixed_precision: bool = True   # DEPRECATED alias, use gravity_precision
     dm_warm_extrapolate: int = 2    # warm-solve seed: 1 = rescale phi by a_next/a_prev; 2 = linear extrap from last two phi
     dm_warm_n_pre: int = 1          # smoother sweeps in the warm V-cycle (DM path only;
