@@ -73,6 +73,13 @@ def initialize_jax_distributed(enable_x64: bool = False):
         performance; flip to True for convergence tests where the
         perturbation amplitude is near the float32 round-off floor.
     """
+    # Mute every rank but 0: unmuted, these banners + the device listing were
+    # ~17M lines / 777 MB of log per variant at 4096 ranks (job 1264426), all
+    # funneled through srun onto the shared FS.
+    import builtins
+    print = ((lambda *a, **k: None)
+             if int(os.environ.get("SLURM_PROCID", "0") or 0) != 0
+             else builtins.print)
     print("=" * 60)
     print("MULTI-NODE SHARDING MODE (1 GPU per process)")
     print("=" * 60)
@@ -93,6 +100,12 @@ def initialize_jax_distributed(enable_x64: bool = False):
             num_processes=int(os.environ.get("SLURM_NTASKS", 1)),
             process_id=int(os.environ.get("SLURM_PROCID", 0)),
         )
+        # Bootstrap deadline (default 300 s): a rank that can't reach the
+        # coordinator in time takes the whole job down with DEADLINE_EXCEEDED.
+        # Keep it below the Slurm walltime so the failure is a clean error.
+        if os.environ.get("LUNA_JAX_INIT_TIMEOUT"):
+            init_kwargs["initialization_timeout"] = int(
+                os.environ["LUNA_JAX_INIT_TIMEOUT"])
         if local_device_ids is not None:
             init_kwargs["local_device_ids"] = local_device_ids
         jax.distributed.initialize(**init_kwargs)
@@ -107,7 +120,12 @@ def initialize_jax_distributed(enable_x64: bool = False):
     # Configure JAX
     jax.config.update("jax_enable_x64", enable_x64)
     jax.config.update("jax_default_matmul_precision", "high")
-    jax.config.update("jax_compilation_cache_dir", os.path.expanduser("~/.jax_cache"))
+    # Per-config cache dirs (size/ndev/precision) on scratch are load-bearing
+    # on shared machines — see docs/JUPITER.md. Fall back to the old default.
+    jax.config.update(
+        "jax_compilation_cache_dir",
+        os.environ.get("LUNA_XLA_CACHE_DIR", os.path.expanduser("~/.jax_cache")),
+    )
     if enable_x64:
         print("✓ float64 enabled (jax_enable_x64=True)")
 
@@ -115,9 +133,13 @@ def initialize_jax_distributed(enable_x64: bool = False):
     print(f"Total devices: {len(jax.devices())}")
     print(f"Local devices: {len(jax.local_devices())}")
 
-    # Show device topology
-    for i, dev in enumerate(jax.devices()):
+    # Show device topology (capped: at 4-digit process counts the full listing
+    # is thousands of lines per run and slows srun stdout plumbing).
+    devs = jax.devices()
+    for i, dev in enumerate(devs[:8]):
         print(f"  Device {i}: {dev.device_kind} (process {dev.process_index})")
+    if len(devs) > 8:
+        print(f"  ... and {len(devs) - 8} more devices")
     print()
 
 

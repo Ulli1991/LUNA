@@ -31,7 +31,23 @@ def _fixed_ceiling(prec):
 def run_simulation_cosmo_dm(cfg, is_main_process=True):
     """DM-only super-comoving KDK N-body from MUSIC ICs (see module docstring).
     Returns ``{"a", "n_steps"}``; `main.run` wraps it in a RunResult."""
-    ic = read_music_dm_ic(cfg.music_ic_path)
+    # Multi-process slab runs read only this rank's contiguous index-chunk
+    # (~its x-slab, by the IC's x-major lattice order) — a full read per
+    # process is 56 GB at 1024^3 and impossible at 4096^3. The global count
+    # keeps the per-slab capacity identical on every rank.
+    ic_n_total = None
+    if (jax.process_count() > 1
+            and getattr(cfg, "dm_decomp", "blocks") == "slab"):
+        from cosmology.music_ic import music_part_count
+        nproc, pid = jax.process_count(), jax.process_index()
+        ic_n_total = music_part_count(cfg.music_ic_path, 1)
+        lo = pid * ic_n_total // nproc
+        hi = ic_n_total if pid == nproc - 1 else (pid + 1) * ic_n_total // nproc
+        ic = read_music_dm_ic(cfg.music_ic_path, 1, lo, hi)
+        print(f"[cosmo-dm] rank {pid}/{nproc}: chunked IC read [{lo}:{hi}]",
+              flush=True)
+    else:
+        ic = read_music_dm_ic(cfg.music_ic_path)
     cfg = music_run_config(ic, cfg.Nx, base=cfg)          # box + cosmology from IC
     cosmo = Cosmology(Omega_m=cfg.cosmo_Omega_m, Omega_L=cfg.cosmo_Omega_L, h=ic.h)
     H0 = float(cfg.cosmo_H0)
@@ -55,7 +71,8 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
                                    or getattr(cfg, "dm_force_blocks", False)):
         if getattr(cfg, "dm_decomp", "blocks") == "slab":
             return _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end,
-                             dloga_max, eta, n_extra, is_main_process)
+                             dloga_max, eta, n_extra, is_main_process,
+                             n_total=ic_n_total)
         return _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end,
                            dloga_max, eta, n_extra, is_main_process)
 
@@ -203,6 +220,9 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
     g, dmax, phi = force(pos, a, 1.0, 0.0, phi, phi2)      # force + delta_max
     g2max = float(jnp.max(jnp.sum(g ** 2, axis=1)))        # max |accel|^2 (host)
     a_prev, a_prev2 = a, None                              # epochs of phi, phi2
+    dev_ts = []                            # per-step device wall (see refresh)
+    host_every = int(getattr(cfg, "dm_host_every", 1))
+    t_ref, step_ref = time.time(), 0
     while a < a_end - 1e-9:
         dtau = clock.cap_expansion(dtau_accel(eta, eps_soft, np.sqrt(g2max)),
                                    a, dloga_max)
@@ -213,32 +233,49 @@ def run_simulation_cosmo_dm(cfg, is_main_process=True):
             c1, c2 = 2.0 * a_next / a_prev, a_next / a_prev2
         else:
             c1, c2 = a_next / a_prev, 0.0                  # rescale-only seed
+        t_dev = time.time()
         pos, p, g, phi_new, dmax, g2 = kdk(pos, p, g, phi, phi2, a_next, dtau,
                                            float(c1), float(c2))
         if extrap == 2:
             phi2, a_prev2 = phi, a_prev
         phi, a_prev = phi_new, a_next
-        g2max = float(g2)
         tau += dtau
         a = a_next
         step += 1
-        require_finite(float(dmax), what="DM overdensity", step=step, t=tau,
-                       hint="PM N-body state went NaN.")
-        if prec.fixed_deposit and 1.0 + float(dmax) > 0.5 * _fixed_ceiling(prec):
-            raise RuntimeError(
-                f"fixed-point deposit: 1+delta_max = {1 + float(dmax):.0f} is "
-                f"within 2x of the integer ceiling {_fixed_ceiling(prec):.0f} "
-                f"({prec.fixed_int.__name__} at S=2^{prec.fixed_bits}). Lower "
-                "gravity_deposit_fixed's scale or use gravity_precision="
-                "'double' (int64).")
-        rep.step(step, f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} "
-                 f"{dloga:8.5f} {float(dmax):10.3f}",
-                 row=[step, a, dloga, float(dmax)], force=a >= a_end - 1e-9)
+        # Host pulls (float() = device sync) cost ~10-25 ms each on GH200
+        # (discrete HBM; near-free on MI300A's unified memory). Amortize:
+        # refresh dt criterion + watchdogs every dm_host_every steps, with a
+        # safety factor on the reused dtau (dt drifts <1%/step at these z).
+        if step % host_every == 0 or a >= a_end - 1e-9:
+            g2max = float(g2)                  # host pull = device sync point
+            now = time.time()
+            dev_ts.append((now - t_ref) / (step - step_ref))
+            t_ref, step_ref = now, step
+            require_finite(float(dmax), what="DM overdensity", step=step,
+                           t=tau, hint="PM N-body state went NaN.")
+            if (prec.fixed_deposit
+                    and 1.0 + float(dmax) > 0.5 * _fixed_ceiling(prec)):
+                raise RuntimeError(
+                    f"fixed-point deposit: 1+delta_max = {1 + float(dmax):.0f}"
+                    f" is within 2x of the integer ceiling "
+                    f"{_fixed_ceiling(prec):.0f} ({prec.fixed_int.__name__} "
+                    "at S=2^{prec.fixed_bits}). Lower gravity_deposit_fixed's"
+                    " scale or use gravity_precision='double' (int64).")
+            rep.step(step, f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} "
+                     f"{dloga:8.5f} {float(dmax):10.3f}",
+                     row=[step, a, dloga, float(dmax)],
+                     force=a >= a_end - 1e-9)
 
     if is_main_process:
+        wall = time.time() - t0
+        med_dev = 1e3 * float(np.median(dev_ts)) if dev_ts else 0.0
         print(f"[cosmo-dm] done: {step} steps, a={a:.4f} (z={1/a-1:.4f}), "
-              f"{time.time()-t0:.1f}s")
-        write_gadget_dm_snapshot(cfg, np.asarray(pos), np.asarray(p) / a ** 1.5, a, ic)
+              f"{wall:.1f}s")
+        print(f"[cosmo-dm] timing: median device step {med_dev:.1f} ms, "
+              f"mean total step {1e3 * wall / max(step, 1):.1f} ms "
+              f"(rest = host dt/watchdog/log)")
+        if getattr(cfg, "dm_write_snapshot", True):
+            write_gadget_dm_snapshot(cfg, np.asarray(pos), np.asarray(p) / a ** 1.5, a, ic)
     return {"a": a, "n_steps": step}
 
 
@@ -447,13 +484,14 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
               f"a={a:.4f} (z={1/a-1:.4f}), {time.time()-t0:.1f}s")
     if jax.process_count() == 1 and is_main_process:
         sel = np.asarray(actS) > 0
-        write_gadget_dm_snapshot(cfg, np.asarray(posS)[sel],
+        if getattr(cfg, "dm_write_snapshot", True):
+            write_gadget_dm_snapshot(cfg, np.asarray(posS)[sel],
                                  np.asarray(pS)[sel] / a ** 1.5, a, ic)
     return {"a": a, "n_steps": step, "n_exchanges": n_exchanges}
 
 
 def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
-              n_extra, is_main_process):
+              n_extra, is_main_process, n_total=None):
     """Grid-sharded (1-D slab) DM N-body. Mesh + MG shard along x; particles are
     spatially decomposed into per-slab fixed buffers and exchanged on drift.
 
@@ -482,16 +520,36 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     cap = float(getattr(cfg, "dm_capacity_factor", 1.5))
     eps_soft = softening_from_config(cfg, dx)
 
-    # host-side spatial decomposition into per-slab fixed-capacity buffers
     pos0 = np.asarray(ic.pos)
     mom0 = np.asarray(ic.vel) * (a ** 1.5)                 # canonical momentum p=a^2 xdot
     mass0 = np.asarray(ic.mass)
-    pos_g, mom_g, mass_g, act_g, C = decompose_to_slabs(
-        pos0, mom0, mass0, Nx, ndev, dx, box, cap)
-    posS = jax.device_put(jnp.asarray(pos_g), NamedSharding(mesh, P("x", None)))
-    pS = jax.device_put(jnp.asarray(mom_g), NamedSharding(mesh, P("x", None)))
-    massS = jax.device_put(jnp.asarray(mass_g), NamedSharding(mesh, P("x")))
-    actS = jax.device_put(jnp.asarray(act_g), NamedSharding(mesh, P("x")))
+    if n_total is not None:
+        # multi-process chunked IC (this rank holds ~its slab's index-chunk):
+        # stitch per-slab buffers from local chunks (global capacity from
+        # n_total), then settle boundary crossers with ring exchanges — one
+        # hop per round, so loop until no particle is out of its slab.
+        from gravity.particle_mesh_shardmap import assemble_slab_from_chunk
+        (posS, pS, massS), actS, C = assemble_slab_from_chunk(
+            [pos0, mom0, mass0],
+            [P("x", None), P("x", None), P("x")], n_total, ndev, mesh,
+            capacity_factor=cap)
+        for settle in range(8):
+            posS, pS, massS, actS, n_bad, occ = exchange_particles_slab(
+                posS, pS, massS, actS, Nx, dx, box, mesh)
+            if int(n_bad) == 0:
+                break
+        if is_main_process:
+            print(f"[cosmo-dm] IC settle: {settle + 1} rounds, "
+                  f"out-of-slab={int(n_bad)} max_occ={int(occ)} cap_C={C}",
+                  flush=True)
+    else:
+        # host-side spatial decomposition into per-slab fixed-capacity buffers
+        pos_g, mom_g, mass_g, act_g, C = decompose_to_slabs(
+            pos0, mom0, mass0, Nx, ndev, dx, box, cap)
+        posS = jax.device_put(jnp.asarray(pos_g), NamedSharding(mesh, P("x", None)))
+        pS = jax.device_put(jnp.asarray(mom_g), NamedSharding(mesh, P("x", None)))
+        massS = jax.device_put(jnp.asarray(mass_g), NamedSharding(mesh, P("x")))
+        actS = jax.device_put(jnp.asarray(act_g), NamedSharding(mesh, P("x")))
 
     clock = CosmoClock(cosmo, a, a_end, H0)
 
@@ -502,13 +560,17 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         # fresh jitted FMG closure each call; jitting the caller traces once.
         rho = cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh)
         delta = rho / jnp.mean(rho) - 1.0
+        # a_kick is traced under the caller's jit, but the solver needs a
+        # concrete fourpiG (it calls float() on it): fold the traced factor
+        # into the RHS field and hand the solver a literal 1.0.
+        rhs = delta * (coeff_fac * a_kick)
         if phi_prev is None:                                # cold FMG (startup)
             phi = solve_poisson_fmg_shardmap(
-                delta, dx, coeff_fac * a_kick, boundary=0, mesh=mesh,
+                rhs, dx, 1.0, boundary=0, mesh=mesh,
                 n_levels=n_levels, n_extra_vcycles=n_extra)
         else:                                               # warm carried phi
             phi = solve_poisson_fmg_shardmap(
-                delta, dx, coeff_fac * a_kick, boundary=0, mesh=mesh,
+                rhs, dx, 1.0, boundary=0, mesh=mesh,
                 n_levels=n_levels, phi_init=phi_prev,
                 warm_cycles=max(warm, 1))
         g = grad_phi_slab(phi, dx, mesh, order=4)
@@ -562,6 +624,7 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
                   history_fields=["step", "a", "dloga", "delta_max",
                                   "max_occ", "n_bad"])
     n_bad_tot = 0
+    dev_ts = []                                # per-step device (kdk+sync) wall
     g2max = float(jnp.max(jnp.where(actS > 0, jnp.sum(g ** 2, axis=1), 0.0)))
     n_act0 = int(jnp.sum(actS > 0))
     m_tot0 = float(jnp.sum(massS * (actS > 0)))
@@ -571,9 +634,12 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         dtau = clock.cap_to_table(dtau, tau)
         a_next = clock.a_of_tau(tau + dtau)
         dloga = np.log(a_next / a)
+        t_dev = time.time()
         (posS, pS, g, phi, massS, actS, dmax, g2, n_bad, max_occ,
          n_act, m_tot) = kdk(posS, pS, g, dtau, massS, actS, a_next, phi)
-        g2max = float(g2)
+        g2max = float(g2)                      # host pull = device sync point
+        t_dev = time.time() - t_dev
+        dev_ts.append(t_dev)
         tau += dtau
         a = a_next
         step += 1
@@ -592,12 +658,18 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
                  force=a >= a_end - 1e-9)
 
     if is_main_process:
+        wall = time.time() - t0
+        med_dev = 1e3 * float(np.median(dev_ts)) if dev_ts else 0.0
         print(f"[cosmo-dm] done: {step} steps, a={a:.4f} (z={1/a-1:.4f}), "
-              f"{time.time()-t0:.1f}s  (cumulative out-of-slab events: {n_bad_tot})")
+              f"{wall:.1f}s  (cumulative out-of-slab events: {n_bad_tot})")
+        print(f"[cosmo-dm] timing: median device step {med_dev:.1f} ms, "
+              f"mean total step {1e3 * wall / max(step, 1):.1f} ms "
+              f"(rest = host dt/watchdog/log)")
         # gather active particles to host, restore Gadget velocity u = p / a^{3/2}
         pos_h = np.asarray(posS)
         mom_h = np.asarray(pS)
         act_h = np.asarray(actS) > 0
         sel = np.nonzero(act_h)[0]
-        write_gadget_dm_snapshot(cfg, pos_h[sel], mom_h[sel] / a ** 1.5, a, ic)
+        if getattr(cfg, "dm_write_snapshot", True):
+            write_gadget_dm_snapshot(cfg, pos_h[sel], mom_h[sel] / a ** 1.5, a, ic)
     return {"a": a, "n_steps": step, "n_out_of_slab": n_bad_tot}
