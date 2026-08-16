@@ -175,8 +175,11 @@ def main():
     pos_drift = pos_g.copy()
     pos_drift[:, 0] = np.mod(pos_g[:, 0] + key_disp * (act_g > 0), box)
     pdS = _shard(mesh, pos_drift, P("x", None))
-    npos, nvel, nmass, nact, n_bad, max_occ = exchange_particles_slab(
-        pdS, velS, massS, actS, Nx, dx, box, mesh)
+    # send_div=1 (send capacity = C): these synthetic drifts move O(half the
+    # slab) across a boundary, far beyond the thin production skin the C//64
+    # default is sized for.
+    npos, nvel, nmass, nact, n_bad, max_occ, n_mv = exchange_particles_slab(
+        pdS, velS, massS, actS, Nx, dx, box, mesh, send_div=1)
     n_bad = int(n_bad)
     max_occ = int(max_occ)
     npos = np.asarray(npos); nact = np.asarray(nact); nmass = np.asarray(nmass)
@@ -192,13 +195,37 @@ def main():
     pos_s = pos_g.copy()
     pos_s[:, 0] = np.mod(pos_g[:, 0] + small * (act_g > 0), box)
     psS = _shard(mesh, pos_s, P("x", None))
-    npos2, _, nmass2, nact2, n_bad2, max_occ2 = exchange_particles_slab(
-        psS, velS, massS, actS, Nx, dx, box, mesh)
+    npos2, _, nmass2, nact2, n_bad2, max_occ2, n_mv2 = exchange_particles_slab(
+        psS, velS, massS, actS, Nx, dx, box, mesh, send_div=1)
     n_bad2 = int(n_bad2)
     print(f"5 exchange  (sub-slab drift) n_out_of_slab={n_bad2}  "
           f"count->{float(np.asarray(nact2).sum()):.0f}  max_occ={int(max_occ2)}/{C}")
     assert n_bad2 == 0, f"sub-slab drift left {n_bad2} particles out of slab"
     assert abs(float(np.asarray(nact2).sum()) - tot_before) < 0.5, "lost particles"
+
+    # 6) send-buffer overflow must be COUNTED, never silent: C_send=1 slot with
+    # the same sub-slab drift overflows by construction.
+    _, _, _, _, n_bad3, _, n_mv3 = exchange_particles_slab(
+        psS, velS, massS, actS, Nx, dx, box, mesh, send_div=C)
+    # gross-movers diagnostic must at least cover the counted overflow
+    assert int(n_mv3) > 0, "movers diagnostic empty despite forced overflow"
+    n_bad3 = int(n_bad3)
+    print(f"6 exchange  (1-slot send buffer) n_bad={n_bad3} (>0 expected)")
+    assert n_bad3 > 0, "send-buffer overflow was silent"
+
+    # 7) fixed-point deposit (production config): exact global mass, and the
+    # field matches the float deposit to the S=2^17 quantization floor.
+    rho_fx = np.asarray(cic_deposit_slab(posS, massS, actS, Nx, Nx, Nx, dx,
+                                         mesh, dtype=jnp.float64,
+                                         fixed=jnp.int32, fixed_bits=17))
+    e7m = abs(rho_fx.sum() * dx ** 3 - mass.sum())
+    e7 = np.max(np.abs(rho_fx - rho_ref)) / rho_ref.mean()
+    print(f"7 deposit_fx  mass err={e7m:.2e}  max|Δρ|/mean={e7:.2e}")
+    # "exact mass" = the 8 CIC corners sum exactly to each particle's INTEGER
+    # weight; the weight itself is quantized to 1/S, so global mass carries a
+    # ~1/S rounding residual (same as the single-device fixed path).
+    assert e7m < 4.0 * mass.sum() / (1 << 17), e7m
+    assert e7 < 1e-4, e7          # measured 2.9e-5 at S=2^17 (quantization floor)
 
     print("\nALL PM SHARDMAP PARITY/INVARIANT CHECKS PASSED")
 

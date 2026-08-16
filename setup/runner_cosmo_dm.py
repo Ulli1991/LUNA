@@ -518,7 +518,9 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     n_levels = min(_max_levels(Nx), int(np.log2(nx_loc)) + 1)
     coeff_fac = poisson_coeff_fac(Om, H0)
     cap = float(getattr(cfg, "dm_capacity_factor", 1.5))
+    send_div = int(getattr(cfg, "dm_exchange_send_div", 64))
     eps_soft = softening_from_config(cfg, dx)
+    prec = gravity_precision_from_config(cfg)             # one precision switch
 
     pos0 = np.asarray(ic.pos)
     mom0 = np.asarray(ic.vel) * (a ** 1.5)                 # canonical momentum p=a^2 xdot
@@ -533,11 +535,22 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
             [pos0, mom0, mass0],
             [P("x", None), P("x", None), P("x")], n_total, ndev, mesh,
             capacity_factor=cap)
+        # settle moves the chunk/slab-boundary misalignment — MILLIONS of
+        # particles in one exchange (measured 6.4M at l10/8), vs ~23k/step in
+        # steady state. Always use a generous send buffer here (C//8); the
+        # lean cfg send_div applies only to the per-step exchange in kdk.
         for settle in range(8):
-            posS, pS, massS, actS, n_bad, occ = exchange_particles_slab(
-                posS, pS, massS, actS, Nx, dx, box, mesh)
+            posS, pS, massS, actS, n_bad, occ, _mv = exchange_particles_slab(
+                posS, pS, massS, actS, Nx, dx, box, mesh, send_div=8)
             if int(n_bad) == 0:
                 break
+        n_act = int(jnp.sum(actS > 0))
+        if n_act != n_total:
+            raise RuntimeError(
+                f"[cosmo-dm] IC settle lost particles: {n_act} active vs "
+                f"{n_total} in the IC — send buffer (C//{send_div}) or slab "
+                "capacity overflowed; lower dm_exchange_send_div or raise "
+                "dm_capacity_factor.")
         if is_main_process:
             print(f"[cosmo-dm] IC settle: {settle + 1} rounds, "
                   f"out-of-slab={int(n_bad)} max_occ={int(occ)} cap_C={C}",
@@ -554,11 +567,19 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     clock = CosmoClock(cosmo, a, a_end, H0)
 
     warm = int(getattr(cfg, "dm_warm_vcycles", 0))
+    # mean density: the fixed-point deposit's integer unit (mass is conserved,
+    # so this is a constant of the run).
+    mass_unit = float(jnp.sum(massS * (actS > 0))) / (box ** 3)
 
     def _force(pos, mass, active, a_kick, phi_prev):
         # MUST be jitted by the caller: solve_poisson_fmg_shardmap rebuilds a
         # fresh jitted FMG closure each call; jitting the caller traces once.
-        rho = cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh)
+        rho = cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh,
+                               dtype=prec.deposit,
+                               fixed=prec.fixed_int if prec.fixed_deposit
+                               else None,
+                               fixed_bits=prec.fixed_bits,
+                               mass_unit=mass_unit)
         delta = rho / jnp.mean(rho) - 1.0
         # a_kick is traced under the caller's jit, but the solver needs a
         # concrete fourpiG (it calls float() on it): fold the traced factor
@@ -588,8 +609,9 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         # conservation watchdogs (total active count + mass) and max|g|^2.
         p_half = p + g * (0.5 * dtau)
         pos = jnp.mod(pos + p_half * dtau, box)
-        pos, p_half, mass, active, n_bad, max_occ = exchange_particles_slab(
-            pos, p_half, mass, active, Nx, dx, box, mesh)
+        (pos, p_half, mass, active, n_bad, max_occ,
+         n_move) = exchange_particles_slab(
+            pos, p_half, mass, active, Nx, dx, box, mesh, send_div=send_div)
         if warm > 0:
             g_new, dmax, phi = _force(pos, mass, active, a_kick, phi_prev)
         else:
@@ -600,16 +622,17 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         n_act = jnp.sum(active > 0)
         m_tot = jnp.sum(mass * (active > 0))
         return (pos, p_new, g_new, phi, mass, active,
-                dmax, g2max, n_bad, max_occ, n_act, m_tot)
+                dmax, g2max, n_bad, max_occ, n_act, m_tot, n_move)
 
     if is_main_process:
         print(f"[cosmo-dm] grid-sharded slab decomposition across {ndev} devices "
               f"(nx_loc={nx_loc}, capacity {ndev*C} for {ic.n_part} particles)")
+        print(f"[cosmo-dm] {prec}  exchange send buffer C//{send_div}")
         print(f"[cosmo-dm] {ic.n_part} DM particles  box={box:.0f} kpc/h  "
               f"mesh={Nx}^3  Om={Om} OL={cfg.cosmo_Omega_L} H0={H0:.5f}")
         print(f"[cosmo-dm] a_init={a:.4f} (z={1/a-1:.2f}) -> a_end={a_end:.4f}")
         print(f"[cosmo-dm] {'step':>5} {'a':>8} {'z':>8} {'dloga':>8} "
-              f"{'delta_max':>10} {'max_occ':>8} {'n_bad':>6}")
+              f"{'delta_max':>10} {'max_occ':>8} {'n_bad':>6} {'movers':>8}")
 
     tau, step, t0 = 0.0, 0, time.time()
     if is_main_process:
@@ -620,42 +643,103 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     jax.block_until_ready(g)
     if is_main_process:
         print(f"[cosmo-dm] first force compiled+ran in {time.time()-tc:.1f}s", flush=True)
+
+    def _grow_capacity(C_new):
+        # Reallocate the per-slab particle buffers at C_new slots/slab (JAX
+        # cannot resize inside a compiled step — fixed shapes per compile,
+        # so regrow host-side between steps; same overflow-handling pattern
+        # as JAX-MD's neighbor lists). Each process copies only its own
+        # addressable shards; active slots are front-compacted, so a plain
+        # prefix copy preserves the layout and new padding lands inactive.
+        nonlocal posS, pS, g, massS, actS, C
+        from jax.sharding import NamedSharding
+
+        def grow(gx, spec):
+            shards = sorted(gx.addressable_shards,
+                            key=lambda s: s.index[0].start or 0)
+            new_shards = []
+            for s in shards:
+                old = np.asarray(s.data)
+                buf = np.zeros((C_new,) + old.shape[1:], old.dtype)
+                buf[:old.shape[0]] = old
+                new_shards.append(jax.device_put(jnp.asarray(buf), s.device))
+            gshape = (ndev * C_new,) + tuple(gx.shape[1:])
+            return jax.make_array_from_single_device_arrays(
+                gshape, NamedSharding(mesh, spec), new_shards)
+
+        posS = grow(posS, P("x", None))
+        pS = grow(pS, P("x", None))
+        g = grow(g, P("x", None))
+        massS = grow(massS, P("x"))
+        actS = grow(actS, P("x"))
+        C = C_new
     rep = StepLog(cfg, is_main_process,
                   history_fields=["step", "a", "dloga", "delta_max",
                                   "max_occ", "n_bad"])
     n_bad_tot = 0
-    dev_ts = []                                # per-step device (kdk+sync) wall
+    dev_ts = []                            # per-step device wall (see refresh)
+    host_every = int(getattr(cfg, "dm_host_every", 1))
     g2max = float(jnp.max(jnp.where(actS > 0, jnp.sum(g ** 2, axis=1), 0.0)))
     n_act0 = int(jnp.sum(actS > 0))
     m_tot0 = float(jnp.sum(massS * (actS > 0)))
+    t_ref, step_ref = time.time(), 0
     while a < a_end - 1e-9:
         dtau = clock.cap_expansion(dtau_accel(eta, eps_soft, np.sqrt(g2max)),
                                    a, dloga_max)
         dtau = clock.cap_to_table(dtau, tau)
         a_next = clock.a_of_tau(tau + dtau)
         dloga = np.log(a_next / a)
-        t_dev = time.time()
         (posS, pS, g, phi, massS, actS, dmax, g2, n_bad, max_occ,
-         n_act, m_tot) = kdk(posS, pS, g, dtau, massS, actS, a_next, phi)
-        g2max = float(g2)                      # host pull = device sync point
-        t_dev = time.time() - t_dev
-        dev_ts.append(t_dev)
+         n_act, m_tot, n_move) = kdk(posS, pS, g, dtau, massS, actS,
+                                     a_next, phi)
         tau += dtau
         a = a_next
         step += 1
-        n_bad_tot += int(n_bad)
-        # conservation watchdog: the exchange must not create or drop
-        # particles/mass (historical bug class; user directive).
-        if int(n_act) != n_act0 or abs(float(m_tot) - m_tot0) > 1e-8 * m_tot0:
-            raise RuntimeError(
-                f"[cosmo-dm] slab exchange conservation violated at step "
-                f"{step}: n_active {int(n_act)} vs {n_act0}, mass "
-                f"{float(m_tot):.15e} vs {m_tot0:.15e}")
-        rep.step(step, f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} "
-                 f"{dloga:8.5f} {float(dmax):10.3f} {int(max_occ):8d} "
-                 f"{int(n_bad):6d} {(time.time()-t0)/step:6.2f}s/step",
-                 row=[step, a, dloga, float(dmax), int(max_occ), int(n_bad)],
-                 force=a >= a_end - 1e-9)
+        # Host pulls (float()/int() = device sync) cost ~10-25 ms each on
+        # GH200: refresh dt criterion + watchdogs every dm_host_every steps
+        # (same amortization as the particle-parallel loop; dt drifts
+        # <1%/step at these z, conservation violations persist until seen).
+        if step % host_every == 0 or a >= a_end - 1e-9:
+            g2max = float(g2)                  # host pull = device sync point
+            now = time.time()
+            dev_ts.append((now - t_ref) / (step - step_ref))
+            t_ref, step_ref = now, step
+            n_bad_tot += int(n_bad)
+            # conservation watchdog: the exchange must not create or drop
+            # particles/mass (historical bug class; user directive).
+            if (int(n_act) != n_act0
+                    or abs(float(m_tot) - m_tot0) > 1e-8 * m_tot0):
+                raise RuntimeError(
+                    f"[cosmo-dm] slab exchange conservation violated at step "
+                    f"{step}: n_active {int(n_act)} vs {n_act0}, mass "
+                    f"{float(m_tot):.15e} vs {m_tot0:.15e}")
+            if (prec.fixed_deposit
+                    and 1.0 + float(dmax) > 0.5 * _fixed_ceiling(prec)):
+                raise RuntimeError(
+                    f"fixed-point deposit: 1+delta_max = {1 + float(dmax):.0f}"
+                    f" is within 2x of the integer ceiling "
+                    f"{_fixed_ceiling(prec):.0f} ({prec.fixed_int.__name__} "
+                    f"at S=2^{prec.fixed_bits}). Lower gravity_deposit_fixed"
+                    "'s scale or use gravity_precision='double' (int64).")
+            rep.step(step, f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} "
+                     f"{dloga:8.5f} {float(dmax):10.3f} {int(max_occ):8d} "
+                     f"{int(n_bad):6d} {int(n_move):8d} "
+                     f"{(time.time()-t0)/step:6.2f}s/step",
+                     row=[step, a, dloga, float(dmax), int(max_occ),
+                          int(n_bad), int(n_move)],
+                     force=a >= a_end - 1e-9)
+            # Proactive capacity regrow (JAX-MD-style: fixed shapes per
+            # compile, occupancy-triggered reallocation between steps on
+            # healthy state — the overflow abort below stays as backstop).
+            # max_occ is replicated, so every process takes this branch
+            # identically; the next kdk call recompiles once (cached).
+            if int(max_occ) > 0.9 * C:
+                C_new = int(np.ceil(1.3 * C / 4096.0) * 4096)
+                if is_main_process:
+                    print(f"[cosmo-dm] capacity regrow at step {step}: "
+                          f"max_occ {int(max_occ)} > 90% of C={C} -> "
+                          f"C={C_new} (one recompile follows)", flush=True)
+                _grow_capacity(C_new)
 
     if is_main_process:
         wall = time.time() - t0
@@ -666,10 +750,12 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
               f"mean total step {1e3 * wall / max(step, 1):.1f} ms "
               f"(rest = host dt/watchdog/log)")
         # gather active particles to host, restore Gadget velocity u = p / a^{3/2}
-        pos_h = np.asarray(posS)
-        mom_h = np.asarray(pS)
-        act_h = np.asarray(actS) > 0
-        sel = np.nonzero(act_h)[0]
+        # (multi-process shards are non-addressable from rank 0 — only touch
+        # them when a snapshot is actually requested)
         if getattr(cfg, "dm_write_snapshot", True):
+            pos_h = np.asarray(posS)
+            mom_h = np.asarray(pS)
+            act_h = np.asarray(actS) > 0
+            sel = np.nonzero(act_h)[0]
             write_gadget_dm_snapshot(cfg, pos_h[sel], mom_h[sel] / a ** 1.5, a, ic)
     return {"a": a, "n_steps": step, "n_out_of_slab": n_bad_tot}
