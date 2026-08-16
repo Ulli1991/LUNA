@@ -7,6 +7,8 @@ format-correct stand-in file.
 """
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -35,20 +37,48 @@ def music_part_count(path: str, part_type: int = 0) -> int:
     only (no data loaded) -- used to compute per-rank index chunks for multi-node
     IC ingestion without reading the whole file."""
     import h5py
-    with h5py.File(path, "r") as f:
-        return int(f[f"PartType{part_type}"]["Coordinates"].shape[0])
+    n = 0
+    for fn in _ic_file_list(path):
+        with h5py.File(fn, "r") as f:
+            n += int(f[f"PartType{part_type}"]["Coordinates"].shape[0])
+    return n
+
+
+def _ic_file_list(path):
+    """Gadget multi-file convention (monofonIC MPI output): ``path`` itself,
+    or ``path.0``, ``path.1``, ... when the writer split one file per rank."""
+    if os.path.exists(path):
+        return [path]
+    files = []
+    while os.path.exists(f"{path}.{len(files)}"):
+        files.append(f"{path}.{len(files)}")
+    if not files:
+        raise FileNotFoundError(f"{path} (also tried {path}.0)")
+    return files
 
 
 def read_music_dm_ic(path: str, part_type: int = 1,
                      lo: int = None, hi: int = None) -> DMICs:
-    """Read DM (``PartType{part_type}``) ICs from a MUSIC/Gadget Arepo-HDF5 file.
-    If ``lo``/``hi`` are given, only the slice ``[lo:hi]`` of each dataset is read
-    (h5py hyperslab), so each rank reads only its own chunk."""
+    """Read DM (``PartType{part_type}``) ICs from a MUSIC/Gadget Arepo-HDF5 file,
+    single-file or multi-file (``path.0 ...``, e.g. monofonIC's per-rank output).
+    If ``lo``/``hi`` are given, only the global slice ``[lo:hi]`` is read
+    (h5py hyperslab, mapped across files), so each rank reads only its chunk."""
     import h5py
+
+    files = _ic_file_list(path)
+    if len(files) > 1:
+        return _read_music_dm_ic_multi(files, part_type, lo, hi)
 
     with h5py.File(path, "r") as f:
         H = dict(f["Header"].attrs)
         box = float(np.asarray(H["BoxSize"]).reshape(-1)[0])
+        # monofonIC writes lengths in Mpc/h (BoxSize = its config BoxLength);
+        # MUSIC1 wrote kpc/h. No header attribute distinguishes them, but no
+        # cosmological DM box is 100 kpc/h: BoxSize < 1e3 means Mpc/h.
+        # Velocities (gadget km/s, sqrt(a)) and masses (1e10 Msun/h) are
+        # length-unit independent.
+        len_fac = 1e3 if box < 1e3 else 1.0
+        box *= len_fac
         a = float(H.get("Time", 1.0))
         z = float(H.get("Redshift", 1.0 / a - 1.0))
         Om = float(H.get("Omega0", H.get("OmegaMatter", 0.3)))
@@ -57,7 +87,7 @@ def read_music_dm_ic(path: str, part_type: int = 1,
 
         g = f[f"PartType{part_type}"]
         sl = slice(lo, hi)                              # full read if lo/hi None
-        pos = np.asarray(g["Coordinates"][sl], dtype=np.float64)
+        pos = np.asarray(g["Coordinates"][sl], dtype=np.float64) * len_fac
         vel = (np.asarray(g["Velocities"][sl], dtype=np.float64)
                if "Velocities" in g else np.zeros_like(pos))
         n = pos.shape[0]
@@ -67,6 +97,51 @@ def read_music_dm_ic(path: str, part_type: int = 1,
             mtable = np.asarray(H["MassTable"], dtype=np.float64)
             mass = np.full(n, mtable[part_type], dtype=np.float64)
 
+    return DMICs(pos=pos, vel=vel, mass=mass, box_size=box, a=a, redshift=z,
+                 Omega_m=Om, Omega_L=OL, h=hub)
+
+
+def _read_music_dm_ic_multi(files, part_type, lo, hi):
+    """Concatenate ``PartType{part_type}`` across a multi-file snapshot, reading
+    only the overlap of each file with the global slice ``[lo:hi]``."""
+    import h5py
+
+    with h5py.File(files[0], "r") as f:
+        H = dict(f["Header"].attrs)
+        box = float(np.asarray(H["BoxSize"]).reshape(-1)[0])
+        len_fac = 1e3 if box < 1e3 else 1.0             # Mpc/h -> kpc/h, see above
+        box *= len_fac
+        a = float(H.get("Time", 1.0))
+        z = float(H.get("Redshift", 1.0 / a - 1.0))
+        Om = float(H.get("Omega0", H.get("OmegaMatter", 0.3)))
+        OL = float(H.get("OmegaLambda", 0.7))
+        hub = float(H.get("HubbleParam", 0.7))
+        mtable = np.asarray(H["MassTable"], dtype=np.float64)
+
+    pos_c, vel_c, mass_c = [], [], []
+    off = 0                                     # global offset of current file
+    for fn in files:
+        with h5py.File(fn, "r") as f:
+            g = f[f"PartType{part_type}"]
+            n = g["Coordinates"].shape[0]
+            a0 = 0 if lo is None else max(0, lo - off)
+            a1 = n if hi is None else min(n, hi - off)
+            if a0 < a1:
+                pos_c.append(np.asarray(g["Coordinates"][a0:a1],
+                                        dtype=np.float64) * len_fac)
+                vel_c.append(np.asarray(g["Velocities"][a0:a1],
+                                        dtype=np.float64)
+                             if "Velocities" in g
+                             else np.zeros((a1 - a0, 3)))
+                mass_c.append(np.asarray(g["Masses"][a0:a1], dtype=np.float64)
+                              if "Masses" in g
+                              else np.full(a1 - a0, mtable[part_type],
+                                           dtype=np.float64))
+            off += n
+
+    pos = np.concatenate(pos_c) if pos_c else np.zeros((0, 3))
+    vel = np.concatenate(vel_c) if vel_c else np.zeros((0, 3))
+    mass = np.concatenate(mass_c) if mass_c else np.zeros(0)
     return DMICs(pos=pos, vel=vel, mass=mass, box_size=box, a=a, redshift=z,
                  Omega_m=Om, Omega_L=OL, h=hub)
 
