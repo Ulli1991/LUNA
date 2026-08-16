@@ -80,6 +80,10 @@ n_levels = min(_max_levels(NX), int(np.log2(NX // ndev)) + 1)
 
 rho = bench("deposit", lambda p, m, a: cic_deposit_slab(
     p, m, a, NX, NX, NX, dx, mesh), posS, massS, actS)
+# production configuration: fp32 fixed-point int32 accumulation
+rho = bench("deposit_fx", lambda p, m, a: cic_deposit_slab(
+    p, m, a, NX, NX, NX, dx, mesh, dtype=jnp.float32,
+    fixed=jnp.int32, fixed_bits=17), posS, massS, actS)
 delta = rho / jnp.mean(rho) - 1.0
 
 phi = bench("fmg_cold", lambda d: solve_poisson_fmg_shardmap(
