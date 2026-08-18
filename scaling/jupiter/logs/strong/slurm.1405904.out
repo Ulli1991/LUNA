@@ -1,0 +1,5 @@
+[shm-env] broadcast+untar 37s
+run: NX=2048 mesh=16,16,16 gpus=4096 head=10.128.16.38
+=== nx2048_g4096_fp64 steps=60 port=21328 15:51:21 ===
+Step    50, t = 0.00000, dt = 8.11310e-12, perf = 2305444.63 Mcells/s, mem = 0.38 GB
+=== run done 15:57:07 ===

@@ -1,0 +1,5 @@
+rung: NX=512 mesh=2,2,2 gpus=8 head=10.128.24.241
+=== nx512_g8_fp32 steps=100 port=36813 17:19:43 ===
+Step    90, t = 0.00000, dt = 3.14365e-10, perf = 15523.32 Mcells/s, mem = 1.25 GB
+=== nx512_g8_recon32 steps=100 port=36814 17:25:52 ===
+slurmstepd: error: *** JOB 1265259 ON jpbo-026-01 CANCELLED AT 2026-08-06T17:26:32 ***

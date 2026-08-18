@@ -1,0 +1,5 @@
+[shm-env] broadcast+untar 27s
+run: NX=1024 mesh=8,8,8 gpus=512 head=10.128.19.65
+=== nx1024_g512_fp64 steps=100 port=21300 15:42:21 ===
+Step    90, t = 0.00000, dt = 5.55724e-11, perf = 273485.77 Mcells/s, mem = 0.38 GB
+=== run done 15:42:53 ===

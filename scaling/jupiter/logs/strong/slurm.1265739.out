@@ -1,0 +1,6 @@
+rung: NX=1024 mesh=4,4,4 gpus=64 head=10.128.24.209
+=== nx1024_g64_recon32 steps=100 port=40173 17:40:44 ===
+Step    90, t = 0.00000, dt = 5.55724e-11, perf = 108871.75 Mcells/s, mem = 2.50 GB
+=== nx1024_g64_fp64 steps=100 port=40174 17:41:09 ===
+Step    90, t = 0.00000, dt = 5.55724e-11, perf = 70781.93 Mcells/s, mem = 2.50 GB
+=== rung done 17:41:53 ===

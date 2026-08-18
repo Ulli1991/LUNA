@@ -1,0 +1,7 @@
+rung: NX=4096 mesh=8,8,8 gpus=512 head=10.128.19.1
+=== nx4096_g512_fp32 steps=100 port=25095 16:08:02 ===
+Step    90, t = 0.00000, dt = 1.73664e-12, perf = 1018883.69 Mcells/s, mem = 10.00 GB
+=== nx4096_g512_recon32 steps=100 port=25096 16:09:17 ===
+Step    90, t = 0.00000, dt = 1.73664e-12, perf = 936555.16 Mcells/s, mem = 20.00 GB
+=== nx4096_g512_fp64 steps=3 port=25097 16:09:58 ===
+=== rung done 16:10:24 ===

@@ -1,0 +1,20 @@
+# LUNA hydro weak-scaling ladder — JUPITER GH200, Sedov 3D, 512^3 cells/GPU
+# metric: aggregate Mcells/s from the second-to-last 10-step perf window
+# (last window + end-of-run averages are teardown/diag-tainted; see RESULTS.md)
+# eff_pct: vs single-GPU plateau (fp32 2193.02, recon32 2104.07)
+date,job,global_grid,gpus,nodes,mode,plateau_mcells_s,eff_pct,notes
+2026-08-06,1262589,512^3,1,1,fp32,2193.02,100.0,roofline anchor
+2026-08-06,1262589,512^3,1,1,recon32,2104.07,100.0,roofline anchor
+2026-08-06,1262589,512^3,1,1,fp64,,,"plain path corrupt (XLA uint32 wrap); fused: 1223.18"
+2026-08-06,1263583,1024^3,8,2,fp32,17423.44,99.3,
+2026-08-06,1263583,1024^3,8,2,recon32,15863.06,94.2,
+2026-08-06,1263584,2048^3,64,16,fp32,134208.56,95.6,
+2026-08-06,1263584,2048^3,64,16,recon32,121679.82,90.4,
+2026-08-06,1263585,4096^3,512,128,fp32,1018883.69,90.7,
+2026-08-06,1263585,4096^3,512,128,recon32,936555.16,86.9,
+2026-08-06,1264426,8192^3,4096,1024,fp32,7986286.65,88.9,"window noise ±2%; median of 9 windows 8074002 (89.9%)"
+2026-08-06,1264426,8192^3,4096,1024,recon32,7616118.23,88.4,"job cancelled after plateau (budget); fp64 gate skipped"
+2026-08-06,1265632,516^3,1,1,fp64,1332.84,100.0,non-po2 tile anchor
+2026-08-06,1265633,1032^3,8,2,fp64,10045.17,94.2,516^3/GPU tile
+2026-08-06,1265634,2064^3,64,16,fp64,79445.92,93.1,516^3/GPU tile
+2026-08-06,1265635,4128^3,512,128,fp64,624175.20,91.5,516^3/GPU tile

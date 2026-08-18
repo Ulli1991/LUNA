@@ -1,0 +1,239 @@
+Sedov 3D Arepo run: box=50.0 pc, Nx=1024, t_end=10000.0 yr = 1.0227e-05 code
+============================================================
+MULTI-NODE SHARDING MODE (1 GPU per process)
+============================================================
+Sedov 3D Arepo run: box=50.0 pc, Nx=1024, t_end=10000.0 yr = 1.0227e-05 code
+============================================================
+MULTI-NODE SHARDING MODE (1 GPU per process)
+============================================================
+Sedov 3D Arepo run: box=50.0 pc, Nx=1024, t_end=10000.0 yr = 1.0227e-05 code
+============================================================
+MULTI-NODE SHARDING MODE (1 GPU per process)
+============================================================
+Sedov 3D Arepo run: box=50.0 pc, Nx=1024, t_end=10000.0 yr = 1.0227e-05 code
+============================================================
+MULTI-NODE SHARDING MODE (1 GPU per process)
+============================================================
+Sedov 3D Arepo run: box=50.0 pc, Nx=1024, t_end=10000.0 yr = 1.0227e-05 code
+============================================================
+MULTI-NODE SHARDING MODE (1 GPU per process)
+============================================================
+Sedov 3D Arepo run: box=50.0 pc, Nx=1024, t_end=10000.0 yr = 1.0227e-05 code
+============================================================
+MULTI-NODE SHARDING MODE (1 GPU per process)
+============================================================
+Sedov 3D Arepo run: box=50.0 pc, Nx=1024, t_end=10000.0 yr = 1.0227e-05 code
+============================================================
+MULTI-NODE SHARDING MODE (1 GPU per process)
+============================================================
+Sedov 3D Arepo run: box=50.0 pc, Nx=1024, t_end=10000.0 yr = 1.0227e-05 code
+============================================================
+MULTI-NODE SHARDING MODE (1 GPU per process)
+============================================================
+✓ JAX distributed initialized
+  local_device_ids=[0] (SLURM_LOCALID pinning)
+✓ JAX distributed initialized
+  local_device_ids=[3] (SLURM_LOCALID pinning)
+✓ JAX distributed initialized
+  local_device_ids=[3] (SLURM_LOCALID pinning)
+✓ JAX distributed initialized
+  local_device_ids=[1] (SLURM_LOCALID pinning)
+✓ JAX distributed initialized
+✓ JAX distributed initialized
+  local_device_ids=[2] (SLURM_LOCALID pinning)
+  local_device_ids=[2] (SLURM_LOCALID pinning)
+✓ JAX distributed initialized
+  local_device_ids=[1] (SLURM_LOCALID pinning)
+✓ JAX distributed initialized
+  local_device_ids=[0] (SLURM_LOCALID pinning)
+  Process: 0 / 8
+✓ float64 enabled (jax_enable_x64=True)
+Platform: gpu
+Total devices: 8
+Local devices: 1
+  Device 0: NVIDIA GH200 120GB (process 0)
+  Device 1: NVIDIA GH200 120GB (process 1)
+  Device 2: NVIDIA GH200 120GB (process 2)
+  Device 3: NVIDIA GH200 120GB (process 3)
+  Device 4: NVIDIA GH200 120GB (process 4)
+  Device 5: NVIDIA GH200 120GB (process 5)
+  Device 6: NVIDIA GH200 120GB (process 6)
+  Device 7: NVIDIA GH200 120GB (process 7)
+
+  Process: 1 / 8
+✓ float64 enabled (jax_enable_x64=True)
+Platform: gpu
+Total devices: 8
+Local devices: 1
+  Device 0: NVIDIA GH200 120GB (process 0)
+  Device 1: NVIDIA GH200 120GB (process 1)
+  Device 2: NVIDIA GH200 120GB (process 2)
+  Device 3: NVIDIA GH200 120GB (process 3)
+  Device 4: NVIDIA GH200 120GB (process 4)
+  Device 5: NVIDIA GH200 120GB (process 5)
+  Device 6: NVIDIA GH200 120GB (process 6)
+  Device 7: NVIDIA GH200 120GB (process 7)
+
+  Process: 7 / 8
+✓ float64 enabled (jax_enable_x64=True)
+Platform: gpu
+Total devices: 8
+Local devices: 1
+  Device 0: NVIDIA GH200 120GB (process 0)
+  Device 1: NVIDIA GH200 120GB (process 1)
+  Device 2: NVIDIA GH200 120GB (process 2)
+  Device 3: NVIDIA GH200 120GB (process 3)
+  Device 4: NVIDIA GH200 120GB (process 4)
+  Device 5: NVIDIA GH200 120GB (process 5)
+  Device 6: NVIDIA GH200 120GB (process 6)
+  Device 7: NVIDIA GH200 120GB (process 7)
+
+  Process: 3 / 8
+✓ float64 enabled (jax_enable_x64=True)
+Platform: gpu
+  Process: 6 / 8
+Total devices: 8
+✓ float64 enabled (jax_enable_x64=True)
+Platform: gpu
+Local devices: 1
+Total devices: 8
+  Device 0: NVIDIA GH200 120GB (process 0)
+  Device 1: NVIDIA GH200 120GB (process 1)
+Local devices: 1
+  Device 0: NVIDIA GH200 120GB (process 0)
+  Device 2: NVIDIA GH200 120GB (process 2)
+  Device 3: NVIDIA GH200 120GB (process 3)
+  Device 4: NVIDIA GH200 120GB (process 4)
+  Device 5: NVIDIA GH200 120GB (process 5)
+  Device 1: NVIDIA GH200 120GB (process 1)
+  Device 2: NVIDIA GH200 120GB (process 2)
+  Device 6: NVIDIA GH200 120GB (process 6)
+  Device 7: NVIDIA GH200 120GB (process 7)
+
+  Process: 4 / 8
+  Process: 2 / 8
+  Process: 5 / 8
+✓ float64 enabled (jax_enable_x64=True)
+Platform: gpu
+  Device 3: NVIDIA GH200 120GB (process 3)
+  Device 4: NVIDIA GH200 120GB (process 4)
+  Device 5: NVIDIA GH200 120GB (process 5)
+  Device 6: NVIDIA GH200 120GB (process 6)
+  Device 7: NVIDIA GH200 120GB (process 7)
+
+Total devices: 8
+✓ float64 enabled (jax_enable_x64=True)
+Local devices: 1
+  Device 0: NVIDIA GH200 120GB (process 0)
+Platform: gpu
+  Device 1: NVIDIA GH200 120GB (process 1)
+Total devices: 8
+  Device 2: NVIDIA GH200 120GB (process 2)
+  Device 3: NVIDIA GH200 120GB (process 3)
+  Device 4: NVIDIA GH200 120GB (process 4)
+✓ float64 enabled (jax_enable_x64=True)
+  Device 5: NVIDIA GH200 120GB (process 5)
+  Device 6: NVIDIA GH200 120GB (process 6)
+  Device 7: NVIDIA GH200 120GB (process 7)
+Local devices: 1
+
+Platform: gpu
+  Device 0: NVIDIA GH200 120GB (process 0)
+  Device 1: NVIDIA GH200 120GB (process 1)
+  Device 2: NVIDIA GH200 120GB (process 2)
+  Device 3: NVIDIA GH200 120GB (process 3)
+  Device 4: NVIDIA GH200 120GB (process 4)
+  Device 5: NVIDIA GH200 120GB (process 5)
+  Device 6: NVIDIA GH200 120GB (process 6)
+  Device 7: NVIDIA GH200 120GB (process 7)
+
+Total devices: 8
+Local devices: 1
+  Device 0: NVIDIA GH200 120GB (process 0)
+  Device 1: NVIDIA GH200 120GB (process 1)
+  Device 2: NVIDIA GH200 120GB (process 2)
+  Device 3: NVIDIA GH200 120GB (process 3)
+  Device 4: NVIDIA GH200 120GB (process 4)
+  Device 5: NVIDIA GH200 120GB (process 5)
+  Device 6: NVIDIA GH200 120GB (process 6)
+  Device 7: NVIDIA GH200 120GB (process 7)
+
+============================================================
+DOMAIN DECOMPOSITION (8 devices)
+============================================================
+Decomposition strategy: auto
+Process grid: (2, 2, 2)
+Actual decomposition: block (2D/3D)
+
+============================================================
+INITIAL CONDITIONS
+============================================================
+Multi-process mode: using local IC generation
+Each process generates only its local portion (memory efficient)
+Local shape per process: varies by decomposition
+✓ Sharded array created from local pieces (no validation for large arrays)
+
+✓ Array sharded across 8 devices
+  Each process keeps only its local shard
+
+After initialization: Memory usage: 5.00 GB
+
+Using shard_map with explicit per-shard ppermute halos
+Sharding spec: P(None, 'x', 'y', 'z')
+Using MUSCL-Hancock (HLLC, shard_map) time integration
+Runner controls dt clamping (snapshot times, t_end)
+============================================================
+COMPILING SHARDED FUNCTIONS
+============================================================
+Running one step to trigger JIT compilation...
+✓ Compilation complete (5.4s)
+
+============================================================
+SIMULATION START
+============================================================
+Time range: 0.000 → 0.000
+Global grid: 1024 x 1024 x 1024
+
+Step     1, t = 0.00000, dt = 1.25351e-11, mem = 20.00 GB
+
+============================================================
+SIMULATION COMPLETED
+============================================================
+✓ Total runtime: 1.79 seconds
+✓ Total steps: 3
+✓ Final time: 0.00000
+✓ Average performance: 1197.52 Mcells/s (global grid)
+✓ Time per step: 896.64 ms (excluding first step)
+
+Number of devices: 8
+Process grid: (2, 2, 2)
+
+Final memory usage: Memory usage: 5.00 GB
+
+============================================================
+Good Bye and Good Day!
+============================================================
+W0806 16:09:24.150920 2806957 pjrt_client.cc:1613] WatchTasksAsync failed for task 1: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0806 16:09:24.150956 2806956 pjrt_client.cc:1613] WatchTasksAsync failed for task 0: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused"}
+W0806 16:09:24.151091 2806959 pjrt_client.cc:1613] WatchTasksAsync failed for task 2: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused"}
+W0806 16:09:24.151113 2806958 pjrt_client.cc:1613] WatchTasksAsync failed for task 3: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0806 16:09:24.151008  303173 pjrt_client.cc:1613] WatchTasksAsync failed for task 4: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0806 16:09:24.151050  303175 pjrt_client.cc:1613] WatchTasksAsync failed for task 5: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused"}
+W0806 16:09:24.151064  303176 pjrt_client.cc:1613] WatchTasksAsync failed for task 6: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0806 16:09:24.151037  303174 pjrt_client.cc:1613] WatchTasksAsync failed for task 7: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.19.120:25083: Failed to connect to remote host: Connection refused"}
