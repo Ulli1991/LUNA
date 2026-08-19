@@ -57,6 +57,28 @@ def _ic_file_list(path):
     return files
 
 
+def _header_cosmo(H):
+    """Box (kpc/h), length factor and cosmology from a Gadget/Arepo header.
+
+    MUSIC1 writes these attributes as scalars, monofonIC as 1-element arrays,
+    so every value is flattened before conversion.
+    """
+    s = lambda v: float(np.asarray(v).reshape(-1)[0])
+    box = s(H["BoxSize"])
+    # monofonIC writes lengths in Mpc/h (BoxSize = its config BoxLength);
+    # MUSIC1 wrote kpc/h. No header attribute distinguishes them, but no
+    # cosmological DM box is 100 kpc/h: BoxSize < 1e3 means Mpc/h.
+    # Velocities (gadget km/s, sqrt(a)) and masses (1e10 Msun/h) are
+    # length-unit independent.
+    len_fac = 1e3 if box < 1e3 else 1.0
+    a = s(H.get("Time", 1.0))
+    return (box * len_fac, len_fac, a,
+            s(H.get("Redshift", 1.0 / a - 1.0)),
+            s(H.get("Omega0", H.get("OmegaMatter", 0.3))),
+            s(H.get("OmegaLambda", 0.7)),
+            s(H.get("HubbleParam", 0.7)))
+
+
 def read_music_dm_ic(path: str, part_type: int = 1,
                      lo: int = None, hi: int = None) -> DMICs:
     """Read DM (``PartType{part_type}``) ICs from a MUSIC/Gadget Arepo-HDF5 file,
@@ -71,19 +93,7 @@ def read_music_dm_ic(path: str, part_type: int = 1,
 
     with h5py.File(path, "r") as f:
         H = dict(f["Header"].attrs)
-        box = float(np.asarray(H["BoxSize"]).reshape(-1)[0])
-        # monofonIC writes lengths in Mpc/h (BoxSize = its config BoxLength);
-        # MUSIC1 wrote kpc/h. No header attribute distinguishes them, but no
-        # cosmological DM box is 100 kpc/h: BoxSize < 1e3 means Mpc/h.
-        # Velocities (gadget km/s, sqrt(a)) and masses (1e10 Msun/h) are
-        # length-unit independent.
-        len_fac = 1e3 if box < 1e3 else 1.0
-        box *= len_fac
-        a = float(H.get("Time", 1.0))
-        z = float(H.get("Redshift", 1.0 / a - 1.0))
-        Om = float(H.get("Omega0", H.get("OmegaMatter", 0.3)))
-        OL = float(H.get("OmegaLambda", 0.7))
-        hub = float(H.get("HubbleParam", 0.7))
+        box, len_fac, a, z, Om, OL, hub = _header_cosmo(H)
 
         g = f[f"PartType{part_type}"]
         sl = slice(lo, hi)                              # full read if lo/hi None
@@ -108,14 +118,7 @@ def _read_music_dm_ic_multi(files, part_type, lo, hi):
 
     with h5py.File(files[0], "r") as f:
         H = dict(f["Header"].attrs)
-        box = float(np.asarray(H["BoxSize"]).reshape(-1)[0])
-        len_fac = 1e3 if box < 1e3 else 1.0             # Mpc/h -> kpc/h, see above
-        box *= len_fac
-        a = float(H.get("Time", 1.0))
-        z = float(H.get("Redshift", 1.0 / a - 1.0))
-        Om = float(H.get("Omega0", H.get("OmegaMatter", 0.3)))
-        OL = float(H.get("OmegaLambda", 0.7))
-        hub = float(H.get("HubbleParam", 0.7))
+        box, len_fac, a, z, Om, OL, hub = _header_cosmo(H)
         mtable = np.asarray(H["MassTable"], dtype=np.float64)
 
     pos_c, vel_c, mass_c = [], [], []
