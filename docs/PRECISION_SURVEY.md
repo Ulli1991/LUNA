@@ -1698,3 +1698,148 @@ come only from production-scale runs:
 3. **R2 sort-interval sweep** — measure deposit time vs steps-since-resort at z = 50, z = 5, z = 0.
 4. **R4 prototype** on the single-GPU path before committing the data model.
 5. Only then consider R7 (LDS privatization), and expect ~30%, not 3.3×.
+
+---
+
+## 13. Results of the §12 measurement programme (2026-08-06)
+
+Everything below is **[V-meas]** on ONE MI300A (viper), the **real l9 MUSIC IC**
+(`ics_arepo_l9_bary.hdf5`, 134,217,728 particles), 512³ mesh, JAX 0.10.2 / ROCm 7.2.
+Harnesses (in-tree): `scaling/repro/deposit_precision_probe.py` (deposit/gather kernels,
+`dep_probe_precision.sbatch`) and `scaling/repro/dm_step_precision.py` (full production step,
+`dm_step_precision.sbatch`). Every full-step row replays the same dτ/a schedule, so all modes
+integrate the identical system; the gate is the 8-step `delta_max` trace and the FP64-evaluated
+Poisson residual.
+
+### 13.1 §12.0a — the contention ceiling (the gating experiment)
+
+Same kernel, same weight arithmetic, scatter targets replaced by a collision-free bijection
+(particle p → cell p; deliberately the wrong answer):
+
+| deposit | real indices | collision-free | headroom |
+|---|---|---|---|
+| float32 accumulator | **15.16 ms** | **9.43 ms** | **5.74 ms = 37.8% (1.61×)** |
+| int32 accumulator | 13.47 ms | 8.87 ms | 4.60 ms = 34.1% |
+
+**The ceiling is large, not small** — 5.7 ms is 16% of the whole 34.6 ms all-FP32 step. But it is
+an *upper* bound on everything that targets the scatter at once, and part of it is not atomics:
+the uint32-position row below replaces the divide/floor/mod index arithmetic with shift/mask and
+recovers only 0.62 ms, so ≲0.6 ms of the 5.7 is index arithmetic and the rest bounds
+collisions + addressing + the scatter emitter together. The collision-free variant also hands XLA
+an iota index, which is a strictly easier code-generation problem than a data-dependent one.
+
+What can actually be claimed from that headroom **in pure JAX** is a different question, and the
+answer is: only the integer accumulator (1.69 ms of the 5.74, below). Privatization (R7) needs
+Pallas/Triton, which §7/R7 documents as unusable on ROCm today, and carries two published
+*negatives* on native-atomic hardware. Sorting (R2) has nothing left to give at this epoch —
+see the occupancy census.
+
+### 13.2 §12.0b — particles per cell (the "race factor")
+
+Post-IC, at z = 50, over all 134M particles and 512³ cells:
+
+| particles in a cell | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|---|
+| cells | 11,428,175 | 112,320,455 | 9,724,588 | 555,142 | 172,391 | 11,025 | 4,210 | 1,214 | 528 |
+
+Mean 1.000, max 8, 84% of cells hold exactly one particle. This is squarely the regime where
+RAMSES-GPU measured atomics *"significantly better"* than the prefix-sum alternative (§5.4), and
+it confirms the particles are still lattice-ordered — **R2's sort has zero headroom at z = 50**;
+its value is entirely at late times, which this measurement cannot reach.
+
+### 13.3 R3 — fixed-point accumulation, in the real kernel
+
+`gravity/particle_mesh.py: cic_deposit(..., fixed=jnp.int32|int64, fixed_bits=b)`, integer unit =
+2^b per mean-density cell, corner weights split by a rounding tree so the eight integer weights sum
+to the particle's weight exactly.
+
+| deposit (isolated) | time | max\|Δρ\|/max(ρ) vs FP64 | mass error |
+|---|---|---|---|
+| float32 (production) | 15.16 ms | 4.29e-5 | −1.22e-8 |
+| **int32 @ 2¹⁷ exact-mass** | **13.47 ms (1.13×)** | 5.12e-5 | −1.22e-8 |
+| float64 | 23.37 ms | 0 (reference) | +5.3e-16 |
+| **int64 @ 2⁴⁰ exact-mass** | **22.04 ms (1.06× faster than FP64)** | **2.33e-12** | **+4.0e-16** |
+
+int32 reproduces §8's 1.08–1.14× on the real IC; **int64 is a strict upgrade on the FP64 deposit —
+6% faster and 2×10⁷ times more accurate.** Peak integer occupancy at z = 50 was 359,523 of
+2,147,483,647, i.e. overflow at 1+δ = 16,384 with 45,000× of headroom now (the runner raises when
+1+δ_max passes half the ceiling).
+
+### 13.4 R4 — uint32 Gadget-style positions, in the real kernel
+
+Whole box → whole unsigned range; cell index = `ipos >> 23`, sub-cell weight = low 23 bits;
+LUNA's cell-centred convention folded in as one integer half-cell shift (so the periodic wrap is
+an unsigned subtraction, no `mod`, no `clip`).
+
+| kernel | float32 positions | **uint32 positions** | float64 positions |
+|---|---|---|---|
+| deposit | 15.16 ms | **14.54 ms** | 23.37 ms |
+| deposit accuracy vs FP64 | 4.29e-5 | **2.75e-7 (156× better)** | 0 |
+| gather (3 fields) | 9.93 ms | **10.03 ms** | 11.12 ms |
+
+**uint32 positions are an accuracy upgrade at float32 cost**, exactly as §8.3 predicted — not a
+speed play. Note the deposit is *not* position-bandwidth-bound (float64 vs float32 positions cost
+the same 15.1 ms in the full-step harness), so the payoff is in the gather and the drift.
+
+### 13.5 The full production step, per `gravity_precision`
+
+`scaling/repro/dm_step_precision.py`, warm 1 V-cycle defect correction + linear φ extrapolation +
+o4 gradient, identical schedule, 5 timed steps after 2 warm-ups:
+
+| mode | step (best) | residual | deposit | solve | grad | gather | kick+drift |
+|---|---|---|---|---|---|---|---|
+| `single` | **34.7 ms** | 2.9566e-3 | 15.21 | 7.04 | 1.89 | 10.11 | 3.01 |
+| `single` + fixed | 35.9 ms | 2.9568e-3 | **13.56** | 6.90 | 1.92 | 10.08 | 2.98 |
+| `mixed` (default) | 45.2 ms | 2.9335e-3 | 15.11 | 8.43 | 3.67 | 11.28 | 5.65 |
+| `mixed` + fixed | **44.1 ms** | 2.9338e-3 | 14.47 | 8.32 | 3.63 | 11.29 | 5.64 |
+
+Gate: the 8-step delta_max trace is 1.8074 1.8366 1.8205/6 1.8289 1.8529/30 1.9406/7 2.0275/6/7
+2.0914/5 in **all four** configurations — the fixed-point deposit moves it by ±1 in the last
+printed digit, i.e. by the same amount as the existing FP32-vs-FP64 difference between the shipped
+modes.
+
+**The fused step does not inherit the isolated deposit win.** In `mixed` it does (−1.1 ms); in
+`single` the step gets 1.2 ms *slower* even though its deposit is 1.65 ms faster — XLA fuses the
+float deposit into the drift and the integer path breaks that fusion (sum-of-isolated 37.26 vs
+fused 34.71 for float, 35.44 vs 35.92 for fixed). **Conclusion: fixed point is a
+reproducibility/mass-exactness feature that is step-neutral, not a speed feature.** It ships
+opt-in (`gravity_deposit_fixed=False` by default).
+
+### 13.6 What shipped, and the config surface
+
+Landed in the tree (single-device DM path; **`gravity_precision` is the one switch**, replacing the
+scattered `cfg.dm_mixed_precision` / `cfg.dm_fp32` / `LUNA_MG_MIXED` — the old fields are kept as
+deprecated aliases that resolve onto it, and the env var still overrides):
+
+| `gravity_precision` | particles | deposit | V-cycle | φ carry / residual |
+|---|---|---|---|---|
+| `'double'` | FP64 | FP64 (int64 @ 2⁴⁰ with `gravity_deposit_fixed`) | FP64 | FP64 |
+| `'mixed'` (default) | FP64 | FP32 (int32 @ 2¹⁷ with `gravity_deposit_fixed`) | FP32 | FP64 |
+| `'single'` | FP32 | FP32 (int32 @ 2¹⁷) | FP32 | FP32 |
+
+`setup/cosmo_common.py: gravity_precision_from_config()` is the single resolver; it also fixes a
+real bug — **`cfg.dm_fp32` was a no-op in `setup/runner_cosmo_dm.py`** (it was only ever read by
+`runner_cosmo_hydro.py:468`), so the FP32 particle path was unreachable from the DM runner's config.
+
+**Proposed surface for R4 (not yet wired):** one orthogonal field
+`gravity_positions: 'float' | 'uint32'`, not a family of flags. Under `'uint32'` the particle
+positions are stored as `uint32` over the whole box, the drift becomes
+`ipos += rint(Δx · 2³²/box)` (unsigned wraparound = the periodic wrap, exactly), and deposit/gather
+take the cell index and the sub-cell weight out of the same integer by shift and mask. It requires
+a periodic cubic box and a power-of-two mesh (otherwise the cell index is not a bit-slice), and it
+touches the drift, the snapshot writer and the block-exchange buffers — which is why it is proposed
+rather than landed. Its measured value is §13.4: float32 speed at 156× the position accuracy, and
+in `'mixed'` it would additionally buy the FP64→FP32 gather and drift savings (≈3.8 ms/step) while
+*improving* on FP32 positional accuracy.
+
+### 13.7 Still open
+
+- **The `single` fused-step regression** with the integer deposit (13.5): worth one XLA-level look —
+  if the deposit can be kept fused with the drift, fixed point becomes a free win in every mode.
+- **R2 sort cadence** — untestable at z = 50 (13.2 shows the particles are still lattice-ordered).
+  Needs evolved states at z ≈ 5 and z ≈ 0.
+- **Fixed point in the block-sharded deposit** (`gravity/particle_mesh_blocks.py`) and the
+  rank-invariance question that comes with the ghost fold (a fixed-point deposit is only
+  rank-invariant if the halo accumulation is fixed point too, §5.6).
+- **R1b (`indices_are_sorted`)** deliberately NOT tested: still CONTESTED, and openxla/xla#22233
+  (~95× regression) makes it a bad bet against a best case of ~8×.

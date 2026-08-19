@@ -10,6 +10,7 @@ Conservation is the caller's watchdog: every exchange returns overflow
 counts so a capacity violation can never be silent.
 """
 
+import os
 from functools import partial
 
 import jax
@@ -175,7 +176,8 @@ def cic_deposit_blocks(pos, mass, active, N, dx, mesh, dtype=None):
     nloc = [Ng[a] // pdims[a] for a in range(3)]
     inv_dV = 1.0 / dx ** 3
 
-    _pk = ("dep", _mesh_key(mesh), Ng, float(dx), str(dtype))
+    _pk = ("dep", _mesh_key(mesh), Ng, float(dx), str(dtype),
+           os.environ.get("LUNA_DEP_SPREAD", "z"))
     _b = _PROGRAM_CACHE.get(_pk)
     if _b is None:
         @partial(jax.jit, static_argnames=())
@@ -196,9 +198,18 @@ def cic_deposit_blocks(pos, mass, active, N, dx, mesh, dtype=None):
             # 500M zero-weight atomic adds onto 8 addresses SERIALIZE the
             # scatter (measured 2.6 s vs ~0.1 s at 512^3). Zero weight means
             # the field is unchanged; only the traffic pattern matters.
+            # Row-major: the LAST axis is contiguous in rho_g, so let it vary
+            # fastest with the slot id. An x-fastest spread strides a whole
+            # yz-plane per slot and costs 5.7x a real particle (measured
+            # 512^3: 0.62 vs 0.11 ns/slot); z-fastest matches the coalesced
+            # pattern of lattice-ordered particles.
             sid = jnp.arange(pos_l.shape[0], dtype=jnp.int32)
-            spread = (sid % nloc[0], (sid // nloc[0]) % nloc[1],
-                      (sid // (nloc[0] * nloc[1])) % nloc[2])
+            if os.environ.get("LUNA_DEP_SPREAD", "z") == "x":   # A/B only
+                spread = (sid % nloc[0], (sid // nloc[0]) % nloc[1],
+                          (sid // (nloc[0] * nloc[1])) % nloc[2])
+            else:
+                spread = ((sid // (nloc[2] * nloc[1])) % nloc[0],
+                          (sid // nloc[2]) % nloc[1], sid % nloc[2])
             act = active_l > 0
             il = [jnp.where(act, il[a], spread[a]) for a in range(3)]
             if dtype is not None:

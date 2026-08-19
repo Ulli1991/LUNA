@@ -349,6 +349,13 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
             act_l > 0, jnp.sum(g_l ** 2, axis=1), 0.0)), S)
         return p_new, g_l, g2
 
+    # Warm-cycle smoothing counts come from the SAME DM-scoped config the
+    # particle-parallel path uses (dm_warm_n_pre/n_post, default 1): the
+    # solver's own defaults are V(2,2), i.e. twice the per-step smoother work
+    # for no measured accuracy gain at dloga <= 0.02.
+    n_pre_w = int(getattr(cfg, "dm_warm_n_pre", 1))
+    n_post_w = int(getattr(cfg, "dm_warm_n_post", 1))
+
     def _solve(delta64, psi_prev):
         if psi_prev is None:
             return solve_poisson_fmg_shardmap(
@@ -356,7 +363,8 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
                 n_extra_vcycles=n_extra)
         return solve_poisson_fmg_shardmap(
             delta64, dx, 1.0, boundary=0, mesh=mesh,
-            phi_init=psi_prev, warm_cycles=max(warm, 1))
+            phi_init=psi_prev, warm_cycles=max(warm, 1),
+            n_pre=n_pre_w, n_post=n_post_w)
 
     def _grad_gather(psi, pos):
         return gather_accel_blocks(grad_phi_blocks(psi, dx, mesh, order=4),
