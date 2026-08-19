@@ -53,11 +53,27 @@ only exists where the per-GPU tile is <=256³ (uint32-wrap bug at 512³ tiles).
   95-97% of fp32, fp64 at 57-63% on compute-bound (>=256³) tiles and
   converging with fp32/recon32 on latency-bound 128³ tiles. 4096³/4096
   fp64 = 4.17 Tcell/s, the largest fp64 point of the campaign.
-- ¹ OUTLIER: the 2026-08-06 fp32 value at 2048³/4096 (1.27 Tcell/s) sits
-  2x BELOW the 2026-08-18 recon32/fp64 at the identical config (2.3-2.5
-  Tcell/s, mutually consistent and latency-bound as expected). The old
-  fp32 run is presumed degraded; a rerun (~32k core-h) would lift the
-  128³-tile collapse point from 14.8% to ~29% efficiency. Not yet rerun.
+- ¹ NOT CLEANLY MEASURED (diagnosed 2026-08-19): the fp32 value at
+  2048³/4096 (1.27 Tcell/s) sits 2x BELOW the 2026-08-18 recon32/fp64 at
+  the identical config (2.3-2.5 Tcell/s, mutually consistent and
+  latency-bound as expected). The cause is not precision — the fp32 entry
+  differs from the other two in three ways at once (slurm.1265767.out vs
+  slurm.1405902/904.out):
+    * job 1265767 was **CANCELLED AT 2026-08-06T19:15:46 DUE TO TIME
+      LIMIT** — it never finished, and 1.27 is the last window of a dying
+      job. Its sibling 1265768 (4096³/4096 fp32) was cancelled the same way.
+    * it ran in the pre-`/dev/shm` environment; the reruns used `[shm-env]`.
+    * it ran steps=100 against the reruns' steps=60.
+  Also, the tabulated 1.27 is the LAST window, while recon32/fp64 use the
+  second-to-last per this file's own stated convention; applying that
+  convention consistently gives 1.70 Tcell/s (still below recon32, so the
+  confound remains). No fp32 rerun exists (checked on JUPITER 2026-08-19;
+  nothing above job 1405908). Treat the 14.8% efficiency point as an
+  artifact, not a measured scaling collapse. A rerun (~32k core-h) would
+  give the first internally consistent 128³-tile row — at present no
+  precision at 4096 GPUs is directly comparable to any other. NOTE: all
+  three legs at this config swing 1.5-5x between perf windows, so a single
+  "plateau" number is weak for this row regardless.
 - Clean knee at the tile size: ~81-88% strong efficiency per 8× GPU step
   while the tile is >=256³ (incl. 4096³→6.65 Tcell/s at 4096 GPUs, jobs
   1265767/68), dropping to ~46-48% of ideal at 128³ tiles at moderate rank
