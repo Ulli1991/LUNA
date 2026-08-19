@@ -129,6 +129,19 @@ def run_simulation_distributed(
     if is_main_process:
         print(f"✓ Compilation complete ({compile_time:.1f}s)\n")
 
+    # Optional XLA cost-model FLOP accounting (LUNA_FLOP_COUNT=1): per-cell
+    # FLOP/byte estimate printed once at startup; the perf line then also
+    # reports sustained TFLOP/s. Must run on ALL processes (each compiles
+    # its own module); only rank 0 prints.
+    _flops_per_cell = None
+    if os.environ.get("LUNA_FLOP_COUNT", "0") == "1":
+        from utils.flop_counter import report_step_cost
+
+        _flops_per_cell = report_step_cost(
+            step_fn, compute_dt_fn, U_sharded, dt_warmup,
+            grid.total_cells, is_main_process,
+        )
+
     # === SNAPSHOTS AND OUTPUT ===
     # Use pre-computed snapshot times from config (numpy array, not JAX). With
     # snapshot I/O disabled (benchmark runs) there are no snapshot times at all,
@@ -371,8 +384,12 @@ def run_simulation_distributed(
                     cell_updates = total_cells * steps_since_last
                     cells_per_sec = cell_updates / elapsed_since_last
                     mcells_per_sec = cells_per_sec / 1e6
+                    flop_str = (
+                        f", ~{cells_per_sec * _flops_per_cell / 1e12:.2f} TFLOP/s"
+                        if _flops_per_cell is not None else ""
+                    )
                     print(
-                        f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}, perf = {mcells_per_sec:.2f} Mcells/s{mem_str}"
+                        f"Step {step:5d}, t = {t:.5f}, dt = {dt:.5e}, perf = {mcells_per_sec:.2f} Mcells/s{flop_str}{mem_str}"
                     )
                 last_perf_time = current_time
 
