@@ -1,0 +1,5 @@
+rung: NX=1024 mesh=2 gpus=8 head=10.128.40.164
+=== nx1024_g8_fp32 steps=100 port=24787 16:07:18 ===
+FAILED nx1024_g8_fp32 (exit 1)
+=== nx1024_g8_recon32 steps=100 port=24788 16:07:46 ===
+slurmstepd: error: *** JOB 1263541 ON jpbo-064-20 CANCELLED AT 2026-08-06T16:07:50 ***

@@ -90,10 +90,19 @@ def _ring_perms(ndev):
 # ---------------------------------------------------------------------------
 # CIC deposit  (particles -> grid density), slab-local with x-ghost exchange
 # ---------------------------------------------------------------------------
-def cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh):
+def cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh,
+                     dtype=None, fixed=None, fixed_bits=17, mass_unit=None):
     """CIC-deposit particle masses to a grid density sharded as x-slabs:
     inputs sharded P("x", ...); returns (Nx, Ny, Nz) sharded P("x", None,
-    None), x-ghost planes ppermute-added onto neighbour slabs."""
+    None), x-ghost planes ppermute-added onto neighbour slabs.
+
+    `dtype`/`fixed`/`fixed_bits`/`mass_unit` mirror
+    ParticleMeshGravity.cic_deposit: `fixed` = jnp.int32/int64 switches to
+    fixed-point integer accumulation (bitwise reproducible, exact in mass —
+    see _cic_deposit_fixed; integer atomics are also far faster than the
+    fp64 float scatter this kernel used before: 984 -> ~20 ms at 1024^3/8
+    GH200). `mass_unit` = global mean density (sum m / box^3); if None it is
+    computed with a psum (mass is conserved, so pass it in for zero cost)."""
     ndev = int(mesh.shape["x"])
     nx_loc = Nx // ndev
     to_right, to_left = _ring_perms(ndev)
@@ -117,19 +126,54 @@ def cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh):
         ty = fy - j0
         tz = fz - k0
         il = i0 - x0 + 1                                  # local x-index into ghosted block
-        il = jnp.clip(il, 0, nx_loc)                      # inactive slots -> harmless (w=0)
-        rho_g = jnp.zeros((nx_loc + 2, Ny, Nz), dtype=w.dtype)
-        for di in (0, 1):
-            wx = tx if di else (1.0 - tx)
-            ix = il + di
-            for dj in (0, 1):
-                wy = ty if dj else (1.0 - ty)
-                jy = (j0 + dj) % Ny
-                for dk in (0, 1):
-                    wz = tz if dk else (1.0 - tz)
-                    kz = (k0 + dk) % Nz
-                    rho_g = rho_g.at[ix, jy, kz].add(wx * wy * wz * w)
-        # exchange the two x-ghost planes onto neighbour edge cells.
+        il = jnp.clip(il, 0, nx_loc)
+        # Inactive padding slots all sit at pos=0 -> the SAME grid cell; their
+        # w=0 atomic adds still serialize on that one address (~400 ms of the
+        # 421 ms deposit at 201M slots / 67M padding, 1024^3/8 GPU). Route them
+        # out of bounds so mode="drop" skips the scatter entirely.
+        il = jnp.where(active_l > 0, il, nx_loc + 2)
+        if fixed is not None:
+            # fixed-point: integer units of S per mean-density cell, corner
+            # weights split by a rounding tree so they sum exactly to W.
+            S = float(1 << fixed_bits)
+            ftype = jnp.float32 if fixed == jnp.int32 else jnp.float64
+            mu = (jax.lax.psum(jnp.sum(w), "x") / float(Nx * Ny * Nz)
+                  if mass_unit is None else mass_unit)
+            txf, tyf, tzf = (q.astype(ftype) for q in (tx, ty, tz))
+            W = jnp.rint((w / mu).astype(ftype) * ftype(S)).astype(fixed)
+            rho_g = jnp.zeros((nx_loc + 2, Ny, Nz), dtype=fixed)
+            for di in (0, 1):
+                lo = jnp.rint(W.astype(ftype) * (1.0 - txf)).astype(fixed)
+                Wx = lo if di == 0 else W - lo
+                ix = il + di
+                for dj in (0, 1):
+                    lo = jnp.rint(Wx.astype(ftype) * (1.0 - tyf)).astype(fixed)
+                    Wxy = lo if dj == 0 else Wx - lo
+                    jy = (j0 + dj) % Ny
+                    for dk in (0, 1):
+                        lo = jnp.rint(Wxy.astype(ftype) * (1.0 - tzf)).astype(fixed)
+                        upd = lo if dk == 0 else Wxy - lo
+                        kz = (k0 + dk) % Nz
+                        rho_g = rho_g.at[ix, jy, kz].add(upd, mode="drop")
+        else:
+            if dtype is not None:
+                w_, tx, ty, tz = (q.astype(dtype) for q in (w, tx, ty, tz))
+            else:
+                w_ = w
+            rho_g = jnp.zeros((nx_loc + 2, Ny, Nz), dtype=w_.dtype)
+            for di in (0, 1):
+                wx = tx if di else (1.0 - tx)
+                ix = il + di
+                for dj in (0, 1):
+                    wy = ty if dj else (1.0 - ty)
+                    jy = (j0 + dj) % Ny
+                    for dk in (0, 1):
+                        wz = tz if dk else (1.0 - tz)
+                        kz = (k0 + dk) % Nz
+                        rho_g = rho_g.at[ix, jy, kz].add(wx * wy * wz * w_,
+                                                         mode="drop")
+        # exchange the two x-ghost planes onto neighbour edge cells (integer
+        # planes in the fixed path — exact through the ppermute).
         # index 0 == cell "-1" == left neighbour's last real cell;
         # index nx_loc+1 == cell "nx_loc" == right neighbour's first real cell.
         rho_loc = rho_g[1:-1]
@@ -139,6 +183,11 @@ def cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh):
         recv_my_first = jax.lax.ppermute(to_right_plane, "x", to_right)  # from d-1: my cell 0
         rho_loc = rho_loc.at[-1:].add(recv_my_last)
         rho_loc = rho_loc.at[0:1].add(recv_my_first)
+        if fixed is not None:
+            out = jnp.float32 if dtype is None and fixed == jnp.int32 else \
+                (dtype or jnp.float64)
+            mu_out = jnp.asarray(mu, dtype=out)
+            return rho_loc.astype(out) * (mu_out / out(S))
         return rho_loc
 
     return _body(pos, mass, active)
@@ -251,10 +300,10 @@ def gather_accel_slab(g, pos, Nx, Ny, Nz, dx, mesh):
 # Particle exchange on drift  (1-D ring redistribution, fixed shapes)
 # ---------------------------------------------------------------------------
 @lru_cache(maxsize=None)
-def _build_exchange_body(Nx, dx, box, mesh):
+def _build_exchange_body(Nx, dx, box, mesh, C_send):
     """Build and CACHE the jitted shard_map exchange kernel, keyed on the static
-    (Nx, dx, box, mesh). Without the cache a fresh jit closure is created on every
-    call, so XLA recompiles the kernel on every step."""
+    (Nx, dx, box, mesh, C_send). Without the cache a fresh jit closure is created
+    on every call, so XLA recompiles the kernel on every step."""
     ndev = int(mesh.shape["x"])
     nx_loc = Nx // ndev
     slab_w = nx_loc * dx                                  # slab width in length units
@@ -264,7 +313,7 @@ def _build_exchange_body(Nx, dx, box, mesh):
     @partial(shard_map, mesh=mesh,
              in_specs=(P("x", None), P("x", None), P("x"), P("x")),
              out_specs=(P("x", None), P("x", None), P("x"), P("x"),
-                        P(), P()))
+                        P(), P(), P()))
     def _body(pos_l, p_l, mass_l, active_l):
         C = pos_l.shape[0]
         d = jax.lax.axis_index("x")
@@ -279,32 +328,51 @@ def _build_exchange_body(Nx, dx, box, mesh):
         go_left = act & (diff == ndev - 1)
         stay = act & (~go_left) & (~go_right)
 
-        # Ship the FULL local buffers (+ their boolean keep-masks) to each ring
-        # neighbour and let the RECEIVER mask -- this removes the 3 pre-pack
-        # argsorts entirely (the ppermute volume is identical: still C per buffer).
-        # A particle that stays is carried in its neighbour's arrival buffer too,
-        # but with keep=False there, so it is counted exactly once.
-        posRr = jax.lax.ppermute(pos_l, "x", to_right)
-        pRr = jax.lax.ppermute(p_l, "x", to_right)
-        mRr = jax.lax.ppermute(mass_l, "x", to_right)
-        kRr = jax.lax.ppermute(go_right.astype(jnp.float32), "x", to_right) > 0
+        # Pack the movers into fixed C_send-slot send buffers and ppermute ONLY
+        # those. Movers are a thin skin of the slab (one drift << one cell), so
+        # shipping the full C-slot buffers — the previous scheme — moved ~1000x
+        # more bytes than needed and saturated the inter-node links (1245 ms of
+        # a 2286 ms step at 1024^3/8 GPU). Packing uses the same O(C) cumsum
+        # compaction as the merge below. A mover beyond C_send is dropped by
+        # the scatter and counted in n_bad — never silent (the caller's
+        # conservation watchdog also trips): raise dm_exchange_send_div's
+        # divisor... i.e. LOWER it, or raise capacity, if that ever fires.
+        def _pack(sel):
+            slot = jnp.cumsum(sel.astype(jnp.int32)) - 1
+            dest = jnp.where(sel, slot, C_send)           # inactive/overflow -> dropped
+            n = jnp.sum(sel.astype(jnp.int32))
+            def take(a):
+                z = jnp.zeros((C_send,) + a.shape[1:], a.dtype)
+                return z.at[dest].set(a, mode="drop")
+            return take, jnp.minimum(n, C_send), jnp.maximum(n - C_send, 0)
 
         if ndev == 2:
             # Degenerate ring: the left and right neighbour are the SAME device
-            # (to_left == to_right), so the second ppermute would deliver an
-            # identical copy of the same buffer, and every mover carries
-            # keep=True in both (diff == 1 == ndev-1). Merging both duplicated
-            # every mover (mass inflation, test_pm_shardmap 2-device failure).
-            # One neighbour -> one arrival buffer, movers inserted exactly once.
+            # (to_left == to_right), and every mover has diff == 1 == ndev-1.
+            # One packed buffer holds all movers; sent once, inserted once.
+            takeR, nR, ovR = _pack(act & (diff == 1))
+            nL = jnp.zeros((), jnp.int32)
+            ovL = jnp.zeros((), jnp.int32)
+        else:
+            takeR, nR, ovR = _pack(go_right)
+            takeL, nL, ovL = _pack(go_left)
+        posRr = jax.lax.ppermute(takeR(pos_l), "x", to_right)
+        pRr = jax.lax.ppermute(takeR(p_l), "x", to_right)
+        mRr = jax.lax.ppermute(takeR(mass_l), "x", to_right)
+        nRr = jax.lax.ppermute(nR.reshape(1), "x", to_right)
+        kRr = jnp.arange(C_send) < nRr[0]                 # arrivals sit in [0:nRr)
+
+        if ndev == 2:
             pos_all = jnp.concatenate([pos_l, posRr], axis=0)
             p_all = jnp.concatenate([p_l, pRr], axis=0)
             mass_all = jnp.concatenate([mass_l, mRr], axis=0)
             act_all = jnp.concatenate([stay, kRr], axis=0)
         else:
-            posLl = jax.lax.ppermute(pos_l, "x", to_left)
-            pLl = jax.lax.ppermute(p_l, "x", to_left)
-            mLl = jax.lax.ppermute(mass_l, "x", to_left)
-            kLl = jax.lax.ppermute(go_left.astype(jnp.float32), "x", to_left) > 0
+            posLl = jax.lax.ppermute(takeL(pos_l), "x", to_left)
+            pLl = jax.lax.ppermute(takeL(p_l), "x", to_left)
+            mLl = jax.lax.ppermute(takeL(mass_l), "x", to_left)
+            nLl = jax.lax.ppermute(nL.reshape(1), "x", to_left)
+            kLl = jnp.arange(C_send) < nLl[0]
 
             # merge stay + arrivals-from-left(d-1 went right) + arrivals-from-right(d+1 went left)
             pos_all = jnp.concatenate([pos_l, posRr, posLl], axis=0)
@@ -334,18 +402,29 @@ def _build_exchange_body(Nx, dx, box, mesh):
         xw2 = jnp.mod(pos_n[:, 0], box)
         tgt2 = jnp.clip((xw2 / slab_w).astype(jnp.int32), 0, ndev - 1)
         bad = (act_n > 0) & (tgt2 != d)
-        n_bad = jax.lax.psum(jnp.sum(bad.astype(jnp.int32)) + n_overflow, "x")
+        n_bad = jax.lax.psum(jnp.sum(bad.astype(jnp.int32)) + n_overflow
+                             + ovR + ovL, "x")
         occ = jnp.sum(act_n > 0).astype(jnp.int32)
         max_occ = jax.lax.pmax(occ, "x")
-        return pos_n, p_n, mass_n, act_n, n_bad, max_occ
+        # gross movers this call (both directions, incl. any send overflow) —
+        # the data that sizes the send buffer, instead of guessing send_div
+        n_move = jax.lax.pmax(nR + ovR + nL + ovL, "x")
+        return pos_n, p_n, mass_n, act_n, n_bad, max_occ, n_move
 
     return _body
 
 
-def exchange_particles_slab(pos, p, mass, active, Nx, dx, box, mesh):
-    """Redistribute particles to their owning x-slab after a drift (ppermute
-    to ring neighbours, compacted into the capacity-C buffer). ASSUMES a
-    particle crosses at most one slab boundary per call. Returns the
-    redistributed (pos, p, mass, active) plus diagnostics
-    (n_out_of_slab_after, max_occupancy)."""
-    return _build_exchange_body(Nx, dx, box, mesh)(pos, p, mass, active)
+def exchange_particles_slab(pos, p, mass, active, Nx, dx, box, mesh,
+                            send_div=64):
+    """Redistribute particles to their owning x-slab after a drift (packed
+    movers ppermuted to ring neighbours, compacted into the capacity-C
+    buffer). ASSUMES a particle crosses at most one slab boundary per call.
+    `send_div`: send-buffer slots per neighbour = C // send_div — at 64 that
+    is several full x-cell-layers of particles, >>any single drift; a send
+    overflow is counted in n_bad, never silent. Returns the redistributed
+    (pos, p, mass, active) plus diagnostics (n_out_of_slab_after,
+    max_occupancy, max_gross_movers_per_device)."""
+    ndev = int(mesh.shape["x"])
+    C = pos.shape[0] // ndev
+    C_send = max(C // int(send_div), 1)
+    return _build_exchange_body(Nx, dx, box, mesh, C_send)(pos, p, mass, active)

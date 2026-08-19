@@ -41,6 +41,7 @@ These cost us days on viper. Verify each on GH200 before trusting any number:
 | auto-sharded `jnp.pad` | hung multi-process | retest |
 | compile blowup | fused step graph: 2 h at 512³/2 GPU, never at 1024³ → fixed by splitting the solve out | does the split still matter under CUDA? |
 | `LUNA_MG_CA` threshold | auto = on iff `process_count>1`; tuned for 2-GPU intra-node | re-tune: intra-node group is **4**, not 2 |
+| **NEW (CUDA-only, found 2026-08-06)**: uint32 offset wrap | n/a on ROCm | (5,512³) fp64 state: field-4 byte offset = 2^32 exactly wraps to field 0 in XLA's po2-stride shift indexing → silently corrupt PLM y-fluxes at the blast. jax 0.10.1 AND 0.11.0. Details in scaling/jupiter/RESULTS.md. Workarounds: recon32 / fused / non-po2 tile. **Check 512³ per-GPU shards at ≥8 GPUs before any fp64 plain-path ladder rung.** |
 
 ## Order of battle (user-specified)
 
@@ -107,6 +108,24 @@ These cost us days on viper. Verify each on GH200 before trusting any number:
      ever catches LUNA is the open question these rungs answer.
    - ≥256³ per-GPU tiles throughout (small tiles ran at 7% peak on viper and
      polluted the curve).
+
+## Weak-ladder rungs (user-fixed, 2026-08-06)
+
+Hydro (Sedov): **512³@1 → 1024³@8 → 2048³@64 → 4096³@512 → 8192³@4096 GPUs**
+— fixed 512³ per-GPU tile, ×8 GPUs per rung (2× per axis); top rung 1024
+nodes. Tile provisional modulo where the 1-GPU roofline saturates.
+(2026-08-06: tile confirmed at saturation; rungs 8/64/512 measured —
+99.3/95.6/90.7% fp32, see scaling/jupiter/RESULTS.md.)
+
+**Frontier extension toward full machine (agreed 2026-08-06):** keep the
+exact 512³ tile and continue with cubic meshes — **10240³@8,000 GPUs
+(20³ mesh, 2,000 nodes) → 12288³@13,824 (24³, 3,456 nodes) →
+14336³@21,952 (28³, 5,488 nodes ≈ 98% of JUPITER)**. Every global is
+512×mesh-dim, so cells scale by exactly the GPU factor. The 28³ rung is
+the full-machine shot (needs a JSC reservation; one clean attempt after
+the smaller rungs de-risk bootstrap/compile at 2k-3.5k nodes).
+Gravity: same geometry on real cosmo boxes — l9@1, l10@8, l11@64, l12@512;
+the 4096-GPU analog needs an l13 (8192³ ≈ 26 TB) decision.
 
 ## viper reference numbers (MI300A) — what to beat/compare
 

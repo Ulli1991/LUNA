@@ -1,0 +1,3 @@
+rung: NX=4096 mesh=16,16,16 gpus=4096 head=10.128.16.34
+=== nx4096_g4096_fp32 steps=100 port=40376 19:16:09 ===
+slurmstepd: error: *** JOB 1265768 ON jpbo-001-34 CANCELLED AT 2026-08-06T19:28:19 DUE TO TIME LIMIT ***

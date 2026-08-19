@@ -35,7 +35,13 @@ def main():
         Nx=int(os.environ.get("LUNA_DM_MESH", "64")),
         a_end=float(os.environ.get("LUNA_DM_AEND", "1.0")),
         dm_domain_decomp=os.environ.get("LUNA_DM_SLAB", "0") == "1",
+        dm_decomp="slab" if os.environ.get("LUNA_DM_SLAB", "0") == "1"
+                  else "blocks",
         dm_capacity_factor=float(os.environ.get("LUNA_DM_CAP", "1.5")),
+        dm_exchange_send_div=int(os.environ.get("LUNA_DM_SEND_DIV", "64")),
+        dm_write_snapshot=os.environ.get("LUNA_DM_WRITE_SNAP", "1") == "1",
+        dm_host_every=int(os.environ.get("LUNA_DM_HOST_EVERY", "1")),
+        gravity_deposit_fixed=os.environ.get("LUNA_DM_FIXED", "0") == "1",
         POISSON_FMG_EXTRA_VCYCLES=int(os.environ.get("LUNA_DM_VCYC", "4")),
         dloga_max=0.02,
         output_dir=os.environ.get(

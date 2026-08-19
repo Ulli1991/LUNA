@@ -1,0 +1,3 @@
+rung: NX=2048 mesh=8,8,8 gpus=512 head=10.128.33.225
+=== nx2048_g512_fp32 steps=100 port=36841 17:19:46 ===
+slurmstepd: error: *** JOB 1265263 ON jpbo-051-01 CANCELLED AT 2026-08-06T17:26:32 ***

@@ -1,0 +1,133 @@
+Sedov 3D Arepo run: box=50.0 pc, Nx=512, t_end=10000.0 yr = 1.0227e-05 code
+[startup] imports done t+0.5s (15:42:13)
+Sedov 3D Arepo run: box=50.0 pc, Nx=512, t_end=10000.0 yr = 1.0227e-05 code
+[startup] imports done t+0.5s (15:42:13)
+Sedov 3D Arepo run: box=50.0 pc, Nx=512, t_end=10000.0 yr = 1.0227e-05 code
+[startup] imports done t+0.5s (15:42:13)
+============================================================
+MULTI-NODE SHARDING MODE (1 GPU per process)
+============================================================
+Sedov 3D Arepo run: box=50.0 pc, Nx=512, t_end=10000.0 yr = 1.0227e-05 code
+[startup] imports done t+0.5s (15:42:13)
+Sedov 3D Arepo run: box=50.0 pc, Nx=512, t_end=10000.0 yr = 1.0227e-05 code
+[startup] imports done t+0.5s (15:42:14)
+Sedov 3D Arepo run: box=50.0 pc, Nx=512, t_end=10000.0 yr = 1.0227e-05 code
+[startup] imports done t+0.5s (15:42:14)
+Sedov 3D Arepo run: box=50.0 pc, Nx=512, t_end=10000.0 yr = 1.0227e-05 code
+[startup] imports done t+0.5s (15:42:14)
+Sedov 3D Arepo run: box=50.0 pc, Nx=512, t_end=10000.0 yr = 1.0227e-05 code
+[startup] imports done t+0.5s (15:42:14)
+✓ JAX distributed initialized
+  local_device_ids=[0] (SLURM_LOCALID pinning)
+  Process: 0 / 8
+✓ float64 enabled (jax_enable_x64=True)
+Platform: gpu
+Total devices: 8
+Local devices: 1
+  Device 0: NVIDIA GH200 120GB (process 0)
+  Device 1: NVIDIA GH200 120GB (process 1)
+  Device 2: NVIDIA GH200 120GB (process 2)
+  Device 3: NVIDIA GH200 120GB (process 3)
+  Device 4: NVIDIA GH200 120GB (process 4)
+  Device 5: NVIDIA GH200 120GB (process 5)
+  Device 6: NVIDIA GH200 120GB (process 6)
+  Device 7: NVIDIA GH200 120GB (process 7)
+
+[startup] distributed init done t+7.9s (15:42:21)
+============================================================
+DOMAIN DECOMPOSITION (8 devices)
+============================================================
+Decomposition strategy: auto
+Process grid: (2, 2, 2)
+Actual decomposition: block (2D/3D)
+
+============================================================
+INITIAL CONDITIONS
+============================================================
+Multi-process mode: using local IC generation
+Each process generates only its local portion (memory efficient)
+[startup] distributed init done t+7.9s (15:42:21)
+[startup] distributed init done t+7.9s (15:42:21)
+[startup] distributed init done t+7.9s (15:42:21)
+[startup] distributed init done t+7.7s (15:42:21)
+[startup] distributed init done t+7.7s (15:42:21)
+[startup] distributed init done t+7.7s (15:42:21)
+[startup] distributed init done t+7.7s (15:42:21)
+Local shape per process: varies by decomposition
+✓ Sharded array created from local pieces (no validation for large arrays)
+
+✓ Array sharded across 8 devices
+  Each process keeps only its local shard
+
+After initialization: Memory usage: 0.62 GB
+
+Using shard_map with explicit per-shard ppermute halos
+Sharding spec: P(None, 'x', 'y', 'z')
+Using MUSCL-Hancock (HLLC, shard_map) time integration
+Runner controls dt clamping (snapshot times, t_end)
+============================================================
+COMPILING SHARDED FUNCTIONS
+============================================================
+Running one step to trigger JIT compilation...
+✓ Compilation complete (5.3s)
+
+============================================================
+SIMULATION START
+============================================================
+Time range: 0.000 → 0.000
+Global grid: 512 x 512 x 512
+
+Step     1, t = 0.00000, dt = 7.09090e-11, mem = 2.50 GB
+Step    10, t = 0.00000, dt = 1.39139e-10, perf = 14573.08 Mcells/s, mem = 2.50 GB
+Step    20, t = 0.00000, dt = 1.88682e-10, perf = 14738.57 Mcells/s, mem = 2.50 GB
+Step    30, t = 0.00000, dt = 2.17748e-10, perf = 14724.65 Mcells/s, mem = 2.50 GB
+Step    40, t = 0.00000, dt = 2.40770e-10, perf = 14727.23 Mcells/s, mem = 2.50 GB
+Step    50, t = 0.00000, dt = 2.59619e-10, perf = 14692.18 Mcells/s, mem = 2.50 GB
+Step    60, t = 0.00000, dt = 2.75796e-10, perf = 14704.11 Mcells/s, mem = 2.50 GB
+Step    70, t = 0.00000, dt = 2.90039e-10, perf = 14704.19 Mcells/s, mem = 2.50 GB
+Step    80, t = 0.00000, dt = 3.02774e-10, perf = 14712.88 Mcells/s, mem = 2.50 GB
+Step    90, t = 0.00000, dt = 3.14365e-10, perf = 14714.88 Mcells/s, mem = 2.50 GB
+📊 step=    100  t=2.43679e-08  min_rho=2.111e-05  min_P=2.039e-01  max_|v|=1.356e+04  max_M=1.063e+00  ETA=19.0m
+Step   100, t = 0.00000, dt = 3.25003e-10, perf = 3068.17 Mcells/s, mem = 2.50 GB
+
+============================================================
+SIMULATION COMPLETED
+============================================================
+✓ Total runtime: 2.73 seconds
+✓ Total steps: 100
+✓ Final time: 0.00000
+✓ Average performance: 4872.59 Mcells/s (global grid)
+✓ Time per step: 27.55 ms (excluding first step)
+
+Number of devices: 8
+Process grid: (2, 2, 2)
+
+Final memory usage: Memory usage: 0.62 GB
+
+============================================================
+Good Bye and Good Day!
+============================================================
+W0818 15:42:31.114319 1026412 pjrt_client.cc:1613] WatchTasksAsync failed for task 0: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0818 15:42:31.114361 1026414 pjrt_client.cc:1613] WatchTasksAsync failed for task 3: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0818 15:42:31.114384 1026415 pjrt_client.cc:1613] WatchTasksAsync failed for task 1: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0818 15:42:31.114417 1026413 pjrt_client.cc:1613] WatchTasksAsync failed for task 2: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused"}
+W0818 15:42:31.114381  972154 pjrt_client.cc:1613] WatchTasksAsync failed for task 4: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused", grpc_status:14}
+W0818 15:42:31.114413  972153 pjrt_client.cc:1613] WatchTasksAsync failed for task 6: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused"}
+W0818 15:42:31.114438  972152 pjrt_client.cc:1613] WatchTasksAsync failed for task 7: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_status:14, grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused"}
+W0818 15:42:31.114478  972155 pjrt_client.cc:1613] WatchTasksAsync failed for task 5: UNAVAILABLE: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused
+Additional GRPC error information from remote target coordination_service while calling /xla.coordination.CoordinationService/WatchTasks:
+:UNKNOWN:Error received from peer  {grpc_message:"failed to connect to all addresses; last error: UNKNOWN: ipv4:10.128.26.73:21286: Failed to connect to remote host: Connection refused", grpc_status:14}

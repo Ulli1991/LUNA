@@ -12,6 +12,9 @@ Unit system (Arepo convention):
 Just runs the sim and saves snapshots; plot script picks them up afterwards.
 """
 import os
+import time as _time
+
+_T0 = _time.time()                     # startup phase timing (rank 0 prints)
 from units import UnitSystem
 from dataclasses import replace
 from template_config import Config
@@ -86,7 +89,11 @@ def main():
     )
     print(f"Sedov 3D Arepo run: box={BOX_SIZE_PC} pc, Nx={NX}, t_end={T_END_YR} yr "
           f"= {T_END_CODE:.4e} code")
+    print(f"[startup] imports done t+{_time.time() - _T0:.1f}s "
+          f"({_time.strftime('%H:%M:%S')})", flush=True)
     initialize_jax_distributed(enable_x64=bool(overrides.get("enable_x64", False)))
+    print(f"[startup] distributed init done t+{_time.time() - _T0:.1f}s "
+          f"({_time.strftime('%H:%M:%S')})", flush=True)
     overrides = {k: v for k, v in overrides.items() if k != "enable_x64"}
     run(replace(Config(), **overrides))
 

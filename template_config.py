@@ -104,9 +104,12 @@ class Config:
     dm_eta: float = 0.025           # acceleration-timestep accuracy parameter
     dm_domain_decomp: bool = False  # grid-sharded slab decomposition (>512^3, multi-GPU)
     dm_capacity_factor: float = 1.5  # per-slab particle buffer headroom for clustering
+    dm_exchange_send_div: int = 64  # slab exchange send-buffer slots = C // this (overflow is counted, never silent)
     # DM PM-gravity fast path (measured 512^3/MI300A: 46 ms/step, 2x tighter than
     # cold-start V(2,2); set dm_warm_vcycles=0 for the bit-conservative cold FMG).
     dm_warm_vcycles: int = 1        # >0: warm-start PM gravity — carry phi, k V-cycles/step (0 = cold FMG)
+    dm_write_snapshot: bool = True  # write the end-of-run gadget snapshot (off for pure timing runs)
+    dm_host_every: int = 1          # refresh dt criterion + watchdogs every k steps (host syncs are ~10-25 ms on GH200)
     # ONE switch for the whole gravity path (docs/PRECISION_SURVEY.md R6).
     # 'double': FP64 everywhere.  'mixed' (default): FP64 particles + FP64 phi
     # carry/residual, FP32 deposit + FP32 defect-correction V-cycle (textbook

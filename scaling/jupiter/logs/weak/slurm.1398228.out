@@ -1,0 +1,5 @@
+[shm-env] broadcast+untar 14s
+run: NX=1024 mesh=2 gpus=8 head=10.128.16.210
+=== nx1024_g8_fp32 steps=30 port=47596 17:52:06 ===
+FAILED nx1024_g8_fp32 (exit 1)
+=== run done 17:52:16 ===
