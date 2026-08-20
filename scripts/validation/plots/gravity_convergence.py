@@ -64,7 +64,7 @@ def main():
         decorate(ax)
         fig.tight_layout()
         stem = name.lower().replace(" ", "_")
-        out = f"figures/gravity_convergence_{stem}.png"
+        out = f"code_paper_figs/gravity_convergence_{stem}.png"
         save(fig, out, close=True)
         print(f"wrote {out}")
 

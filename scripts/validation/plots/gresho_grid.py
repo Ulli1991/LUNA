@@ -82,7 +82,7 @@ def _plot_panel(ax, snap_idx, title):
     decorate(ax)
 
 
-def main(outpath_stem="figures/gresho_vphi_vs_radius"):
+def main(outpath_stem="code_paper_figs/gresho_vphi_vs_radius"):
     fig, axes = plt.subplots(1, 2, figsize=(FIGSIZE[0]*2, FIGSIZE[1]), constrained_layout=True)
     d_early = _load_vphi(RESOLUTIONS[0], SNAP_EARLY)
     d_late  = _load_vphi(RESOLUTIONS[0], SNAP_LATE)

@@ -74,7 +74,7 @@ def main():
                         bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
 
     fig.tight_layout()
-    save(fig, "figures/kh_grid.pdf", also_png=True)
+    save(fig, "code_paper_figs/kh_grid.pdf", also_png=True)
     print("Saved figures/kh_grid.{pdf,png}")
 
 

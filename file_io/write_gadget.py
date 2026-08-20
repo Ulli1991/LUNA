@@ -36,8 +36,8 @@ def write_gadget_dm_snapshot(cfg, pos, vel_gadget, a, ic):
         fig, ax = plt.subplots(figsize=(5, 5))
         ax.imshow(np.log10(H2.T + 0.5), origin="lower", cmap="inferno")
         ax.set_title(f"DM (z={1/a-1:.2f})"); ax.set_xticks([]); ax.set_yticks([])
-        os.makedirs("figures", exist_ok=True)
-        fig.tight_layout(); fig.savefig("figures/cosmo_dm.png", dpi=130)
+        os.makedirs("code_paper_figs", exist_ok=True)
+        fig.tight_layout(); fig.savefig("code_paper_figs/cosmo_dm.png", dpi=130)
         print("[cosmo-dm] wrote figures/cosmo_dm.png")
     except Exception as e:
         print(f"[cosmo-dm] plot skipped: {e}")

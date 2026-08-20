@@ -39,7 +39,7 @@ def main():
     fn = sys.argv[1] if len(sys.argv) > 1 else (
         "snapshots/cosmo_hydro/coupled_a0.9708.hdf5")
     out = sys.argv[2] if len(sys.argv) > 2 else (
-        "figures/cosmic_web_gas_dm.png")
+        "code_paper_figs/cosmic_web_gas_dm.png")
 
     with h5py.File(fn, "r") as f:
         rho_dm = f["rho_dm"][:]

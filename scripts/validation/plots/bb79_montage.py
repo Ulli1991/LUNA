@@ -68,7 +68,7 @@ def main():
     cb.ax.tick_params(colors="w", labelsize=LABEL_FS - 2)
     cb.outline.set_edgecolor("w")
     tag = "_sinks" if "sink" in SNAP else ""
-    out = f"figures/bb79_montage_Nx{Ss[0].shape[0]}{tag}.png"
+    out = f"code_paper_figs/bb79_montage_Nx{Ss[0].shape[0]}{tag}.png"
     save(fig, out)
     print(f"  wrote {out}  (times kyr: {[round(t*1e3) for t in TIMES_MYR]})")
 

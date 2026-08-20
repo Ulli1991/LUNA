@@ -83,7 +83,7 @@ def main():
     axes[1, 0].set_ylabel("AthenaK")
 
     fig.tight_layout()
-    save(fig, "figures/kh_8192_luna_vs_athenak.pdf", also_png=True)
+    save(fig, "code_paper_figs/kh_8192_luna_vs_athenak.pdf", also_png=True)
     print("Saved figures/kh_8192_luna_vs_athenak.{pdf,png}")
 
 

@@ -73,7 +73,7 @@ def main():
     ax.legend(loc="upper left")
     decorate(ax)
     fig.tight_layout()
-    out = "figures/jeans_growth.png"
+    out = "code_paper_figs/jeans_growth.png"
     save(fig, out, dpi=140)
     print(f"wrote {out}  (σ_analytic={GROWTH:.3f}; "
           f"σ_meas={[round(c[3], 2) for c in curves]})")

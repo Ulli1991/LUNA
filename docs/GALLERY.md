@@ -149,11 +149,11 @@ LUNA's hydro step, gravity solve, and source terms are end-to-end differentiable
 
 Before the coupled run, the **DM-only** cosmological gravity is validated head-to-head against a production cosmology code on **matched initial conditions**.
 
-![DM-only cosmic web at z=0, identical IC — LUNA PM (left) vs Arepo TreePM (right)](../code_paper_figs/cosmic_web_arepo_vs_luna.png)
+![DM-only cosmic web at z=0, identical IC — LUNA PM (left) vs Arepo TreePM (right)](../code_paper_figs/fig32_cosmic_web_arepo_vs_luna.png)
 
 *DM-only validation against **Arepo** — the **identical** 512³ MUSIC initial condition (25 Mpc/h box, CAMELS fiducial cosmology, 134M particles) evolved z = 50 → 0 by LUNA's multigrid Particle–Mesh (left) and the Arepo TreePM moving-mesh code (right). Projected dark-matter density: the cosmic web is reproduced **structure-for-structure** — the same clusters, filaments, and voids in the same places — with LUNA's pure-PM haloes marginally smoother than Arepo's TreePM cores, the expected consequence of the grid force resolution.*
 
-![DM power spectrum at z=0, LUNA PM vs Arepo TreePM, with ratio](../code_paper_figs/dm_powerspec_arepo_vs_luna.png)
+![DM power spectrum at z=0, LUNA PM vs Arepo TreePM, with ratio](../code_paper_figs/fig33_dm_powerspec_arepo_vs_luna.png)
 
 *Dark-matter **power spectrum** at z = 0 for the same run, measured with an **identical CIC estimator** for both codes. LUNA (PM) and Arepo (TreePM) track one another across the resolved range; the high-k deficit of the pure-PM scheme relative to TreePM (right panel) reflects the grid force softening below a few cells, while the large-scale modes agree. This validates LUNA's cosmological gravity and super-comoving integration against a mature production code on the same initial data.*
 

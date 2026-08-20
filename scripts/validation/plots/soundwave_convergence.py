@@ -151,7 +151,7 @@ def main():
     decorate(ax)
     fig.tight_layout()
 
-    save(fig, "figures/soundwave_convergence.pdf", also_png=True)
+    save(fig, "code_paper_figs/soundwave_convergence.pdf", also_png=True)
     print("Saved figures/soundwave_convergence.pdf and .png")
 
 

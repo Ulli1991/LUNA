@@ -84,7 +84,7 @@ def main():
     panel_hll(axes[0])
     panel_hllc(axes[1])
     fig.tight_layout(pad=1.2)
-    out = "figures/riemann_fan_hll_hllc.png"
+    out = "code_paper_figs/riemann_fan_hll_hllc.png"
     save(fig, out, dpi=150, close=True)
     print(f"wrote {out}")
 

@@ -49,7 +49,7 @@ def main():
     decorate(ax)
     ax.grid(False)                                        # no grid over the image
     fig.tight_layout()
-    out = "figures/cosmo_dm_web.png"
+    out = "code_paper_figs/cosmo_dm_web.png"
     save(fig, out)
     print(f"# wrote {out}")
 

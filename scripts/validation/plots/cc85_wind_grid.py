@@ -194,7 +194,7 @@ def _plot_radial_profiles(runs, snapshots_root="snapshots"):
         ax.legend(loc="best"); decorate(ax)
 
     for ext in ("pdf", "png"):
-        path = f"figures/m82_wind_radial_profiles.{ext}"
+        path = f"code_paper_figs/m82_wind_radial_profiles.{ext}"
         save(fig, path, dpi=180, bbox_inches="tight")
         print(f"wrote {path}")
     plt.close(fig)
@@ -223,13 +223,13 @@ def main(snapshots_root="snapshots"):
 
     _plot_grid("log_n", "inferno", n_lo, n_hi,
                r"$\log_{10}\, n_{\rm H}\ [{\rm cm}^{-3}]$",
-               "figures/m82_wind_density", runs)
+               "code_paper_figs/m82_wind_density", runs)
     _plot_grid("v_z", "RdBu_r", -vr_mag, vr_mag,
                r"$v_z\ [{\rm km\,s^{-1}}]$",
-               "figures/m82_wind_vz", runs, diverging=True)
+               "code_paper_figs/m82_wind_vz", runs, diverging=True)
     _plot_grid("log_T", "plasma", T_lo, T_hi,
                r"$\log_{10}\, T\ [{\rm K}]$",
-               "figures/m82_wind_temperature", runs)
+               "code_paper_figs/m82_wind_temperature", runs)
     del runs, all_logn, all_vr, all_logT
     import gc; gc.collect()
     _plot_radial_profiles({Nx: None for Nx in resolutions}, snapshots_root)

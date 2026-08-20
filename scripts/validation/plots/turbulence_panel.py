@@ -111,7 +111,7 @@ def main():
                 bbox=dict(facecolor="black", alpha=0.55, edgecolor="none", pad=2))
 
     fig.tight_layout()
-    save(fig, "figures/turbulence_panel.pdf", also_png=True)
+    save(fig, "code_paper_figs/turbulence_panel.pdf", also_png=True)
     print(f"Saved figures/turbulence_panel.{{pdf,png}} "
           f"(vmin={vmin:.3f}, vmax={vmax:.3f})")
     for Nx in NX_LIST:

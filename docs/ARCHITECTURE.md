@@ -53,7 +53,7 @@ mesh refinement (AMR).
 | `utils/` | halo exchange (multi-GPU ghost cells), grid bookkeeping, plotting style |
 | `file_io/` | snapshot/checkpoint writers and readers |
 | `tests/` | pytest suite (physics + parallelism regression gates) |
-| `third_party/jaxamr/` | vendored read-only copy of JAX-AMR (MIT) — NOT a runtime dependency: the working core was extracted and reworked into LUNA's self-contained `amr/` (see `amr/DESIGN.md` for what was kept vs. re-implemented); the vendored original remains for attribution and as the reference one geometry test cross-validates against |
+| *(external)* | LUNA's `amr/` is derived from **JAX-AMR** (Wen & Luo, MIT — https://github.com/JA4S/JAX-AMR, https://doi.org/10.48550/arXiv.2504.13750). Their source is NOT vendored here; see `THIRD_PARTY_NOTICES.md` for the licence and `amr/DESIGN.md` for what LUNA took vs. re-implemented. A reference checkout at `$LUNA_JAXAMR` (default `~/jaxamr`) lets one geometry test cross-validate against it; it skips when absent. |
 
 ## Suggested reading order
 

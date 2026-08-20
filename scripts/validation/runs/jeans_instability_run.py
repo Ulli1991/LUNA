@@ -147,8 +147,8 @@ def main():
     ax.legend(loc="upper left")
     decorate(ax)
     fig.tight_layout()
-    os.makedirs("figures", exist_ok=True)
-    figpath = f"figures/jeans_growth_Nx{Nx}.png"
+    os.makedirs("code_paper_figs", exist_ok=True)
+    figpath = f"code_paper_figs/jeans_growth_Nx{Nx}.png"
     fig.savefig(figpath, dpi=140)
     print(f"RESULT jeans: sigma_meas={sigma_meas:.4f} sigma_analytic={growth_rate:.4f} "
           f"rel={rel:.3e}  ({int(mask.sum())} pts in linear window)", flush=True)

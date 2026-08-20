@@ -1,10 +1,10 @@
-"""4-panel comparison plots for the three 1D shock tests.
+"""3-panel comparison plots for the three 1D shock tests.
 
 LUNA (PLM + MUSCL-Hancock + minmod, HLLC) at Nx ∈ {256, 512, 1024, 2048}
 vs AthenaK PPMX (RK2) at Nx=8192 as the high-resolution reference.
 
-For each of Sod / Shu-Osher / Woodward-Colella we plot density, velocity,
-pressure, and specific internal energy as functions of x.
+For each of Sod / Shu-Osher / Woodward-Colella we plot density, velocity
+and pressure as functions of x, in one row.
 """
 from pathlib import Path
 import numpy as np
@@ -52,10 +52,6 @@ AK_REF_DIR = Path("reference/athenak")
 # Woodward-Colella use the standard γ=1.4.
 
 
-def _internal_energy(rho, P, gamma):
-    return P / ((gamma - 1.0) * rho)
-
-
 def plot_one(problem_name, params):
     slug    = params["slug"]
     t_end   = params["t_end"]
@@ -83,12 +79,13 @@ def plot_one(problem_name, params):
     out_template = f"snapshots/{slug}_Nx{{}}"
     results = sweep(base, "Nx", NX_SCAN, output_dir_template=out_template)
 
-    fig, axes = plt.subplots(2, 2, figsize=(FIGSIZE[0]*2*0.6, FIGSIZE[1]*2*0.6), sharex=True)
+    # One row of three; house style is (N*W, H) for an N-column multipanel.
+    fig, axes = plt.subplots(1, 3, figsize=(FIGSIZE[0] * 3, FIGSIZE[1]),
+                             sharex=True)
     panels = [
-        (axes[0, 0], "rho",   "density"),
-        (axes[0, 1], "vx",    r"$v_x$"),
-        (axes[1, 0], "P",     "pressure"),
-        (axes[1, 1], "e_int", "internal energy"),
+        (axes[0], "rho", "density"),
+        (axes[1], "vx",  r"$v_x$"),
+        (axes[2], "P",   "pressure"),
     ]
 
     # AthenaK PPMX 8192 reference (load .bin via bin_convert; physical x in
@@ -97,9 +94,7 @@ def plot_one(problem_name, params):
     if ak_path.is_file():
         try:
             ref = load_ak(ak_path, gamma=gam)
-            ref_e = _internal_energy(ref["rho"], ref["P"], gam)
-            ref_fields = {"rho": ref["rho"], "vx": ref["vx"],
-                          "P": ref["P"], "e_int": ref_e}
+            ref_fields = {"rho": ref["rho"], "vx": ref["vx"], "P": ref["P"]}
             for ax, key, _ in panels:
                 ax.plot(ref["x"], ref_fields[key], "k-", lw=2.0,
                         label="AthenaK PPMX (Nx=8192)")
@@ -108,17 +103,11 @@ def plot_one(problem_name, params):
     else:
         print(f"Note: no AthenaK reference at {ak_path} — LUNA-only plot.")
 
-    # LUNA curves. NOTE: LUNA's snap["e_int"] is internal energy DENSITY
-    # (P/(γ-1)), not specific internal energy — recompute specific to match
-    # the AthenaK panel above.
     cmap = plt.get_cmap("viridis")
     for i, (Nx, outdir) in enumerate(results):
         snap = read_snapshot(latest_snapshot_dir(outdir))
         x_phys = snap["x"] + x_min  # shift to physical domain
-        gamma = snap["gamma"]
-        e_int = _internal_energy(snap["rho"], snap["P"], gamma)
-        fields = {"rho": snap["rho"], "vx": snap["vx"],
-                  "P": snap["P"], "e_int": e_int}
+        fields = {"rho": snap["rho"], "vx": snap["vx"], "P": snap["P"]}
         color = cmap(0.15 + 0.7 * i / max(1, len(results) - 1))
         for ax, key, _ in panels:
             ax.plot(x_phys, fields[key], color=color, lw=1.0,
@@ -126,17 +115,16 @@ def plot_one(problem_name, params):
 
     for ax, _, label in panels:
         ax.set_ylabel(label)
+        ax.set_xlabel("x")          # every panel is on the bottom row now
         decorate(ax)
-    axes[1, 0].set_xlabel("x")
-    axes[1, 1].set_xlabel("x")
     # Woodward-Colella: top-left (clear there); Sod / Shu-Osher: bottom-left
     leg_loc = "upper left" if slug == "woodward_colella" else "lower left"
-    axes[0, 0].legend(loc=leg_loc, fontsize=8, handlelength=1.2,
-                      labelspacing=0.3, borderaxespad=0.3)
+    axes[0].legend(loc=leg_loc, fontsize=10, handlelength=1.2,
+                   labelspacing=0.3, borderaxespad=0.3)
 
     fig.tight_layout()
-    fname_pdf = f"figures/shock_panels_{slug}.pdf"
-    fname_png = f"figures/shock_panels_{slug}.png"
+    fname_pdf = f"code_paper_figs/shock_panels_{slug}.pdf"
+    fname_png = f"code_paper_figs/shock_panels_{slug}.png"
     save(fig, fname_pdf, also_png=True, close=True)
     print(f"Saved {fname_pdf} and {fname_png}")
 

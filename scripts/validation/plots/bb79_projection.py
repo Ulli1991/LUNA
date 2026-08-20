@@ -119,7 +119,7 @@ def main():
     plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10} \Sigma$")
     fig.tight_layout()
     Nx_luna = Sigma_L.shape[0]   # LUNA column density is (Nx, Ny)
-    out = f"figures/arepo_vs_luna_bb79_projection_Nx{Nx_luna}.png"
+    out = f"code_paper_figs/arepo_vs_luna_bb79_projection_Nx{Nx_luna}.png"
     save(fig, out, close=True)
     print(f"  wrote {out}")
 

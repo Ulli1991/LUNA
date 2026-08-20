@@ -180,7 +180,7 @@ def main():
     strong = collect("strong", AMD_STRONG, A100_STRONG)
     weak_sat = collect("weak_sat", SAT_WEAK, [])   # saturated ladder, MI300A only
 
-    os.makedirs("figures", exist_ok=True)
+    os.makedirs("code_paper_figs", exist_ok=True)
     os.makedirs("code_paper_figs", exist_ok=True)
     with open("code_paper_figs/scaling_fp64_amd_data.csv", "w") as fh:
         fh.write("test,Nx,GPUs,LUNA_MI300A,AthenaK_MI300A,LUNA_A100,AthenaK_A100\n")

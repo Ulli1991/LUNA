@@ -29,9 +29,9 @@ def _save_emergence_montage(panel0, panel0_lab, panel0_cmap, frames, fracs,
     for a in ax:
         a.grid(False); a.set_xticks([]); a.set_yticks([])
     fig.tight_layout()
-    os.makedirs("figures", exist_ok=True)
+    os.makedirs("code_paper_figs", exist_ok=True)
     safe = label.replace(" ", "").replace("/", "_").split(".")[0]
-    out = f"figures/autodiff_luna_emergence_{driver}_{safe}_Nx{Nx}.png"
+    out = f"code_paper_figs/autodiff_luna_emergence_{driver}_{safe}_Nx{Nx}.png"
     fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}", flush=True)
 
@@ -77,8 +77,8 @@ def _save_eta_recovery_figure(its, Ls, etaM, etaE, eta_true, fd_rel, res, cfg):
     decorate(ax[1])
 
     fig.tight_layout()
-    os.makedirs("figures", exist_ok=True)
-    out = f"figures/autodiff_eta_recovery_Nx{cfg.Nx}.png"
+    os.makedirs("code_paper_figs", exist_ok=True)
+    out = f"code_paper_figs/autodiff_eta_recovery_Nx{cfg.Nx}.png"
     fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}", flush=True)
 
@@ -130,7 +130,7 @@ def _save_inversion_figure(delta_true, delta_est, rk, res, cfg):
     decorate(ax[2])
     for a in ax:                       # equal-sized square panels
         a.set_box_aspect(1)
-    os.makedirs("figures", exist_ok=True)
+    os.makedirs("code_paper_figs", exist_ok=True)
     # tag by test problem AND dominant physics so the turbulence / self-gravity /
     # radiative-cooling / sedov inversions don't overwrite each other (the
     # gravity and cooling cases both reuse the uniform Jeans-box IC).
@@ -141,7 +141,7 @@ def _save_inversion_figure(delta_true, delta_est, rk, res, cfg):
         tag, label = base + "_selfgrav", f"{getattr(cfg,'test_problem','')} + self-gravity"
     else:
         tag, label = base, str(getattr(cfg, "test_problem", ""))
-    out = f"figures/autodiff_ic_inversion_{tag}_Nx{cfg.Nx}.png"
+    out = f"code_paper_figs/autodiff_ic_inversion_{tag}_Nx{cfg.Nx}.png"
     fig.tight_layout(); fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}", flush=True)
 
@@ -159,7 +159,7 @@ def _save_corrector_figure(c_plain, c_corr, snap_ref, snap_plain, snap_corr,
     import matplotlib.pyplot as plt
     from utils.figstyle import apply_style, decorate, FIGSIZE
     apply_style()
-    os.makedirs("figures", exist_ok=True)
+    os.makedirs("code_paper_figs", exist_ok=True)
     rows = [("coarse", snap_plain), ("coarse + CNN", snap_corr),
             ("reference", snap_ref)]
 
@@ -194,7 +194,7 @@ def _save_corrector_figure(c_plain, c_corr, snap_ref, snap_plain, snap_corr,
                 if c == 0:
                     a.set_ylabel(rlab)
         fig.tight_layout()
-        out = f"figures/autodiff_corrector_{name}_Nc{cfg.Nx}.png"
+        out = f"code_paper_figs/autodiff_corrector_{name}_Nc{cfg.Nx}.png"
         fig.savefig(out); plt.close(fig)
         print(f"  wrote {out}", flush=True)
 
@@ -211,6 +211,6 @@ def _save_corrector_figure(c_plain, c_corr, snap_ref, snap_plain, snap_corr,
     a.set_xlabel("time"); a.set_ylabel("density MSE vs reference")
     a.legend(loc="lower right"); decorate(a)
     fig.tight_layout()
-    out = f"figures/autodiff_corrector_mse_Nc{cfg.Nx}.png"
+    out = f"code_paper_figs/autodiff_corrector_mse_Nc{cfg.Nx}.png"
     fig.savefig(out); plt.close(fig)
     print(f"  wrote {out}", flush=True)

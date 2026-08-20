@@ -97,8 +97,8 @@ def main():
     ax[1].legend(loc="best")
     decorate(ax[1])
     fig.tight_layout()
-    os.makedirs("figures", exist_ok=True)
-    figpath = f"figures/poisson_accuracy_Nx{N}.png"
+    os.makedirs("code_paper_figs", exist_ok=True)
+    figpath = f"code_paper_figs/poisson_accuracy_Nx{N}.png"
     fig.savefig(figpath)
     print(f"RESULT poisson: ratio(prod n_extra=5)={ratios[sweep.index(5)]:.4f} "
           f"ratio(n_extra=80)={ratios[-1]:.4f}", flush=True)

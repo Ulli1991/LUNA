@@ -82,7 +82,7 @@ def main():
     cax = fig.add_axes([0.92, 0.12, 0.018, 0.76])
     if im is not None:
         fig.colorbar(im, cax=cax, label=r"$\log_{10}\,\Sigma$")
-    out = "figures/bb79_seren_fig13.png"
+    out = "code_paper_figs/bb79_seren_fig13.png"
     save(fig, out)
     print(f"  wrote {out}")
 

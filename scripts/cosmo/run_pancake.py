@@ -104,7 +104,7 @@ def main_run():
             pass
         from utils.figstyle import decorate
         x = fin["x"]
-        os.makedirs("figures", exist_ok=True)
+        os.makedirs("code_paper_figs", exist_ok=True)
         # save the plot data so the figure can be restyled without re-running
         np.savez("code_paper_figs/zeldovich_pancake_data.npz",
                  x=x, rho_ana=fin["rho_ana"], rho_num=fin["rho_num"],
@@ -133,7 +133,7 @@ def main_run():
         axl.set_yscale("log"); axl.invert_xaxis()
         axl.set_xlabel("redshift $z$"); axl.set_ylabel(r"$L_1$ vs analytic")
         axl.legend(frameon=False, loc="upper left"); decorate(axl)
-        fig.savefig("figures/zeldovich_pancake_main.png", dpi=200, bbox_inches="tight")
+        fig.savefig("code_paper_figs/zeldovich_pancake_main.png", dpi=200, bbox_inches="tight")
         print("# wrote figures/zeldovich_pancake_main.png")
     except Exception as e:
         print(f"# plot skipped: {e}")

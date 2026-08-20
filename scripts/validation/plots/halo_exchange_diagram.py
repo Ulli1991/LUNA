@@ -186,7 +186,7 @@ def main():
     panel_c(axes[1, 0])
     panel_d(axes[1, 1])
     fig.tight_layout(pad=1.5)
-    out = "figures/halo_exchange_shardmap.png"
+    out = "code_paper_figs/halo_exchange_shardmap.png"
     save(fig, out, dpi=150, close=True)
     print(f"wrote {out}")
 

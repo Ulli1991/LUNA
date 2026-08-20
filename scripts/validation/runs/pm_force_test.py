@@ -90,7 +90,7 @@ print(f"  force/Newtonian: at r=2dx {np.interp(2,r_dx,ratio):.3f}, "
 print(f"  ~half-force radius (effective softening) ~ {half:.2f} cells", flush=True)
 
 # ---- figure 1: two-body force vs 1/r^2 ----
-os.makedirs("figures", exist_ok=True)
+os.makedirs("code_paper_figs", exist_ok=True)
 fig, ax = plt.subplots(1, 2, figsize=(10, 4))
 ax[0].loglog(r_dx, f_pm, 'o-', ms=4, label='LUNA PM force')
 ax[0].loglog(r_dx, f_newt, 'k--', label=r'Newtonian $Gm/r^2$')
@@ -102,7 +102,7 @@ ax[1].axvline(2, color='grey', ls=':', lw=0.8)
 ax[1].set_xlabel('separation $r$ [cells]'); ax[1].set_ylabel('PM / Newtonian')
 ax[1].set_ylim(0, 1.3); ax[1].set_title('force ratio (1 = exact $1/r^2$)')
 fig.tight_layout()
-out1 = f"figures/pm_force_1overr2_Nx{Nx}.png"
+out1 = f"code_paper_figs/pm_force_1overr2_Nx{Nx}.png"
 fig.savefig(out1, dpi=130); plt.close(fig); print(f"  wrote {out1}", flush=True)
 
 # ---- figure 2: CIC self-force cancellation ----
@@ -116,7 +116,7 @@ ax.set_ylabel(r'$|\mathbf{F}_{\rm self}| \, / \, (Gm/\Delta x^2)$')
 ax.set_title('CIC self-force cancellation')
 ax.legend(frameon=False); ax.grid(True, which='both', alpha=0.3)
 fig.tight_layout()
-out2 = f"figures/pm_self_force_Nx{Nx}.png"
+out2 = f"code_paper_figs/pm_self_force_Nx{Nx}.png"
 fig.savefig(out2, dpi=130); plt.close(fig); print(f"  wrote {out2}", flush=True)
 
 np.savez(f"code_paper_figs/pm_force_test_Nx{Nx}.npz", r_dx=r_dx, f_pm=f_pm, f_newt=f_newt,

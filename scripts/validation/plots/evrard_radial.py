@@ -127,7 +127,7 @@ def main():
     for ax in axes.flat:
         decorate(ax)
 
-    out = "figures/evrard_radial.png"
+    out = "code_paper_figs/evrard_radial.png"
     save(fig, out, bbox_inches="tight")
     print(f"Saved {out}")
 

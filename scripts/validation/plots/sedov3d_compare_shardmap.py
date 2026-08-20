@@ -78,7 +78,7 @@ def main():
     for ax in axes:
         decorate(ax)
 
-    out = f"figures/sedov_shardmap_vs_baseline_Nx{base['Nx']}.png"
+    out = f"code_paper_figs/sedov_shardmap_vs_baseline_Nx{base['Nx']}.png"
     save(fig, out, bbox_inches="tight")
     print(f"Saved {out}")
 

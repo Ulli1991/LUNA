@@ -59,7 +59,7 @@ def main():
 
     fig.tight_layout()
     Nx_luna = S_iso.shape[0]   # column density is (Nx, Ny)
-    out = f"figures/bb79_iso_vs_periodic_diagnostic_Nx{Nx_luna}.png"
+    out = f"code_paper_figs/bb79_iso_vs_periodic_diagnostic_Nx{Nx_luna}.png"
     save(fig, out, close=True)
     print(f"  wrote {out}")
 

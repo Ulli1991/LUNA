@@ -203,7 +203,7 @@ def main():
         ax.tick_params(which="major", labelsize=8, length=3.0)
         ax.tick_params(which="minor", length=1.8)
     figR.tight_layout()
-    save(figR, "figures/sedov3d_radial.pdf", also_png=True)
+    save(figR, "code_paper_figs/sedov3d_radial.pdf", also_png=True)
 
     # === Figure 2: R_s(t) + column density projection ===
     fig, (axR, axS) = plt.subplots(1, 2, figsize=(FIGSIZE[0]*2, FIGSIZE[1]))
@@ -226,7 +226,7 @@ def main():
 
     fig.tight_layout()
     Nx_fig = final["Nx"]
-    save(fig, f"figures/sedov3d_Nx{Nx_fig}.pdf", also_png=True)
+    save(fig, f"code_paper_figs/sedov3d_Nx{Nx_fig}.pdf", also_png=True)
     print(f"Saved figures/sedov3d_Nx{Nx_fig}.{{pdf,png}}")
     print(f"R_s (sim, final) = {R_sim[-1]:.2f} pc")
     print(f"R_s (analytic, final) = {R_s_analytic_pc:.2f} pc")

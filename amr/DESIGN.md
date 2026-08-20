@@ -1,10 +1,37 @@
 # LUNA block-structured AMR — design note
 
 Status: **active** (merged to main). This is the LUNA-native, dimension-generic
-block-AMR layer. The working core of JAX-AMR (vendored read-only under
-`third_party/jaxamr/`, MIT) was extracted and reworked here — LUNA owns and
-maintains all shipped AMR code; the vendored original is attribution + the
-cross-validation reference for the geometry tests, not a dependency.
+block-AMR layer.
+
+## Credit — JAX-AMR
+
+LUNA's AMR is built on the **JAX-AMR** framework of **Haocheng Wen** and
+**Faxuan Luo** (MIT licence):
+
+- repository: https://github.com/JA4S/JAX-AMR
+- paper: https://doi.org/10.48550/arXiv.2504.13750
+- installable directly: `pip install git+https://github.com/JA4S/JAX-AMR.git`
+
+**What LUNA took from them** — the design of the whole block layer:
+
+- adaptive refinement as *dynamically updated multi-layer blocks at fixed
+  positions with fixed shapes*, which is what makes the scheme JIT- and
+  vmap-compatible instead of ragged;
+- the fixed-shape + masking discipline that keeps every AMR operation a
+  dense, shape-stable array op;
+- the trailing **NaN sentinel block** convention, where ghost cells with no
+  neighbour block gather from an all-NaN block and are filtered downstream
+  (`jnp.nanmax` rather than `jnp.max`, etc.);
+- the refine/coarsen bookkeeping and prolong/restrict semantics that LUNA's
+  `geometry.prolong` / `geometry.restrict` reproduce — validated against
+  their implementation to 1e-12 in `tests/test_amr_geometry.py`.
+
+LUNA re-implements this bookkeeping rather than importing it (see "What we
+changed" below), but the framework it re-implements is theirs.
+
+Their code is **not** vendored in this repo. A read-only reference copy lives
+outside the tree at `$LUNA_JAXAMR` (default `~/jaxamr`), used only by the
+geometry parity test, which skips cleanly when it is absent.
 
 ## Locked decisions
 
@@ -45,7 +72,7 @@ cross-validation reference for the geometry tests, not a dependency.
 - **Block identity**: integer block-coords per level → **Morton code** (interleave
   `ndim` bits/level). O(N log N) sort/searchsorted for neighbour finding and for
   matching unaltered blocks across re-adaptation. (Upstream used an O(N²) pairwise
-  compare — `compare_coords` in `third_party/jaxamr/amr.py`.)
+  compare — `compare_coords` in upstream `jaxamr/amr.py`.)
 - **NaN sentinel block**: the last slot of each level's padded block array is a
   NaN block (invalid-ghost source). All reductions are nan-aware (`nanmax`/`nansum`).
 - **Ghost halo** width `g` matches LUNA hydro's stencil need. Fill order per face:

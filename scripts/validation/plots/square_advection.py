@@ -73,7 +73,7 @@ def main():
             ax.set_yticklabels([])
 
     fig.tight_layout()
-    save(fig, f"figures/square_advection_Nx{NX}.pdf", also_png=True)
+    save(fig, f"code_paper_figs/square_advection_Nx{NX}.pdf", also_png=True)
     print(f"Saved figures/square_advection_Nx{NX}.{{pdf,png}}")
 
 

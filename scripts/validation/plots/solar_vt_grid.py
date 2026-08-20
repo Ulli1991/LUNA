@@ -169,10 +169,10 @@ def main():
 
     _plot_grid("drho_abs",
                r"$\delta\rho = \rho - \rho_{\rm eq}$",
-               "figures/solar_vt_drho_grid", runs)
+               "code_paper_figs/solar_vt_drho_grid", runs)
     _plot_grid("dT_abs",
                r"$\delta T = T - T_{\rm eq}$",
-               "figures/solar_vt_dT_grid", runs)
+               "code_paper_figs/solar_vt_dT_grid", runs)
 
 
 if __name__ == "__main__":

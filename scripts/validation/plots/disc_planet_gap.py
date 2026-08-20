@@ -97,7 +97,7 @@ def main():
     decorate(ax[1])
 
     fig.tight_layout()
-    out = f"figures/disc_planet_gap{m}.png"
+    out = f"code_paper_figs/disc_planet_gap{m}.png"
     save(fig, out, close=True)
     print(f"wrote {out}  (final t={last['t']:.2f} = {n_orb_last:.1f} orbits)")
 

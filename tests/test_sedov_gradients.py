@@ -142,8 +142,8 @@ def _save_figure(obs_keys, J_ad, J_fd, v0, cfg, t_end):
     decorate(ax[1])
 
     fig.tight_layout()
-    os.makedirs("figures", exist_ok=True)
-    out = "figures/autodiff_sedov_validation.png"
+    os.makedirs("code_paper_figs", exist_ok=True)
+    out = "code_paper_figs/autodiff_sedov_validation.png"
     fig.savefig(out)
     print(f"max|AD-analytic|={float(np.max(np.abs(ad - an))):.3e}  "
           f"max|AD-FD|={float(np.max(abserr)):.3e}  ->  {out}", flush=True)

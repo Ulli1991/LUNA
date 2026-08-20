@@ -182,10 +182,10 @@ def compare_test(name, arepo_subdir, luna_subdir, target_t, out_path):
 
 def main():
     tests = [
-        ("Evrard",     "evrard_3d",            "evrard_Nx64",          0.80, "figures/arepo_vs_luna_evrard.png"),
-        ("BE sub",     "bonnor_ebert_3d_sub",  "be_xi5.0_Nx64",        3.00, "figures/arepo_vs_luna_be_sub.png"),
-        ("BE super",   "bonnor_ebert_3d_super","be_xi10.0_Nx64",       3.00, "figures/arepo_vs_luna_be_super.png"),
-        ("BB79",       "bb79_3d",              "bb_Nx64",              2.00, "figures/arepo_vs_luna_bb79.png"),
+        ("Evrard",     "evrard_3d",            "evrard_Nx64",          0.80, "code_paper_figs/arepo_vs_luna_evrard.png"),
+        ("BE sub",     "bonnor_ebert_3d_sub",  "be_xi5.0_Nx64",        3.00, "code_paper_figs/arepo_vs_luna_be_sub.png"),
+        ("BE super",   "bonnor_ebert_3d_super","be_xi10.0_Nx64",       3.00, "code_paper_figs/arepo_vs_luna_be_super.png"),
+        ("BB79",       "bb79_3d",              "bb_Nx64",              2.00, "code_paper_figs/arepo_vs_luna_bb79.png"),
     ]
     for name, arepo, luna, t, out in tests:
         compare_test(name, arepo, luna, t, out)

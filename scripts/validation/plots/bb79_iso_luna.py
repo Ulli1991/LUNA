@@ -35,7 +35,7 @@ def main():
     ax.set_xlabel("x [pc]"); ax.set_ylabel("y [pc]")
     plt.colorbar(im, ax=ax, shrink=0.85, label=r"$\log_{10}\,\Sigma$")
     fig.tight_layout()
-    out = f"figures/bb79_256_column_density_Nx{S256.shape[0]}.png"
+    out = f"code_paper_figs/bb79_256_column_density_Nx{S256.shape[0]}.png"
     save(fig, out, close=True)
     print(f"  wrote {out}")
 

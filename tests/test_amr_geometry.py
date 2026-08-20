@@ -159,10 +159,17 @@ def test_refinement_mask_nan_block_flags_nothing():
 
 
 # --------------------------------------------------------------------------
-# 2D parity vs vendored upstream JAX-AMR
+# 2D parity vs upstream JAX-AMR (Wen & Luo, https://github.com/JA4S/JAX-AMR)
+#
+# Upstream is NOT vendored in this repo. Point $LUNA_JAXAMR at a checkout (or
+# put one at ~/jaxamr, or pip install it) to run this test; it skips otherwise.
 # --------------------------------------------------------------------------
 def _load_upstream():
-    sys.path.insert(0, os.path.join(_REPO, "third_party"))
+    ext = os.environ.get("LUNA_JAXAMR", os.path.expanduser("~/jaxamr"))
+    # $LUNA_JAXAMR may be the package dir itself or its parent.
+    for cand in (os.path.dirname(os.path.abspath(ext)), ext):
+        if cand not in sys.path:
+            sys.path.insert(0, cand)
     from jaxamr import amr as upstream  # noqa: E402
     return upstream
 

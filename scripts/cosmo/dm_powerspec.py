@@ -72,7 +72,7 @@ def main():
         rho = np.asarray(f["rho_dm"], np.float64)
         box = float(np.asarray(f.attrs["BoxSize"]).reshape(-1)[0])
         k, P = pk_from_grid(rho, box, deconv_cic=False)    # rho_dm already CIC-deposited by LUNA
-        np.savez("figures/pk_luna.npz", k=k, P=P, box=box)
+        np.savez("code_paper_figs/pk_luna.npz", k=k, P=P, box=box)
         print(f"LUNA P(k): {len(k)} bins, k=[{k.min():.3e},{k.max():.3e}] h/Mpc-ish")
     elif mode in ("arepo", "parts"):
         # Generic Gadget/Arepo PartType1 snapshot (works for both Arepo and the
@@ -85,7 +85,7 @@ def main():
             out = sys.argv[3]
             Ng = int(sys.argv[4]) if len(sys.argv) > 4 else 512
         else:
-            out = "figures/pk_arepo.npz"
+            out = "code_paper_figs/pk_arepo.npz"
             Ng = int(sys.argv[3]) if len(sys.argv) > 3 else 512
         rho = _cic(pos, box, Ng)
         k, P = pk_from_grid(rho, box, deconv_cic=True)   # same estimator both sides
@@ -106,7 +106,7 @@ def main():
         ax[1].semilogx(A["k"], A["P"] / Pi, 'o-', ms=3); ax[1].axhline(1, color='k', ls='--')
         ax[1].set_xlabel('k'); ax[1].set_ylabel('Arepo / LUNA'); ax[1].set_ylim(0.7, 1.3)
         ax[1].set_title('ratio')
-        fig.tight_layout(); fig.savefig("figures/dm_powerspec_luna_vs_arepo.png", dpi=130)
+        fig.tight_layout(); fig.savefig("code_paper_figs/dm_powerspec_luna_vs_arepo.png", dpi=130)
         print("wrote figures/dm_powerspec_luna_vs_arepo.png")
     else:
         print(__doc__)
