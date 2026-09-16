@@ -21,7 +21,7 @@ plt = mpl(style=False)
 from matplotlib.colors import LogNorm
 from utils.figstyle import apply_style, decorate, FIGSIZE
 
-LUNA = "snapshots/cosmo_dm_l9_512/snap_a1.0001.hdf5"
+LUNA = os.environ.get("LUNA_DM_SNAP", "snapshots/cosmo_dm_l9_512/snap_a1.0001.hdf5")
 AREPO = os.environ.get("LUNA_AREPO_DM_SNAP",
                        "/ptmp/uli/arepo/cosmo_l9_dmo/snap_003.hdf5")
 OUT = "code_paper_figs"
@@ -78,8 +78,8 @@ def powerspec():
     """fig33: P(k) overlay + Arepo/LUNA ratio (npz from dm_powerspec parts mode)."""
     L = np.load("code_paper_figs/pk_luna_dmo.npz")
     A = np.load("code_paper_figs/pk_arepo_dmo.npz")
-    kL, PL = L["k"], L["P"]
-    kA, PA = A["k"], A["P"]
+    kL, PL = L["k"] * 1e3, L["P"] / 1e9      # snapshot units kpc/h -> h/Mpc, (Mpc/h)^3
+    kA, PA = A["k"] * 1e3, A["P"] / 1e9
     PLi = np.interp(kA, kL, PL)
 
     fig, ax = plt.subplots(1, 2, figsize=(2 * FIGSIZE[0] * 0.92, FIGSIZE[1]))

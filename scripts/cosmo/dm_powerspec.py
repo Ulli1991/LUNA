@@ -17,22 +17,23 @@ import numpy as np
 
 
 def _cic(pos, box, Ng):
-    """CIC-deposit particles (N,3) in [0,box) onto an Ng^3 grid (counts)."""
+    """CIC-deposit particles (N,3) in [0,box) onto an Ng^3 grid (counts).
+    bincount over flattened corner indices: ~20x faster than np.add.at."""
     f = (pos / box) * Ng
     i = np.floor(f).astype(np.int64)
-    d = f - i
-    rho = np.zeros((Ng, Ng, Ng), np.float64)
+    d = (f - i).astype(np.float32)
+    del f
+    rho = np.zeros(Ng ** 3, np.float64)
     for dx in (0, 1):
         for dy in (0, 1):
             for dz in (0, 1):
                 w = ((d[:, 0] if dx else 1 - d[:, 0]) *
                      (d[:, 1] if dy else 1 - d[:, 1]) *
                      (d[:, 2] if dz else 1 - d[:, 2]))
-                ii = (i[:, 0] + dx) % Ng
-                jj = (i[:, 1] + dy) % Ng
-                kk = (i[:, 2] + dz) % Ng
-                np.add.at(rho, (ii, jj, kk), w)
-    return rho
+                idx = ((((i[:, 0] + dx) % Ng) * Ng + (i[:, 1] + dy) % Ng) * Ng
+                       + (i[:, 2] + dz) % Ng)
+                rho += np.bincount(idx, weights=w, minlength=Ng ** 3)
+    return rho.reshape(Ng, Ng, Ng)
 
 
 def pk_from_grid(rho, box, deconv_cic=True):
