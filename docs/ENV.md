@@ -29,7 +29,7 @@ themselves and are not listed here.
 | `LUNA_AMR_HALO_MODE` | `sparse` | `sparse` / `gather` / `ring` | Halo/seam exchange strategy when sharded. `sparse` = host-built per-device-pair `all_to_all` plans, O(surface) wire (benched fastest AND lowest memory). `gather` = plain `all_gather`. `ring` = chunked ring gather for OOM-scale hierarchies. |
 | `LUNA_AMR_HALO_RING` | `auto` | `auto` / `0` / `1` | Force the ring gather on/off; `auto` engages it when a full gather would exceed the threshold below. |
 | `LUNA_AMR_HALO_RING_GB` | `16` | float (GB) | Gather-size threshold for the auto ring gate. |
-| `LUNA_AMR_REFLUX` | `repl` | `repl` / `sharded` / `iface` | Coarse-fine reflux mode: replicated wrapper (default), explicit-psum distributed, or plan-routed interface flux (`iface` is opt-in: +23% at the 8-GPU rung, but a 2-process hang is still unresolved). |
+| `LUNA_AMR_REFLUX` | `repl` | `repl` / `sharded` / `iface` | Coarse-fine reflux mode: replicated wrapper (default), explicit-psum distributed, or plan-routed interface flux (`iface` is opt-in: +23% at the 8-GPU run, but a 2-process hang is still unresolved). |
 | `LUNA_AMR_NO_SHRINK` | off | `1` | Freeze the hysteretic pow2 capacity ladder (no shrink-triggered recompiles); costs padded memory. `amr/driver.py`. |
 
 ## Block-AMR debugging

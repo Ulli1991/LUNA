@@ -1,6 +1,6 @@
 """Multi-GPU slab-kernel roofline: time the sharded PM kernels in isolation
 (deposit_slab / FMG shardmap cold & warm / grad+gather / particle exchange)
-to localize the multi-GPU slowdown seen in the l10 rung. Synthetic lattice
+to localize the multi-GPU slowdown seen in the l10 run. Synthetic lattice
 particles (kernel timing is IC-independent, and it skips the IC read).
 
   LUNA_GRAV_NX     global mesh per side (= particles per side)

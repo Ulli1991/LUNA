@@ -324,12 +324,15 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     prec = gravity_precision_from_config(cfg)
     mixed = prec.cycle_mixed
     set_mg_mixed(mixed)          # same precision policy inside the sharded solve
-    if prec.fixed_deposit and is_main_process:
-        print("[cosmo-dm] NOTE: gravity_deposit_fixed is not wired into the "
-              "block-sharded deposit yet; using the float scatter.")
+    # Fixed-point deposit: mass is conserved, so the integer unit (global mean
+    # density) is a constant -- pass it in and the kernel skips its psum.
+    dep_fixed = prec.fixed_int if prec.fixed_deposit else None
+    mass_unit = float(np.sum(np.asarray(ic.mass))) / (box ** 3)
     eps_soft = softening_from_config(cfg, dx)
     cap = float(getattr(cfg, "dm_capacity_factor", 1.5))
     resort_every = int(getattr(cfg, "dm_resort_every", 4))  # in EXCHANGES
+    # 0 = derive the face buffer from the block surface (see _face_capacity).
+    fcf = float(getattr(cfg, "dm_face_capacity_factor", 0.0)) or None
 
     posS, pS, massS, actS, C = assemble_blocks_sharded(
         np.asarray(ic.pos), np.asarray(ic.vel) * (a ** 1.5),
@@ -415,7 +418,8 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     # cold start via the split path: deposit + stats, FMG solve, close_kick
     # with dtau=0 (p unchanged, returns the opening force).
     rho = cic_deposit_blocks(posS, massS, actS, N, dx, mesh,
-                             dtype=prec.deposit)
+                             dtype=prec.deposit, fixed=dep_fixed,
+                             fixed_bits=prec.fixed_bits, mass_unit=mass_unit)
     delta64, dmax, p2, n_act, m_tot = field_stats(rho, pS, massS, actS)
     psi = _solve(delta64, None)
     pS, g, g2 = close_kick(_grad_gather(psi, posS), pS, actS, 0.0,
@@ -442,14 +446,17 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         posS, p_half = kick_drift(posS, pS, g, dtau)
         if do_ex:
             posS, p_half, massS, actS, n_over = exchange_particles_blocks(
-                posS, p_half, massS, actS, N, dx, box, mesh)
+                posS, p_half, massS, actS, N, dx, box, mesh,
+                face_capacity_factor=fcf)
         else:
             # cadenced exchange: skip while cumulative drift since the last
             # exchange stays inside the one-ghost-cell margin the deposit
             # and gather tolerate (halo-margin ownership, HACC-style).
             n_over = 0
         rho = cic_deposit_blocks(posS, massS, actS, N, dx, mesh,
-                                 dtype=prec.deposit)
+                                 dtype=prec.deposit, fixed=dep_fixed,
+                                 fixed_bits=prec.fixed_bits,
+                                 mass_unit=mass_unit)
         delta64, dmax, p2, n_act, m_tot = field_stats(rho, p_half, massS,
                                                       actS)
         # ROCm: an unsynced burst of eager dispatches can wedge the queue
@@ -483,6 +490,12 @@ def _run_blocks(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
                 f"[cosmo-dm] block exchange conservation violated at step "
                 f"{step}: overflow={int(n_over)}, n_active {int(n_act)} vs "
                 f"{n_act0}, mass {float(m_tot):.15e} vs {m_tot0:.15e}")
+        if prec.fixed_deposit and 1.0 + float(dmax) > 0.5 * _fixed_ceiling(prec):
+            raise RuntimeError(
+                f"fixed-point deposit: 1+delta_max = {1 + float(dmax):.0f} is "
+                f"within 2x of the integer ceiling {_fixed_ceiling(prec):.0f} "
+                f"({prec.fixed_int.__name__} at S=2^{prec.fixed_bits}). Use "
+                "gravity_precision='double' (int64).")
         rep.step(step, f"[cosmo-dm] {step:5d} {a:8.4f} {1/a-1:8.4f} "
                  f"{dloga:8.5f} {float(dmax):10.3f}",
                  row=[step, a, dloga, float(dmax)],
@@ -515,6 +528,7 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         cic_deposit_slab, decompose_to_slabs, exchange_particles_slab,
         gather_accel_slab, grad_phi_slab, make_slab_mesh)
     from gravity.poisson_multigrid import _max_levels, solve_poisson_fmg_shardmap
+    from utils.mesh_reduce import flat_reduce
 
     Nx, Ny, Nz = cfg.Nx, cfg.Ny, cfg.Nz
     dx = box / Nx
@@ -552,7 +566,7 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
                 posS, pS, massS, actS, Nx, dx, box, mesh, send_div=8)
             if int(n_bad) == 0:
                 break
-        n_act = int(jnp.sum(actS > 0))
+        n_act = int(flat_reduce(mesh, "sum", (actS > 0).astype(jnp.int32)))
         if n_act != n_total:
             raise RuntimeError(
                 f"[cosmo-dm] IC settle lost particles: {n_act} active vs "
@@ -577,7 +591,23 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     warm = int(getattr(cfg, "dm_warm_vcycles", 0))
     # mean density: the fixed-point deposit's integer unit (mass is conserved,
     # so this is a constant of the run).
-    mass_unit = float(jnp.sum(massS * (actS > 0))) / (box ** 3)
+    mass_unit = float(flat_reduce(mesh, "sum", massS * (actS > 0))) / (box ** 3)
+
+    from functools import partial as _partial
+
+    from jax.experimental.shard_map import shard_map as _shard_map
+    from jax.sharding import PartitionSpec as _P
+
+    @_partial(jax.jit, static_argnames=())
+    @_partial(_shard_map, mesh=mesh, in_specs=(_P("x", "y", "z"),),
+              out_specs=(_P("x", "y", "z"), _P()))
+    def _slab_delta_stats(rho_l):
+        # explicit psum, no GSPMD mean in the step program (auto-shard purge)
+        ssum = jax.lax.psum(jnp.sum(rho_l), ("x", "y", "z"))
+        cnt = jax.lax.psum(jnp.asarray(rho_l.size, rho_l.dtype),
+                           ("x", "y", "z"))
+        delta_l = rho_l / (ssum / cnt) - 1.0
+        return delta_l, jax.lax.pmax(jnp.max(delta_l), ("x", "y", "z"))
 
     def _force(pos, mass, active, a_kick, phi_prev):
         # MUST be jitted by the caller: solve_poisson_fmg_shardmap rebuilds a
@@ -588,7 +618,7 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
                                else None,
                                fixed_bits=prec.fixed_bits,
                                mass_unit=mass_unit)
-        delta = rho / jnp.mean(rho) - 1.0
+        delta, dmax_l = _slab_delta_stats(rho)
         # a_kick is traced under the caller's jit, but the solver needs a
         # concrete fourpiG (it calls float() on it): fold the traced factor
         # into the RHS field and hand the solver a literal 1.0.
@@ -604,7 +634,7 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
                 warm_cycles=max(warm, 1))
         g = grad_phi_slab(phi, dx, mesh, order=4)
         return (gather_accel_slab(g, pos, Nx, Ny, Nz, dx, mesh),
-                jnp.max(delta), phi)
+                dmax_l, phi)
 
     from functools import partial
 
@@ -625,10 +655,11 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
         else:
             g_new, dmax, phi = _force(pos, mass, active, a_kick, None)
         p_new = p_half + g_new * (0.5 * dtau)
-        g2max = jnp.max(jnp.where(active > 0,
-                                  jnp.sum(g_new ** 2, axis=1), 0.0))
-        n_act = jnp.sum(active > 0)
-        m_tot = jnp.sum(mass * (active > 0))
+        g2max = flat_reduce(mesh, "max",
+                            jnp.where(active > 0,
+                                      jnp.sum(g_new ** 2, axis=1), 0.0))
+        n_act = flat_reduce(mesh, "sum", (active > 0).astype(jnp.int32))
+        m_tot = flat_reduce(mesh, "sum", mass * (active > 0))
         return (pos, p_new, g_new, phi, mass, active,
                 dmax, g2max, n_bad, max_occ, n_act, m_tot, n_move)
 
@@ -687,9 +718,11 @@ def _run_slab(cfg, ic, cosmo, H0, box, Om, a, a_end, dloga_max, eta,
     n_bad_tot = 0
     dev_ts = []                            # per-step device wall (see refresh)
     host_every = int(getattr(cfg, "dm_host_every", 1))
-    g2max = float(jnp.max(jnp.where(actS > 0, jnp.sum(g ** 2, axis=1), 0.0)))
-    n_act0 = int(jnp.sum(actS > 0))
-    m_tot0 = float(jnp.sum(massS * (actS > 0)))
+    g2max = float(flat_reduce(mesh, "max",
+                              jnp.where(actS > 0, jnp.sum(g ** 2, axis=1),
+                                        0.0)))
+    n_act0 = int(flat_reduce(mesh, "sum", (actS > 0).astype(jnp.int32)))
+    m_tot0 = float(flat_reduce(mesh, "sum", massS * (actS > 0)))
     t_ref, step_ref = time.time(), 0
     while a < a_end - 1e-9:
         dtau = clock.cap_expansion(dtau_accel(eta, eps_soft, np.sqrt(g2max)),

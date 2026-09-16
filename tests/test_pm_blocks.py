@@ -70,6 +70,18 @@ def test_deposit_matches_periodic_reference():
     assert abs(rho.sum() * DX ** 3 - len(pos)) < 1e-6 * len(pos)
 
 
+def test_fixed_point_deposit_is_exact_in_mass():
+    """The integer scatter must agree with the float one AND carry mass to the
+    bit through both the rounding tree and the ghost fold."""
+    mesh, _, pos, posS, _, massS, actS, _ = _setup()
+    rho_f = np.asarray(cic_deposit_blocks(posS, massS, actS, N, DX, mesh))
+    rho_x = np.asarray(cic_deposit_blocks(
+        posS, massS, actS, N, DX, mesh, dtype=jnp.float32,
+        fixed=jnp.int32, fixed_bits=17)).astype(np.float64)
+    assert abs(rho_x.sum() * DX ** 3 - len(pos)) < 1e-5 * len(pos)
+    assert np.max(np.abs(rho_x - rho_f)) / np.max(np.abs(rho_f)) < 1e-4
+
+
 def test_exchange_conserves_everything():
     mesh, rng, _, posS, pS, massS, actS, C = _setup()
     act = np.asarray(actS) > 0

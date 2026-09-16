@@ -15,8 +15,8 @@ from scripts.validation.plots._plotkit import save
 
 # Weak ladder: grid grows with the GPU count.
 #  A100 : 2048^3 does NOT fit on 64 GPUs in FP64 (134M cells/GPU OOMs on 40GB),
-#         so its rung is at 128 GPUs.
-#  MI300A (128GB): 2048^3 fits at 64 GPUs, and we push a 4096^3 rung at 128.
+#         so its run is at 128 GPUs.
+#  MI300A (128GB): 2048^3 fits at 64 GPUs, and we push a 4096^3 run at 128.
 A100_WEAK = [(32, 1), (64, 2), (128, 4), (256, 8), (512, 16), (1024, 32), (2048, 128)]
 # Original diagonal ladder — truncated at 2048^3 (4096^3 OOMs in FP64 at 128 GPU).
 AMD_WEAK  = [(32, 1), (64, 2), (128, 4), (256, 8), (512, 16), (1024, 32), (2048, 64)]

@@ -340,7 +340,7 @@ def _sized_parents(flags, cpb, bucket, floor=0, cap=0, shrink=True):
     sentinel), or with ``bucket`` set rounded UP onto a pow2 ladder and clamped
     to ``floor`` (bounds jit recompiles). ``cap`` (parent units, 0 = unlimited)
     is a HARD ceiling: excess parents are simply not refined this regrid.
-    ``shrink`` enables a hysteretic one-rung capacity drop when the need falls
+    ``shrink`` enables a hysteretic one-step capacity drop when the need falls
     to <= floor/4 (env ``LUNA_AMR_NO_SHRINK=1`` disables)."""
     import os as _os
     n = int(jnp.sum(flags)) + 1

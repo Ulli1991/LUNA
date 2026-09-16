@@ -30,7 +30,7 @@ from sources.eos_projection import barotropic_project, isothermal_project
 
 
 @jax.jit
-def _diag_reductions(U, gamma):
+def _diag_reductions(U, gamma, mesh=None):
     """Single-pass GPU reductions for periodic-diagnostic prints + history.
 
     Returns (min_rho, min_P, max_speed, max_mach, sum_rho, sum_E).
@@ -47,6 +47,19 @@ def _diag_reductions(U, gamma):
     P = (gamma - 1.0) * (U[-1] - KE)
     cs2 = gamma * P / rho
     mach2 = speed2 / cs2
+    if mesh is not None:
+        # explicit shard_map reductions (auto-shard purge, 2026-08-27): the
+        # derived fields above are elementwise (shard-local); only these six
+        # reductions are collectives.
+        from utils.mesh_reduce import grid_reduce
+        return (
+            grid_reduce(mesh, "min", rho),
+            grid_reduce(mesh, "min", P),
+            jnp.sqrt(grid_reduce(mesh, "max", speed2)),
+            jnp.sqrt(grid_reduce(mesh, "max", mach2)),
+            grid_reduce(mesh, "sum", rho),
+            grid_reduce(mesh, "sum", U[-1]),
+        )
     return (
         jnp.min(rho),
         jnp.min(P),
@@ -329,7 +342,7 @@ def run_simulation_distributed(
         # One GPU reduction every diag_interval steps. ~negligible cost.
         if cfg.enable_diagnostics and step % cfg.diag_interval == 0:
             min_rho, min_P, max_speed, max_mach, sum_rho, sum_E = _diag_reductions(
-                U_sharded, cfg.gamma
+                U_sharded, cfg.gamma, mesh=sharding.mesh
             )
             mr = float(min_rho)
             mp = float(min_P)

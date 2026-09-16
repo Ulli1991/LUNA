@@ -199,7 +199,7 @@ geometry parity test, which skips cleanly when it is absent.
 - **Reflux** — `LUNA_AMR_REFLUX`: `repl` (replicated wrapper, default),
   `sharded` (explicit-psum distributed, `apply_reflux_sharded`), `iface`
   (plan-routed interface flux, `apply_reflux_iface` + `build_reflux_plan`;
-  +23% at the 8-GPU AMR rung, opt-in until a 2-process hang is root-caused).
+  +23% at the 8-GPU AMR run, opt-in until a 2-process hang is root-caused).
 - Debug knobs: `LUNA_AMR_SHARD_DBG` (per-proc memory), `LUNA_AMR_LOOP_DBG`
   (per-op loop + per-level regrid trace), `LUNA_AMR_NO_SHRINK` (freeze the
   hysteretic capacity ladder).

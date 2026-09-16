@@ -432,7 +432,8 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     coeff_fac = poisson_coeff_fac(Om, H0)
     cap = float(getattr(cfg, "dm_capacity_factor", 1.5))
     eps_soft = softening_from_config(cfg, dx)
-    rho_bar = float(jnp.mean(U[0]))
+    from utils.mesh_reduce import flat_reduce, grid_mean, grid_reduce
+    rho_bar = float(grid_mean(mesh, U[0]))
     rho_floor = float(getattr(cfg, "cosmo_rho_floor", 0.0)) * rho_bar
     v_max = float(getattr(cfg, "cosmo_vmax", 0.0))           # |v~| ceiling (0 = off)
     T_max = float(getattr(cfg, "cosmo_Tmax", 0.0))           # temperature ceiling [K] (0 = off)
@@ -447,7 +448,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
             [np.asarray(dm_pos), np.asarray(dm_p), np.asarray(dm_mass)],
             [P("x", None), P("x", None), P("x")], n_total_dm, ndev, mesh,
             capacity_factor=cap)
-        posS, pS, massS, actS, n_bad0, occ0 = exchange_particles_slab(
+        posS, pS, massS, actS, n_bad0, occ0, _mv = exchange_particles_slab(
             posS, pS, massS, actS, Nx, dx, box, mesh)
         if is_main_process:
             print(f"[cosmo-hydro] DM IC settle: out-of-slab={int(n_bad0)} "
@@ -476,6 +477,29 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
 
     clock = CosmoClock(cosmo, a, a_end, H0)
 
+    from functools import partial as _partial
+
+    from jax.experimental.shard_map import shard_map as _shard_map
+    from jax.sharding import PartitionSpec as _P
+
+    @_partial(jax.jit, static_argnames=())
+    @_partial(_shard_map, mesh=mesh,
+              in_specs=(_P("x", "y", "z"), _P("x", "y", "z")),
+              out_specs=(_P("x", "y", "z"), _P(), _P()))
+    def _slab_delta_stats(rho_gas_l, rho_dm_l):
+        """delta of (gas+DM) via explicit psum — no GSPMD mean in the step
+        program (auto-shard purge, 2026-08-27). Also returns rho_gas_max: the
+        report scalar rides in the SAME program (a separate eager reduction
+        per step re-triggers the ROCm executable-mix wedge — the slab gate
+        timed out with per-step eager shard_map reductions, 2026-08-27)."""
+        rho_l = rho_gas_l + rho_dm_l
+        ssum = jax.lax.psum(jnp.sum(rho_l), ("x", "y", "z"))
+        cnt = jax.lax.psum(jnp.asarray(rho_l.size, rho_l.dtype), ("x", "y", "z"))
+        delta_l = rho_l / (ssum / cnt) - 1.0
+        dmax = jax.lax.pmax(jnp.max(delta_l), ("x", "y", "z"))
+        rho_gas_max = jax.lax.pmax(jnp.max(rho_gas_l), ("x", "y", "z"))
+        return delta_l, dmax, rho_gas_max
+
     @jax.jit
     def forces(U_arr, pos, mass, active, a_kick):
         """One joint solve on (gas + DM) density -> (gas force grid, DM accel).
@@ -484,18 +508,23 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         recompiles the entire multigrid every step (~23 s at 512^3/4-GPU). Jitting
         traces the body once; the FMG then compiles once and every step cache-hits."""
         rho_dm = cic_deposit_slab(pos, mass, active, Nx, Ny, Nz, dx, mesh)
-        rho_tot = U_arr[0] + rho_dm
-        delta = rho_tot / jnp.mean(rho_tot) - 1.0
+        delta, dmax_l, rho_max_l = _slab_delta_stats(U_arr[0], rho_dm)
         phi = solve_poisson_fmg_shardmap(
             delta, dx, coeff_fac * a_kick, boundary=0, mesh=mesh,
             n_levels=n_levels, n_extra_vcycles=n_extra, n_coarsest=n_coarse)
         g_gas = grad_phi_slab(phi, dx, mesh, order=2)         # gas force grid
         g_dm = gather_accel_slab(grad_phi_slab(phi, dx, mesh, order=4),
                                  pos, Nx, Ny, Nz, dx, mesh)   # DM accel at particles
+        g_dm = g_dm.astype(pos.dtype)
+        # g2max for the accel timestep, in-jit (close_kick pattern): a separate
+        # eager reduction per step is what wedges ROCm.
+        g2max_l = flat_reduce(mesh, "max",
+                              jnp.where(active > 0,
+                                        jnp.sum(g_dm ** 2, axis=1), 0.0))
         # keep DM accel in the particle precision (the fp64 grid gradient would
         # otherwise re-promote pS->posS to fp64 after the first kick, leaking the
         # fp32 path back to fp64); no-op when particles are fp64.
-        return g_gas, g_dm.astype(pos.dtype), jnp.max(delta)
+        return g_gas, g_dm, dmax_l, g2max_l, rho_max_l
 
     # --- profiling sub-kernels: mirror forces() piece-by-piece so the opaque
     # gravity+PM phase can be split into deposit / FMG / grad / gather. Used only
@@ -508,7 +537,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
 
     @jax.jit
     def _prof_fmg(rho_tot, a_kick):
-        delta = rho_tot / jnp.mean(rho_tot) - 1.0
+        delta = _slab_delta_stats(rho_tot, jnp.zeros_like(rho_tot))[0]
         return solve_poisson_fmg_shardmap(
             delta, dx, coeff_fac * a_kick, boundary=0, mesh=mesh,
             n_levels=n_levels, n_extra_vcycles=n_extra, n_coarsest=n_coarse)
@@ -628,8 +657,8 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         print(f"[cosmo-hydro] wrote {fn}", flush=True)
 
     if is_main_process:
-        m_gas = float(jnp.sum(U[0])) * dx ** 3
-        m_dm = float(jnp.sum(massS))
+        m_gas = float(grid_reduce(mesh, "sum", U[0])) * dx ** 3
+        m_dm = float(flat_reduce(mesh, "sum", massS))
         print(f"\n[cosmo-hydro] grid-sharded slab decomposition across {ndev} devices "
               f"(nx_loc={nx_loc}, capacity {ndev*C} per slab)")
         print(f"[cosmo-hydro] coupled gas+DM  a_init={a:.4f} (z={1/a-1:.2f}) -> "
@@ -659,7 +688,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
                                   "rho_max"])
     tau, step, t0 = 0.0, 0, time.time()
     tc = time.time()
-    g_gas, g_dm, dmax = forces(U, posS, massS, actS, a)
+    g_gas, g_dm, dmax, g2max, rho_max_j = forces(U, posS, massS, actS, a)
     jax.block_until_ready(g_dm)
     if is_main_process:
         print(f"[cosmo-hydro] first force compiled+ran in {time.time()-tc:.1f}s",
@@ -676,13 +705,14 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         return x
     n_bad_tot = 0
     while a < a_end - 1e-9:
-        gmag = jnp.sqrt(jnp.sum(g_dm ** 2, axis=1))
-        gmax = float(jnp.max(jnp.where(actS > 0, gmag, 0.0)))
+        gmax = float(jnp.sqrt(g2max))                 # from forces, in-jit
         dt_cfl = float(compute_dt_fn(U))
         dt_dloga = clock.dtau_expansion(a, dloga_max)
         dt_accel = dtau_accel(eta, eps_soft, gmax)
         dtau = min(dt_cfl, dt_dloga, dt_accel)
         if debug and is_main_process and (step % 10 == 0 or float(dmax) > 150.0):
+            # opt-in diagnostic: uses auto-sharded reductions (auto-shard purge
+            # exemption) -- intended for single-device debugging only.
             rho = U[0]
             ke = 0.5 * (U[1] ** 2 + U[2] ** 2 + U[3] ** 2) / rho   # KE density
             eint = U[-1] - ke                                      # internal-energy density
@@ -715,12 +745,13 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         pS = pS + g_dm * (0.5 * dtau)
         posS = jnp.mod(posS + pS * dtau, box); _bar(posS)
         if prof_this: _pt["dm_drift"] = time.time() - _t; _t = time.time()
-        posS, pS, massS, actS, n_bad, max_occ = exchange_particles_slab(
+        posS, pS, massS, actS, n_bad, max_occ, _mv = exchange_particles_slab(
             posS, pS, massS, actS, Nx, dx, box, mesh); _bar(posS)
         if prof_this: _pt["dm_exchange"] = time.time() - _t; _t = time.time()
         U = step_fn(U, dtau); _bar(U)
         if prof_this: _pt["gas_hydro"] = time.time() - _t; _t = time.time()
-        g_gas, g_dm, dmax = forces(U, posS, massS, actS, a_next); _bar(g_dm)
+        (g_gas, g_dm, dmax, g2max,
+         rho_max_j) = forces(U, posS, massS, actS, a_next); _bar(g_dm)
         if prof_this: _pt["gravity_pm"] = time.time() - _t; _t = time.time()
         U = gas_kick(U, g_gas, dtau)
         if rho_floor > 0.0:
@@ -751,7 +782,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
         step += 1
         n_bad_tot += int(n_bad)
         if rep.due(step, a >= a_end - 1e-9):
-            rho_max = float(jnp.max(U[0]))
+            rho_max = float(rho_max_j)                # from forces, in-jit
             rep.step(step, f"[cosmo-hydro] {step:5d} {a:8.4f} {1/a-1:8.4f} "
                      f"{dloga:8.5f} dmax={float(dmax):9.3f} rhomax={rho_max:10.3e} "
                      f"occ={int(max_occ)} nbad={int(n_bad)} "
@@ -770,7 +801,7 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
             write_snap(a, U, posS, massS, actS)
 
     if is_main_process:
-        m_gas = float(jnp.sum(U[0])) * dx ** 3
+        m_gas = float(grid_reduce(mesh, "sum", U[0])) * dx ** 3
         print(f"[cosmo-hydro] done: {step} steps, a={a:.4f} (z={1/a-1:.4f}), "
               f"{time.time()-t0:.1f}s  (gas mass={m_gas:.4e}, "
               f"cumulative out-of-slab: {n_bad_tot})")
@@ -779,6 +810,304 @@ def _run_slab_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
     if prof_fh is not None:
         prof_fh.close()
         print(f"[cosmo-hydro] per-phase profile -> {out_dir}/profile_steps.csv", flush=True)
+    return U, posS, pS, a, step
+
+
+def _make_gas_microphysics(cfg, gamma, coeff_fac, dx, rho_bar):
+    """Gas kick + stability floors, shared across the coupled loops (all pure
+    elementwise jnp -> sharding-agnostic: dense, slab or blocks). Returns a
+    namespace of (gas_kick, apply_floor, apply_rho_floor, jeans_coeff,
+    temp_coeff, tempmax_coeff) plus the gating flags. Bodies lifted verbatim
+    from the slab loop; the dense/slab loops keep their local copies until the
+    step-4 A/B swap."""
+    from types import SimpleNamespace
+
+    p_floor = float(getattr(cfg, "cosmo_p_floor", 0.0))
+    jeans_N = float(getattr(cfg, "cosmo_jeans_ncell", 0.0))
+    T_floor = float(getattr(cfg, "cosmo_T_floor", 0.0))
+    T_max = float(getattr(cfg, "cosmo_Tmax", 0.0))
+    v_max = float(getattr(cfg, "cosmo_vmax", 0.0))
+    mu = float(getattr(cfg, "cosmo_mu", 1.22))
+    rho_floor = float(getattr(cfg, "cosmo_rho_floor", 0.0)) * rho_bar
+    floor_buffer = float(getattr(cfg, "cosmo_floor_buffer", 1.0))
+
+    def gas_kick(U_arr, g_gas, dt):
+        rho = U_arr[0]
+        gx, gy, gz = g_gas
+        mx, my, mz = U_arr[1], U_arr[2], U_arr[3]
+        nmx = mx + dt * rho * gx
+        nmy = my + dt * rho * gy
+        nmz = mz + dt * rho * gz
+        E = U_arr[-1] + dt * (0.5 * (mx + nmx) * gx + 0.5 * (my + nmy) * gy
+                              + 0.5 * (mz + nmz) * gz)
+        return jnp.stack([rho, nmx, nmy, nmz, E])
+
+    @jax.jit
+    def apply_rho_floor(U_arr, ct, ctmax):
+        """Three low-density CFL guards (rationale in the single-device path):
+        buffered density floor + momentum zero, |v~| ceiling preserving e_int,
+        temperature ceiling."""
+        rho = U_arr[0]
+        mx, my, mz, E = U_arr[1], U_arr[2], U_arr[3], U_arr[-1]
+        bad = rho < rho_floor * floor_buffer
+        rho_n = jnp.where(bad, rho_floor, rho)
+        mx = jnp.where(bad, 0.0, mx)
+        my = jnp.where(bad, 0.0, my)
+        mz = jnp.where(bad, 0.0, mz)
+        eint_fl = jnp.maximum(ct * rho_floor / (gamma - 1.0), 1e-300)
+        E = jnp.where(bad, eint_fl, E)
+        ke = 0.5 * (mx * mx + my * my + mz * mz) / rho_n
+        eint = E - ke
+        if v_max > 0.0:
+            v2 = (mx * mx + my * my + mz * mz) / (rho_n * rho_n)
+            scl = jnp.where(v2 > v_max * v_max, v_max / jnp.sqrt(v2 + 1e-300),
+                            1.0)
+            mx, my, mz = mx * scl, my * scl, mz * scl
+            ke = 0.5 * (mx * mx + my * my + mz * mz) / rho_n
+        if T_max > 0.0:
+            eint = jnp.minimum(eint, ctmax * rho_n / (gamma - 1.0))
+        E_n = ke + jnp.maximum(eint, 1e-300)
+        return jnp.stack([rho_n, mx, my, mz, E_n])
+
+    @jax.jit
+    def apply_floor(U_arr, cj, ct):
+        rho = U_arr[0]
+        ke = 0.5 * (U_arr[1] ** 2 + U_arr[2] ** 2 + U_arr[3] ** 2) / rho
+        Pr = (gamma - 1.0) * (U_arr[-1] - ke)
+        Pmin = jnp.maximum(jnp.maximum(p_floor, ct * rho), cj * rho * rho)
+        return U_arr.at[-1].set(jnp.maximum(Pr, Pmin) / (gamma - 1.0) + ke)
+
+    def jeans_coeff(aa):
+        if jeans_N <= 0.0:
+            return 0.0
+        return coeff_fac * aa * (jeans_N * dx) ** 2 / (4.0 * np.pi ** 2 * rho_bar)
+
+    def temp_coeff(aa):
+        if T_floor <= 0.0:
+            return 0.0
+        return aa * aa * KB_OVER_MP_KMS2_PER_K * T_floor / mu
+
+    def tempmax_coeff(aa):
+        if T_max <= 0.0:
+            return 0.0
+        return aa * aa * KB_OVER_MP_KMS2_PER_K * T_max / mu
+
+    return SimpleNamespace(
+        gas_kick=gas_kick, apply_floor=apply_floor,
+        apply_rho_floor=apply_rho_floor, jeans_coeff=jeans_coeff,
+        temp_coeff=temp_coeff, tempmax_coeff=tempmax_coeff,
+        p_floor=p_floor, jeans_N=jeans_N, T_floor=T_floor,
+        rho_floor=rho_floor)
+
+
+def _run_blocks_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
+                      dm_pos, dm_p, dm_mass, n_total_dm=None,
+                      is_main_process=True):
+    """Coupled gas+DM on the hydro's 3D block mesh — ONE (px,py,pz)-sharded
+    grid carries gas rho + DM deposit -> one solve -> both kicks
+    (docs/SCALING_DESIGN.md). Same physics and step ordering as the slab loop;
+    the gravity side follows the blocks DM runner's design: solve the UNSCALED
+    lap(psi)=delta so closure constants are step-invariant, carry psi as the
+    warm seed, and scale forces by coeff*a at kick time. Dual-energy stays
+    unavailable (as on slab). v1: exchange every step, no snapshots.
+
+    ROCm: needs HIP_LAUNCH_BLOCKING=1 — without it the runtime wedges on the
+    2nd step (the autodiff-campaign re-invocation deadlock class; here it is
+    the hydro step_fn + PM executables mix, faulthandler-pinned 2026-08-27,
+    and jit-fusing the gravity chain did NOT clear it). Serialized launches
+    cost throughput, so measure any ROCm production use of this path with the
+    env accounted for; CUDA has never reproduced this class — retest there.
+    Follow-up fix: one lax.scan over steps (single invocation)."""
+    from gravity.particle_mesh_blocks import (assemble_blocks_sharded,
+                                              cic_deposit_blocks,
+                                              exchange_particles_blocks,
+                                              gather_accel_blocks,
+                                              grad_phi_blocks)
+    from gravity.poisson_multigrid import solve_poisson_fmg_shardmap
+
+    if n_total_dm is not None:
+        raise NotImplementedError(
+            "blocks coupled path: chunked multi-process IC read is not wired "
+            "yet (index-chunks are not block-owned); use dm_decomp='slab' for "
+            "chunked reads or a full per-rank read.")
+
+    cosmo = Cosmology(Omega_m=getattr(cfg, "cosmo_Omega_m", 1.0),
+                      Omega_L=getattr(cfg, "cosmo_Omega_L", 0.0))
+    H0 = float(getattr(cfg, "cosmo_H0", 1.0))
+    Om = float(getattr(cfg, "cosmo_Omega_m", 1.0))
+    a = float(getattr(cfg, "a_init", 0.3))
+    a_end = float(getattr(cfg, "a_end", 1.0))
+    dloga_max = float(getattr(cfg, "dloga_max", 0.01))
+    gamma = float(cfg.gamma)
+    box = float(cfg.Lx)
+    eta = float(getattr(cfg, "dm_eta", 0.025))
+    n_extra = int(getattr(cfg, "POISSON_FMG_EXTRA_VCYCLES", 2))
+    warm = int(getattr(cfg, "dm_warm_vcycles", 1))
+    n_pre_w = int(getattr(cfg, "dm_warm_n_pre", 1))
+    n_post_w = int(getattr(cfg, "dm_warm_n_post", 1))
+
+    Nx = int(cfg.Nx)
+    Ny = int(getattr(cfg, "Ny", cfg.Nx))
+    Nz = int(getattr(cfg, "Nz", cfg.Nx))
+    N3 = (Nx, Ny, Nz)
+    dx = box / Nx
+    pdims = tuple(int(mesh.shape[ax]) for ax in ("x", "y", "z"))
+    if any(n % p for n, p in zip(N3, pdims)):
+        raise ValueError(f"block decomposition {pdims} must divide {N3}")
+    coeff_fac = poisson_coeff_fac(Om, H0)
+    prec = gravity_precision_from_config(cfg)
+    dep_fixed = prec.fixed_int if prec.fixed_deposit else None
+    mu_dm = float(np.sum(dm_mass)) / (box ** 3)   # DM deposit integer unit
+    cap = float(getattr(cfg, "dm_capacity_factor", 1.5))
+    fcf = float(getattr(cfg, "dm_face_capacity_factor", 0.0)) or None
+    from utils.mesh_reduce import flat_reduce, grid_mean, grid_reduce
+    eps_soft = softening_from_config(cfg, dx)
+    rho_bar = float(grid_mean(mesh, U[0]))
+    gm = _make_gas_microphysics(cfg, gamma, coeff_fac, dx, rho_bar)
+
+    posS, pS, massS, actS, C = assemble_blocks_sharded(
+        np.asarray(dm_pos), np.asarray(dm_p), np.asarray(dm_mass),
+        N3, pdims, dx, box, mesh, cap)
+    if gravity_precision_from_config(cfg).particles is jnp.float32:
+        posS = posS.astype(jnp.float32)
+        pS = pS.astype(jnp.float32)
+        massS = massS.astype(jnp.float32)
+        actS = actS.astype(jnp.float32)
+    clock = CosmoClock(cosmo, a, a_end, H0)
+
+    from functools import partial as _partial
+
+    from jax.experimental.shard_map import shard_map as _shard_map
+    from jax.sharding import PartitionSpec as _P
+
+    S3 = ("x", "y", "z")
+
+    @_partial(jax.jit, static_argnames=())
+    @_partial(_shard_map, mesh=mesh,
+              in_specs=(_P("x", "y", "z"), _P("x", "y", "z")),
+              out_specs=(_P("x", "y", "z"), _P(), _P()))
+    def _delta_stats(rho_gas_l, rho_dm_l):
+        """delta of (gas + DM) via explicit psum — NO auto-sharded reductions
+        between the shard_map kernels (the DM blocks runner's rule; mixing the
+        two dispatch styles eagerly is the prime hang suspect on ROCm)."""
+        rho_l = rho_gas_l + rho_dm_l
+        ssum = jax.lax.psum(jnp.sum(rho_l), S3)
+        cnt = jax.lax.psum(jnp.asarray(rho_l.size, rho_l.dtype), S3)
+        delta_l = rho_l / (ssum / cnt) - 1.0
+        dmax = jax.lax.pmax(jnp.max(delta_l), S3)
+        rho_gas_max = jax.lax.pmax(jnp.max(rho_gas_l), S3)
+        return delta_l.astype(jnp.float64), dmax, rho_gas_max
+
+    def _force_chain(U_arr, pos, mass, active, a_kick, psi_prev):
+        rho_dm = cic_deposit_blocks(pos, mass, active, N3, dx, mesh,
+                                    dtype=prec.deposit, fixed=dep_fixed,
+                                    fixed_bits=prec.fixed_bits,
+                                    mass_unit=mu_dm)
+        delta, dmax_l, rho_max_l = _delta_stats(U_arr[0].astype(rho_dm.dtype),
+                                                rho_dm)
+        if psi_prev is None:
+            psi = solve_poisson_fmg_shardmap(delta, dx, 1.0, boundary=0,
+                                             mesh=mesh,
+                                             n_extra_vcycles=n_extra)
+        else:
+            psi = solve_poisson_fmg_shardmap(delta, dx, 1.0, boundary=0,
+                                             mesh=mesh, phi_init=psi_prev,
+                                             warm_cycles=max(warm, 1),
+                                             n_pre=n_pre_w, n_post=n_post_w)
+        s = coeff_fac * a_kick
+        gx, gy, gz = grad_phi_blocks(psi, dx, mesh, order=2)   # gas force grid
+        g_dm = (gather_accel_blocks(grad_phi_blocks(psi, dx, mesh, order=4),
+                                    pos, N3, dx, mesh) * s).astype(pos.dtype)
+        # per-step scalars ride IN this program (close_kick pattern): separate
+        # eager reductions per step re-trigger the ROCm executable-mix wedge.
+        g2max_l = flat_reduce(mesh, "max",
+                              jnp.where(active > 0,
+                                        jnp.sum(g_dm ** 2, axis=1), 0.0))
+        m_dm_l = flat_reduce(mesh, "sum", mass * (active > 0))
+        return ((gx * s, gy * s, gz * s), g_dm, dmax_l, g2max_l, rho_max_l,
+                m_dm_l, psi)
+
+    # ONE jitted program per step for the whole gravity chain, like the slab
+    # loop — NOT an eager chain of shard_map executables. Eagerly re-invoking
+    # the synchronized executables interleaved with the hydro step deadlocks
+    # the ROCm runtime on the 2nd step (the autodiff-campaign hang class;
+    # stack: block_until_ready after step_fn, step 2, 2 GPUs). Two traced
+    # programs: cold (step 0) and warm (psi carried).
+    _forces_cold = jax.jit(
+        lambda U_arr, pos, mass, active, a_kick: _force_chain(
+            U_arr, pos, mass, active, a_kick, None))
+    _forces_warm = jax.jit(_force_chain)
+
+    def forces(U_arr, pos, mass, active, a_kick, psi_prev):
+        """-> (g_gas, g_dm, dmax, g2max, rho_gas_max, m_dm, psi)"""
+        if psi_prev is None:
+            return _forces_cold(U_arr, pos, mass, active, a_kick)
+        return _forces_warm(U_arr, pos, mass, active, a_kick, psi_prev)
+
+    if is_main_process:
+        m_gas = float(grid_reduce(mesh, "sum", U[0])) * dx ** 3
+        m_dm = float(np.sum(dm_mass))
+        print(f"\n[cosmo-hydro] 3D-block decomposition {pdims} "
+              f"(capacity {int(np.prod(pdims)) * C} for {dm_pos.shape[0]} DM)")
+        print(f"[cosmo-hydro] coupled gas+DM  a={a:.4f} -> {a_end:.4f}  "
+              f"gas mass={m_gas:.4e}  DM mass={m_dm:.4e}  mesh={N3}")
+
+    rep = StepLog(cfg, is_main_process,
+                  history_fields=["step", "a", "dloga", "delta_max",
+                                  "rho_max"])
+    tau, step, t0 = 0.0, 0, time.time()
+    g_gas, g_dm, dmax, g2max, rho_max_j, m_dm_j, psi = forces(
+        U, posS, massS, actS, a, None)
+    jax.block_until_ready(g_dm)
+    m_dm0 = float(m_dm_j)
+    while a < a_end - 1e-9:
+        gmax = float(jnp.sqrt(g2max))                # from forces, in-jit
+        dtau = min(float(compute_dt_fn(U)),
+                   clock.dtau_expansion(a, dloga_max),
+                   dtau_accel(eta, eps_soft, gmax))
+        dtau = clock.cap_to_table(dtau, tau)
+        a_next = clock.a_of_tau(tau + dtau)
+        dloga = np.log(a_next / a)
+        # same ordering as the slab loop: DM half-kick @a, drift + exchange,
+        # gas hydro flux, JOINT solve @a_next, gas kick + floors, DM close.
+        pS = pS + g_dm * (0.5 * dtau)
+        posS = jnp.mod(posS + pS * dtau, box)
+        posS, pS, massS, actS, n_over = exchange_particles_blocks(
+            posS, pS, massS, actS, N3, dx, box, mesh, face_capacity_factor=fcf)
+        U = step_fn(U, dtau)
+        (g_gas, g_dm, dmax, g2max, rho_max_j,
+         m_dm_j, psi) = forces(U, posS, massS, actS, a_next, psi)
+        U = gm.gas_kick(U, g_gas, dtau)
+        if gm.rho_floor > 0.0:
+            U = gm.apply_rho_floor(U, gm.temp_coeff(a_next),
+                                   gm.tempmax_coeff(a_next))
+        if gm.p_floor > 0.0 or gm.jeans_N > 0.0 or gm.T_floor > 0.0:
+            U = gm.apply_floor(U, gm.jeans_coeff(a_next), gm.temp_coeff(a_next))
+        pS = pS + g_dm * (0.5 * dtau)
+        tau += dtau
+        a = a_next
+        step += 1
+        if is_main_process and step % 25 == 1:     # heartbeat: hang vs dt collapse
+            print(f"[cosmo-hydro] blk hb s={step} a={a:.4f} dtau={dtau:.3e} "
+                  f"{(time.time()-t0)/step*1e3:.0f} ms/st", flush=True)
+        if int(n_over) != 0:
+            raise RuntimeError(f"[cosmo-hydro] block exchange overflow at "
+                               f"step {step}: {int(n_over)} movers dropped")
+        if rep.due(step, a >= a_end - 1e-9):
+            rho_max = float(rho_max_j)               # from forces, in-jit
+            m_dm_now = float(m_dm_j)
+            if abs(m_dm_now - m_dm0) > 1e-8 * m_dm0:
+                raise RuntimeError(f"[cosmo-hydro] DM mass drift at step "
+                                   f"{step}: {m_dm_now:.15e} vs {m_dm0:.15e}")
+            rep.step(step, f"[cosmo-hydro] {step:5d} {a:8.4f} {1/a-1:8.4f} "
+                     f"{dloga:8.5f} dmax={float(dmax):9.3f} "
+                     f"rhomax={rho_max:10.3e} {(time.time()-t0)/step:5.2f}s/st",
+                     row=[step, a, dloga, float(dmax), rho_max], force=True)
+            require_finite(rho_max, what="gas density", step=step, t=tau,
+                           hint="coupled gas+DM blocks run went NaN.")
+    if is_main_process:
+        print(f"[cosmo-hydro] done: {step} steps, a={a:.4f} "
+              f"(z={1/a-1:.4f}), {time.time()-t0:.1f}s")
     return U, posS, pS, a, step
 
 
@@ -793,6 +1122,21 @@ def run_simulation_cosmo_hydro_registered_ic(cfg, dm_pos, dm_p, dm_mass,
                        initialize_simulation_distributed)
     from utils.grid_params import GridParams
 
+    # multi-device goes to the blocks loop: the dense loop's replicated PM +
+    # sharded gas U only compose through GSPMD auto-sharding, which is exactly
+    # the path being retired (auto-shard purge, 2026-08-27).
+    if jax.device_count() > 1:
+        from gravity.particle_mesh_blocks import make_block_mesh
+        from setup.runner_cosmo_dm import _balanced_pdims
+        pdims = tuple(getattr(cfg, "dm_pdims", None)
+                      or _balanced_pdims(jax.device_count()))
+        mesh = make_block_mesh(jax.devices(), pdims)
+        U, _, _ = initialize_simulation_distributed(cfg, mesh)
+        grid = GridParams.from_config(cfg)
+        compute_dt_fn, step_fn, _ = create_solver_distributed(cfg, grid, mesh)
+        return _run_blocks_hydro(U, cfg, step_fn, compute_dt_fn, mesh,
+                                 dm_pos, dm_p, dm_mass,
+                                 is_main_process=is_main_process)
     mesh, _ = create_distributed_mesh(cfg)
     U, _, _ = initialize_simulation_distributed(cfg, mesh)
     grid = GridParams.from_config(cfg)

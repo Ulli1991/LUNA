@@ -469,17 +469,24 @@ def solve_poisson_fmg_shardmap(
         rho_src = rho
 
     _mixed = _mg_mixed()
-    _key = (tuple(sorted((k, int(v)) for k, v in mesh.shape.items())),
-            tuple(str(d) for d in mesh.devices.flat), tuple(rho.shape),
-            float(dx),
-            float(fourpiG), boundary, n_levels, n_vcycles_per_level,
-            n_extra_vcycles, n_pre, n_post, n_coarsest, agg_n,
-            phi_init is not None, warm_cycles, _ca, _smoo, _mixed,
-            str(rho_src.dtype))
-    _hit = _SHARDMAP_PROGRAM_CACHE.get(_key)
-    if _hit is not None:
-        return (_hit(rho_src, phi_init) if phi_init is not None
-                else _hit(rho_src))
+    # Program memo — EAGER callers only. A jitted caller (the coupled runner's
+    # forces() passes fourpiG = coeff*a_kick as a tracer) cannot key the cache
+    # (float(tracer) raises) and does not need it: the enclosing jit is the
+    # cache, exactly as before the memoization landed.
+    if isinstance(dx, jax.core.Tracer) or isinstance(fourpiG, jax.core.Tracer):
+        _key = None
+    else:
+        _key = (tuple(sorted((k, int(v)) for k, v in mesh.shape.items())),
+                tuple(str(d) for d in mesh.devices.flat), tuple(rho.shape),
+                float(dx),
+                float(fourpiG), boundary, n_levels, n_vcycles_per_level,
+                n_extra_vcycles, n_pre, n_post, n_coarsest, agg_n,
+                phi_init is not None, warm_cycles, _ca, _smoo, _mixed,
+                str(rho_src.dtype))
+        _hit = _SHARDMAP_PROGRAM_CACHE.get(_key)
+        if _hit is not None:
+            return (_hit(rho_src, phi_init) if phi_init is not None
+                    else _hit(rho_src))
 
     if phi_init is not None:
         # mixed (gravity_precision != double, or LUNA_MG_MIXED=1): FP64
@@ -515,7 +522,8 @@ def solve_poisson_fmg_shardmap(
                     smoother=smoother)
             return phi_local
 
-        _SHARDMAP_PROGRAM_CACHE[_key] = _local_vcycles
+        if _key is not None:
+            _SHARDMAP_PROGRAM_CACHE[_key] = _local_vcycles
         return _local_vcycles(rho_src, phi_init)
 
     @partial(jax.jit, static_argnames=())
@@ -536,7 +544,8 @@ def solve_poisson_fmg_shardmap(
             n_pre, n_post, n_coarsest, coarse_fn=coarse_fn, smoother=smoother)
         return phi_local
 
-    _SHARDMAP_PROGRAM_CACHE[_key] = _local_fmg
+    if _key is not None:
+        _SHARDMAP_PROGRAM_CACHE[_key] = _local_fmg
     return _local_fmg(rho_src)
 
 

@@ -127,6 +127,7 @@ class Config:
     dm_warm_n_post: int = 1         # global POISSON_N_PRE/POST are untouched)
     dm_decomp: str = "blocks"       # multi-GPU DM layout: "blocks" (3D, production) | "slab" (legacy)
     dm_resort_every: int = 4        # cell-order resort every N particle exchanges (0 = off)
+    dm_face_capacity_factor: float = 0.0  # block exchange face buffer as a fraction of C (0 = size it from the block surface)
     dm_fp32: bool = False            # DEPRECATED alias for gravity_precision='single' (fp32 particle state)
     CosmoHydro: bool = False        # coupled gas+DM box (gas meshed from MUSIC baryon IC)
     cosmo_jeans_ncell: float = 0.0  # Truelove Jeans-floor cells (0 = off; ~4 for halos)

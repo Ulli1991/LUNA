@@ -22,7 +22,7 @@ speed *and* accuracy, measured on real ICs.
    viper: cold 2-GPU `shard_map` compile >12 min, warm ~40 s; a cold 1024³
    gravity graph never finished in 12 h before the solve was split out.
    Per-config cache dirs (size, ndev, precision), pre-seeded **before** any
-   timed run — every ladder rung is a new shape.
+   timed run — every ladder run is a new shape.
 3. **sbatch pattern**: 4 GPUs/node, one process per GPU, distinct JAX
    coordinator port per srun (`20000 + JOB_ID % 40000`); `PYTHONUNBUFFERED=1`.
 4. **Never** set `HIP_LAUNCH_BLOCKING` (ROCm-only anyway) or its CUDA
@@ -41,7 +41,7 @@ These cost us days on viper. Verify each on GH200 before trusting any number:
 | auto-sharded `jnp.pad` | hung multi-process | retest |
 | compile blowup | fused step graph: 2 h at 512³/2 GPU, never at 1024³ → fixed by splitting the solve out | does the split still matter under CUDA? |
 | `LUNA_MG_CA` threshold | auto = on iff `process_count>1`; tuned for 2-GPU intra-node | re-tune: intra-node group is **4**, not 2 |
-| **NEW (CUDA-only, found 2026-08-06)**: uint32 offset wrap | n/a on ROCm | (5,512³) fp64 state: field-4 byte offset = 2^32 exactly wraps to field 0 in XLA's po2-stride shift indexing → silently corrupt PLM y-fluxes at the blast. jax 0.10.1 AND 0.11.0. Details in scaling/jupiter/RESULTS.md. Workarounds: recon32 / fused / non-po2 tile. **Check 512³ per-GPU shards at ≥8 GPUs before any fp64 plain-path ladder rung.** |
+| **NEW (CUDA-only, found 2026-08-06)**: uint32 offset wrap | n/a on ROCm | (5,512³) fp64 state: field-4 byte offset = 2^32 exactly wraps to field 0 in XLA's po2-stride shift indexing → silently corrupt PLM y-fluxes at the blast. jax 0.10.1 AND 0.11.0. Details in scaling/jupiter/RESULTS.md. Workarounds: recon32 / fused / non-po2 tile. **Check 512³ per-GPU shards at ≥8 GPUs before any fp64 plain-path ladder run.** |
 
 ## Order of battle (user-specified)
 
@@ -88,7 +88,7 @@ These cost us days on viper. Verify each on GH200 before trusting any number:
      particles) with global grid AND particle count growing with GPU count:
      l9 @ 1 GPU → l10 @ 8 → l11 @ 64 → l12 @ 512, and as far as the
      allocation goes. Ideal: flat ms/step, linearly growing Mpart/s.
-   - report the **solve** separately from the full step at every rung. The
+   - report the **solve** separately from the full step at every run. The
      solve is the only component that does not scale in either code
      (measured 1→2 GPU: his FFT 1.09×, his MG 1.18×, LUNA replicated 1.00×,
      LUNA sharded 3.2× on 8 GPUs). **The whole design rests on LUNA's
@@ -97,33 +97,33 @@ These cost us days on viper. Verify each on GH200 before trusting any number:
    - **which path**: LUNA's dispatch sends ≥4 GPUs / multi-process to the
      grid-sharded blocks path. That is the one that must scale; the
      particle-parallel path replicates the mesh and is capped by
-     construction. Measure blocks at every rung, and pp only where it still
+     construction. Measure blocks at every run, and pp only where it still
      fits, to locate the crossover (P1.3).
    - **strong** (last): fixed 1024³ and 2048³, GPU count doubling — expected
      to flatten once per-GPU tiles get small; run for completeness, not as
      the headline.
-   - **head-to-head at scale**: the same rungs for JaxPM where his path
+   - **head-to-head at scale**: the same runs for JaxPM where his path
      allows. His multi-device mode costs him 3.1× up front (135.1 vs
      43.3 ms at 1 GPU), so his 91% efficiency starts far behind; whether it
-     ever catches LUNA is the open question these rungs answer.
+     ever catches LUNA is the open question these runs answer.
    - ≥256³ per-GPU tiles throughout (small tiles ran at 7% peak on viper and
      polluted the curve).
 
-## Weak-ladder rungs (user-fixed, 2026-08-06)
+## Weak-ladder runs (user-fixed, 2026-08-06)
 
 Hydro (Sedov): **512³@1 → 1024³@8 → 2048³@64 → 4096³@512 → 8192³@4096 GPUs**
-— fixed 512³ per-GPU tile, ×8 GPUs per rung (2× per axis); top rung 1024
+— fixed 512³ per-GPU tile, ×8 GPUs per run (2× per axis); top run 1024
 nodes. Tile provisional modulo where the 1-GPU roofline saturates.
-(2026-08-06: tile confirmed at saturation; rungs 8/64/512 measured —
+(2026-08-06: tile confirmed at saturation; runs 8/64/512 measured —
 99.3/95.6/90.7% fp32, see scaling/jupiter/RESULTS.md.)
 
 **Frontier extension toward full machine (agreed 2026-08-06):** keep the
 exact 512³ tile and continue with cubic meshes — **10240³@8,000 GPUs
 (20³ mesh, 2,000 nodes) → 12288³@13,824 (24³, 3,456 nodes) →
 14336³@21,952 (28³, 5,488 nodes ≈ 98% of JUPITER)**. Every global is
-512×mesh-dim, so cells scale by exactly the GPU factor. The 28³ rung is
+512×mesh-dim, so cells scale by exactly the GPU factor. The 28³ run is
 the full-machine shot (needs a JSC reservation; one clean attempt after
-the smaller rungs de-risk bootstrap/compile at 2k-3.5k nodes).
+the smaller runs de-risk bootstrap/compile at 2k-3.5k nodes).
 Gravity: same geometry on real cosmo boxes — l9@1, l10@8, l11@64, l12@512;
 the 4096-GPU analog needs an l13 (8192³ ≈ 26 TB) decision.
 
@@ -234,7 +234,7 @@ the result the whole design rests on.
   1024³-particle multi-node run.**
 - **LUNA ≥4 GPUs needs the blocks-path unit bridge + δ_max gate built** for
   the head-to-head harness (`horowitz_bench/h2h_l9_mgpu.py` covers 1–2 GPU).
-- **MUSIC must be built and running on JUPITER.** The wide weak-scaling rungs
+- **MUSIC must be built and running on JUPITER.** The wide weak-scaling runs
   need ICs bigger than l10, and 57 GB (l10) is already awkward to copy — the
   large ones must be *generated on the machine*, not transferred.
   - build MUSIC there (FFTW + GSL + HDF5; it is a CPU code, so build for the
@@ -253,7 +253,7 @@ the result the whole design rests on.
 ## Carry-over rules
 
 - Judge MG scaling on the **warm** cycle (the production op), not cold FMG.
-- Weak-scaling rungs need ≥256³ per-GPU tiles.
+- Weak-scaling runs need ≥256³ per-GPU tiles.
 - Real ICs only (l9/l10/…); no synthetic fields for any perf conclusion.
 - Every timing gated on δ_max; residual reported beside every ms.
 - Measured numbers only — never extrapolate across hardware.
