@@ -247,7 +247,12 @@ G_AREPO = 43007.1      # G in kpc/h (km/s)^2 / (1e10 Msun/h)
 def music_run_config(ic: DMICs, Nx: int, base=None):
     """Build a LUNA Config for a cosmological DM run from a loaded MUSIC IC:
     box, cosmology, a_init, periodic boundary, and Arepo unit constants
-    (length kpc/h, velocity km/s, mass 1e10 Msun/h; H0 = 0.1 h km/s/kpc)."""
+    (length kpc/h, velocity km/s, mass 1e10 Msun/h).
+
+    H0 in these units is 0.1 km/s per kpc/h for ANY h: the length unit already
+    carries the h (100 h km/s/Mpc = 0.1 h km/s/kpc = 0.1 km/s per kpc/h), exactly
+    like G_AREPO. Setting 0.1*h here (as this code did until 2026-09-16) scaled
+    every MUSIC run's initial momenta by 1/h -> 20% too much linear growth."""
     from dataclasses import replace
     from template_config import Config
     cfg = Config() if base is None else base
@@ -258,7 +263,7 @@ def music_run_config(ic: DMICs, Nx: int, base=None):
         BOUNDARY=0,                                    # periodic cosmological box
         CosmologicalIntegration=True,
         cosmo_Omega_m=ic.Omega_m, cosmo_Omega_L=ic.Omega_L,
-        cosmo_H0=0.1 * ic.h,                           # km/s/kpc (Arepo units)
+        cosmo_H0=0.1,                                  # km/s per kpc/h (h cancels)
         a_init=ic.a,
         GRAVITATIONAL_G=G_AREPO,
     )
