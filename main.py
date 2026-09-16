@@ -6,12 +6,6 @@ JAX's automatic sharding with NamedSharding.
 """
 from dataclasses import dataclass, field
 
-try:
-    from config import Config
-except ImportError as e:
-    raise ImportError(
-        "no config.py found — create one with: cp template_config.py "
-        "config.py  (then edit it; config.py is gitignored)") from e
 from utils.grid_params import GridParams
 from utils.logo import print_LUNA_banner
 from setup import (
@@ -154,6 +148,12 @@ def main():
     # Build the config first (pure dataclass, no JAX arrays yet) so the JAX
     # backend can be initialized with the right precision. jax_enable_x64 must
     # be set before any array is created, which initialize_jax_distributed does.
+    try:
+        from config import Config
+    except ImportError as e:
+        raise ImportError(
+            "no config.py found — create one with: cp template_config.py "
+            "config.py  (then edit it; config.py is gitignored)") from e
     cfg = Config()
     initialize_jax_distributed(enable_x64=getattr(cfg, "enable_x64", False))
     import jax
