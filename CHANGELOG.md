@@ -3,11 +3,11 @@
 All notable changes to LUNA. Versions follow [Semantic Versioning](https://semver.org); while
 the version is 0.x, minor releases may change the configuration and the Python API.
 
-## Unreleased
+## 0.1.0 (2026-11-02)
 
-What `main` contains before the first tagged release (0.1.0). Status words as in the README:
-validated (asserted by a test against an independent reference), shown (runs and figures, no
-asserting test), experimental (under development). Details and tests: docs/CLAIMS.md.
+The first public release. Status words as in the README: validated (asserted by a test
+against an independent reference), shown (runs and figures, no asserting test), experimental
+(under development). Details and tests: docs/CLAIMS.md.
 
 ### Hydrodynamics
 - Euler equations in 1D, 2D and 3D: unsplit MUSCL-Hancock, PLM reconstruction (minmod, MC,
@@ -48,7 +48,17 @@ asserting test), experimental (under development). Details and tests: docs/CLAIM
 - Snapshots as HDF5 directories, checkpoints and restarts, `history.csv`.
 
 ### Tests
-- Fast tier on CPU (one and two virtual devices) in public CI; GPU and multi-node tiers on the
+- Fast tier on every push, the full CPU suite (12 shards, 8 virtual devices), the 2-device
+  files and the Torch/AMUSE coupling tests (AMUSE v2026.3.0 built from source) in public CI; GPU and multi-node tiers on the
   author's clusters. Reference solutions (AthenaK, Arepo, RAMSES, Pencil Code digitisations,
   AMReX Microphysics, spectral runs, LUNA's own regression outputs) in the separate,
   checksummed luna-reference-solutions repository; a missing or altered file fails, never skips.
+
+### Known issues in 0.1.0
+- Some full-suite CI tests fail at this release; fixes are under review for 0.1.1: AMR
+  sharded vs single-device ghost cells, the MC-limiter accretion shocks in the coupled cosmology
+  test, round-off differences between CPUs in the sink field and the stellar golden, the
+  isolated-gravity multipole sum order, and outdated test stubs.
+- The chemistry tests need the chemcool references, which move into luna-reference-solutions
+  for 0.1.1; until then they run only where `$LUNA_DATA` holds them.
+
