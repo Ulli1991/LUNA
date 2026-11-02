@@ -1,0 +1,4 @@
+rung: NX=4128 mesh=8,8,8 gpus=512 head=10.128.56.81
+=== nx4128_g512_fp64 steps=100 port=39445 17:38:03 ===
+Step    90, t = 0.00000, dt = 1.70318e-12, perf = 624175.20 Mcells/s, mem = 20.47 GB
+=== rung done 17:39:08 ===

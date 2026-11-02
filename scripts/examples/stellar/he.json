@@ -1,0 +1,9 @@
+{
+  "case": "he",
+  "cells": 64,
+  "length": 10000000.0,
+  "density": 1000000.0,
+  "temperature": 100000000.0,
+  "hot_temperature": 2000000000.0,
+  "burn": true
+}

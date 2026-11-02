@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it as below."
+title: "LUNA: A Differentiable Astrophysical Hydrodynamics Code"
+abstract: >-
+  LUNA is a differentiable astrophysical hydrodynamics code written in JAX, with hand-written
+  Pallas kernels as a fast path on GPUs. It solves the Euler equations in one, two and three
+  dimensions with an unsplit, second-order MUSCL-Hancock scheme and HLLC or HLL Riemann solvers,
+  and runs on CPUs and on many NVIDIA or AMD GPUs, with the domain split over devices.
+  Self-gravity is solved with periodic or isolated boundaries and couples to the gas conserving
+  energy; comoving cosmology evolves gas together with dark-matter particles; radiative cooling,
+  driven turbulence and starburst energy and mass injection are built in. Examples of what it
+  does: shock tubes, blast waves and Kelvin-Helmholtz, Rayleigh-Taylor and Richtmyer-Meshkov
+  instabilities; Jeans collapse and collapsing self-gravitating clouds; the cosmic web of gas and
+  dark matter from cosmological initial conditions; driven supersonic turbulence; galactic winds
+  blown out of a starburst disk; and inverse problems, such as optimising initial conditions with
+  gradients taken through the solver. Non-equilibrium chemistry and cooling networks, radiation
+  transport, sink particles and star formation with stellar dynamics and feedback through
+  Torch/AMUSE, and block-based adaptive mesh refinement are included as experimental modules.
+  Validated capabilities are tested against exact solutions or other codes (AthenaK, Arepo,
+  RAMSES), whose reference solutions are published with the code.
+type: software
+authors:
+  - family-names: Steinwandel
+    given-names: Ulrich Philipp
+version: 0.1.0
+license: BSD-3-Clause
+repository-code: "https://github.com/Ulli1991/LUNA"
+url: "https://github.com/Ulli1991/LUNA"
+keywords:
+  - hydrodynamics
+  - JAX
+  - GPU
+  - astrophysics
+  - ISM
+  - differentiable programming

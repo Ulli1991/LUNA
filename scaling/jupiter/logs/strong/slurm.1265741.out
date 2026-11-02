@@ -1,0 +1,8 @@
+rung: NX=2048 mesh=8,8,8 gpus=512 head=10.128.35.97
+=== nx2048_g512_fp32 steps=100 port=40187 17:40:47 ===
+Step    90, t = 0.00000, dt = 9.82390e-12, perf = 930810.71 Mcells/s, mem = 1.25 GB
+=== nx2048_g512_recon32 steps=100 port=40188 17:42:03 ===
+Step    90, t = 0.00000, dt = 9.82390e-12, perf = 848055.67 Mcells/s, mem = 2.50 GB
+=== nx2048_g512_fp64 steps=100 port=40189 17:42:51 ===
+Step    90, t = 0.00000, dt = 9.82390e-12, perf = 509824.63 Mcells/s, mem = 2.50 GB
+=== rung done 17:44:11 ===

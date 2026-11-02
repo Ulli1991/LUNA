@@ -1,0 +1,26 @@
+{
+ "note": "test files the GitHub CPU matrix leaves out, each with the reason; they run in the Raven GPU nightly (tests/reports/raven_*.json). Measured: each fails at 8aba9c1 on CPU-8 with RuntimeError: LUNA_DATA is not set (w0_runner jobs 31663832-35). The AMUSE files: measured on GitHub run of 92da1fb, ModuleNotFoundError: No module named 'amuse'.",
+ "files": {
+  "tests/test_chemistry_cie.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_coupled.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_eos.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_fixed.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_gow17.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_integrator.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_integrator_net17.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_integrator_net17_grad.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_integrator_net17_teeth.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_net17.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_net5.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_net5_grad.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_chemistry_sympy.py": "needs the chemistry tables in $LUNA_DATA/chemistry, which are not on GitHub",
+  "tests/test_imf.py": "needs a Torch clone at $TORCH_SRC (imf_sample.py), not on GitHub",
+  "tests/test_torch_sf_batched.py": "needs a Torch clone of branch luna-hydro-code at $TORCH_SRC, not on GitHub",
+  "tests/test_autodiff_multiprocess_cooling.py": "its subprocesses have a 900 s limit (tests/autodiff_multiprocess.py:49); on 4 cores it ran 1714 s and hit it",
+  "tests/test_coupling_sink_to_star.py": "needs AMUSE: left out of the plain CPU jobs, run by the amuse-cpu8 job (AMUSE v2026.3.0)",
+  "tests/test_coupling_star_sink_gravity.py": "needs AMUSE: left out of the plain CPU jobs, run by the amuse-cpu8 job (AMUSE v2026.3.0)",
+  "tests/test_coupling_luna_side.py": "needs AMUSE: left out of the plain CPU jobs, run by the amuse-cpu8 job (AMUSE v2026.3.0)",
+  "tests/test_particle_boundary.py": "needs AMUSE: left out of the plain CPU jobs, run by the amuse-cpu8 job (AMUSE v2026.3.0)",
+  "tests/test_autodiff_multiprocess_jeans.py": "its multi-process run takes the GitHub runner down (runner shutdown, exit 143, right after this file starts in full-cpu8 shard 5 on 51a76ec and 368c4ce); passes in the Raven GPU report (tests/reports/raven_gpu1.json)"
+ }
+}

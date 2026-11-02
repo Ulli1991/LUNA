@@ -1,0 +1,4 @@
+[shm-env] broadcast+untar 41s
+run: NX=11264 mesh=22,22,22 gpus=10648 head=10.128.16.17
+=== nx11264_g10648_fp32 steps=60 port=47412 12:19:59 ===
+slurmstepd: error: *** JOB 1403916 ON jpbo-001-17 CANCELLED AT 2026-08-18T12:34:24 DUE TO TIME LIMIT ***

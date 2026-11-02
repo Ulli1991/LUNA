@@ -1,0 +1,29 @@
+# How AMUSE starts workers on viper, kept out of Torch's source.
+#
+# MPI_Comm_spawn does not work here, so nothing can be started by AMUSE's
+# default MPI channel. Everything comes up over sockets instead. AMUSE
+# resolves these sections by class name, so the two kinds of worker can be
+# configured differently without a line of code anywhere.
+#
+# Point $AMUSERC at this file, after replacing <amuse venv> below with the
+# venv AMUSE is installed in.
+
+[channel]
+channel_type=sockets
+
+# Compiled workers (PeTar, SeBa, ph4) are built with MPI and call MPI
+# functions whatever they are told, so they need MPI initialised inside them.
+# The shim drops the -n 1 that AMUSE prepends and execs the worker directly,
+# which gets them a singleton MPI_Init without a launcher.
+[Petar]
+mpiexec=<amuse venv>/bin/amuse-direct-exec
+
+[SeBa]
+mpiexec=<amuse venv>/bin/amuse-direct-exec
+
+[ph4]
+mpiexec=<amuse venv>/bin/amuse-direct-exec
+
+# LUNA is a Python worker and wants no MPI at all.
+[LunaInterface]
+initialize_mpi=0

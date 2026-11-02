@@ -1,0 +1,13 @@
+{
+  "case": "white-dwarf",
+  "cells": 128,
+  "length": 1280000000.0,
+  "density": 10000000.0,
+  "temperature": 10000000.0,
+  "hot_temperature": 3000000000.0,
+  "ignition_radius": 60000000.0,
+  "burn": true,
+  "geometry": "spherical",
+  "gravity": true,
+  "well_balanced": true
+}

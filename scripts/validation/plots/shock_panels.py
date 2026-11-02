@@ -1,0 +1,136 @@
+"""3-panel comparison plots for the three 1D shock tests.
+
+LUNA (PLM + MUSCL-Hancock + minmod, HLLC) at Nx ∈ {256, 512, 1024, 2048}
+vs AthenaK PPMX (RK2) at Nx=8192 as the high-resolution reference.
+
+For each of Sod / Shu-Osher / Woodward-Colella we plot density, velocity
+and pressure as functions of x, in one row.
+"""
+from pathlib import Path
+import matplotlib.pyplot as plt
+
+from luna.utils.figstyle import apply_style, decorate, FIGSIZE
+
+apply_style()
+
+from scripts.validation.runner import sweep
+from scripts.validation.athenak_io import load_1d as load_ak
+from luna.file_io.read_snapshot import read_snapshot, latest_snapshot_dir
+from scripts.validation.plots._plotkit import save
+
+
+# Per-problem: t_end, slug, physical domain, BC (1 = zero-gradient/outflow,
+# 2 = reflective — Woodward-Colella requires reflective walls).
+PROBLEMS = {
+    "Sod-Shock": dict(
+        slug="sod",
+        t_end=0.2,
+        x_min=0.0, x_max=1.0, lx_runner=1.0,
+        boundary=1,
+        gamma=5.0 / 3.0,             # Sod traditionally γ=5/3
+    ),
+    "Shu-Osher": dict(
+        slug="shu_osher",
+        t_end=1.8,
+        x_min=-5.0, x_max=5.0, lx_runner=10.0,
+        boundary=1,
+        gamma=1.4,                   # textbook Shu-Osher uses γ=1.4
+    ),
+    "Woodward-Colella": dict(
+        slug="woodward_colella",
+        t_end=0.038,
+        x_min=0.0, x_max=1.0, lx_runner=1.0,
+        boundary=2,                  # reflecting walls — the gas is contained
+        gamma=1.4,                   # textbook WC uses γ=1.4 (peak ρ ≈ 6)
+    ),
+}
+
+NX_SCAN = [256, 512, 1024, 2048]
+AK_REF_DIR = Path("reference/athenak")
+# Per-problem γ is set in PROBLEMS below — Sod uses γ=5/3, Shu-Osher and
+# Woodward-Colella use the standard γ=1.4.
+
+
+def plot_one(problem_name, params):
+    slug    = params["slug"]
+    t_end   = params["t_end"]
+    x_min   = params["x_min"]
+    lx      = params["lx_runner"]
+    bnd     = params["boundary"]   # 1 = zero-gradient, 2 = reflecting
+    gam     = params["gamma"]
+
+    base = dict(
+        test_problem=problem_name,
+        SPATIAL_DIMENSION=1,
+        Lx=lx,
+        BOUNDARY=bnd,
+        gamma=gam,
+        t_end=t_end,
+        time_bet_snaps=t_end,
+        ORDER=1,
+        LIMITER=0,                 # minmod, per user spec
+        CFL=0.4,
+        PLOT_AFTER_SIM=False,
+        enable_x64=True,
+        clear_output_dir=True,
+    )
+    out_template = f"snapshots/{slug}_Nx{{}}"
+    results = sweep(base, "Nx", NX_SCAN, output_dir_template=out_template)
+
+    # One row of three; house style is (N*W, H) for an N-column multipanel.
+    fig, axes = plt.subplots(1, 3, figsize=(FIGSIZE[0] * 3, FIGSIZE[1]),
+                             sharex=True)
+    panels = [
+        (axes[0], "rho", "density"),
+        (axes[1], "vx",  r"$v_x$"),
+        (axes[2], "P",   "pressure"),
+    ]
+
+    # AthenaK PPMX 8192 reference (load .bin via bin_convert; physical x in
+    # the file metadata)
+    ak_path = AK_REF_DIR / f"{slug}_ppmx_Nx8192.bin"
+    if ak_path.is_file():
+        try:
+            ref = load_ak(ak_path, gamma=gam)
+            ref_fields = {"rho": ref["rho"], "vx": ref["vx"], "P": ref["P"]}
+            for ax, key, _ in panels:
+                ax.plot(ref["x"], ref_fields[key], "k-", lw=2.0,
+                        label="AthenaK PPMX (Nx=8192)")
+        except Exception as exc:
+            print(f"WARN: could not load AthenaK reference {ak_path}: {exc}")
+    else:
+        print(f"Note: no AthenaK reference at {ak_path} — LUNA-only plot.")
+
+    cmap = plt.get_cmap("viridis")
+    for i, (Nx, outdir) in enumerate(results):
+        snap = read_snapshot(latest_snapshot_dir(outdir))
+        x_phys = snap["x"] + x_min  # shift to physical domain
+        fields = {"rho": snap["rho"], "vx": snap["vx"], "P": snap["P"]}
+        color = cmap(0.15 + 0.7 * i / max(1, len(results) - 1))
+        for ax, key, _ in panels:
+            ax.plot(x_phys, fields[key], color=color, lw=1.0,
+                    label=f"LUNA Nx={Nx}")
+
+    for ax, _, label in panels:
+        ax.set_ylabel(label)
+        ax.set_xlabel("x")          # every panel is on the bottom row now
+        decorate(ax)
+    # Woodward-Colella: top-left (clear there); Sod / Shu-Osher: bottom-left
+    leg_loc = "upper left" if slug == "woodward_colella" else "lower left"
+    axes[0].legend(loc=leg_loc, fontsize=10, handlelength=1.2,
+                   labelspacing=0.3, borderaxespad=0.3)
+
+    fig.tight_layout()
+    fname_pdf = f"code_paper_figs/shock_panels_{slug}.pdf"
+    fname_png = f"code_paper_figs/shock_panels_{slug}.png"
+    save(fig, fname_pdf, also_png=True, close=True)
+    print(f"Saved {fname_pdf} and {fname_png}")
+
+
+def main():
+    for name, params in PROBLEMS.items():
+        plot_one(name, params)
+
+
+if __name__ == "__main__":
+    main()

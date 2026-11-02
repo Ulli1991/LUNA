@@ -1,0 +1,9 @@
+{
+  "case": "co",
+  "cells": 64,
+  "length": 10000000.0,
+  "density": 10000000.0,
+  "temperature": 100000000.0,
+  "hot_temperature": 3000000000.0,
+  "burn": true
+}

@@ -1,0 +1,5 @@
+rung: NX=8192 mesh=16,16,16 gpus=4096 head=10.128.16.65
+=== nx8192_g4096_fp32 steps=100 port=30982 16:35:31 ===
+Step    90, t = 0.00000, dt = 3.06997e-13, perf = 7859095.87 Mcells/s, mem = 10.00 GB
+=== nx8192_g4096_recon32 steps=100 port=30983 16:50:06 ===
+slurmstepd: error: *** JOB 1264426 ON jpbo-002-17 CANCELLED AT 2026-08-06T17:00:25 ***

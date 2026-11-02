@@ -1,0 +1,260 @@
+name: tests
+
+# All CPU, all from the in-repo runner so a laptop, this workflow and the
+# nightly GPU batch job select and report the same way.
+# Every push and PR:
+#   python tools/run_tests.py --tier fast               # the measured-cost fast tier
+#   python tools/run_tests.py --tier fast --devices 2   # the smallest sharded mesh
+# Nightly (schedule) and by hand (workflow_dispatch), the whole CPU suite; on every push to main once public:
+#   full-cpu8   --tier full --shard I/12   CPU, 8 virtual devices (conftest's default)
+#   multi-dev2  --tier multidevice --devices 2 --shard I/4   the files that ask for the
+#               device count, on the smallest mesh with a halo exchange
+#   coverage    merges each config's shards and runs --check-coverage over them plus
+#               the committed Raven GPU reports (tests/reports/raven_*.json): it fails
+#               if a test is skipped in every config.
+# Left out of the CPU jobs, with reasons: tests/ci_exclude.json. Failing for a cited code or
+# test bug: tests/ci_known_failures_{cpu8,dev2}.json -- reported KNWN, never skipped, and a listed
+# file that passes fails the job.
+# GPU tests run in the Raven nightly; see docs/TESTING.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:   # run the whole suite by hand (Actions tab, "Run workflow")
+
+# Cancel an in-progress run when new commits are pushed to the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reference solutions (separate data repository)
+        run: git clone --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git ../luna-reference-solutions
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install (CPU JAX + test deps)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,plot]"
+      - name: Fast tier
+        env:
+          LUNA_REFERENCE_SOLUTIONS: ${{ github.workspace }}/../luna-reference-solutions
+        run: python tools/run_tests.py --tier fast --timeout-s 300 --exclude tests/ci_exclude.json --known-failures tests/ci_known_failures_cpu8.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-fast-py${{ matrix.python-version }}
+          path: test_report.json
+
+  sharded:
+    # The same tier on two virtual devices: the smallest mesh with a halo
+    # exchange, which is where the multi-device paths actually differ.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reference solutions (separate data repository)
+        run: git clone --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git ../luna-reference-solutions
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install (CPU JAX + test deps)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,plot]"
+      - name: Fast tier on 2 devices
+        env:
+          LUNA_REFERENCE_SOLUTIONS: ${{ github.workspace }}/../luna-reference-solutions
+        run: python tools/run_tests.py --tier fast --devices 2 --timeout-s 300 --exclude tests/ci_exclude.json --known-failures tests/ci_known_failures_dev2.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-sharded
+          path: test_report.json
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ruff>=0.16"
+      - name: ruff check
+        run: ruff check .
+
+  full-cpu8:
+    # The whole CPU suite in 12 shards balanced by measured cost (tests/tiers.json).
+    # Nightly and by hand only while the repository is private (Actions minutes); on every push once public.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reference solutions (separate data repository)
+        run: git clone --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git ../luna-reference-solutions
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install (CPU JAX + test deps)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,plot,notebooks]" nbconvert ipykernel   # test_notebooks executes the notebooks
+      - name: Full tier, shard ${{ matrix.shard }}/12, CPU-8
+        env:
+          LUNA_REFERENCE_SOLUTIONS: ${{ github.workspace }}/../luna-reference-solutions
+        run: >
+          python tools/run_tests.py --tier full --shard ${{ matrix.shard }}/12
+          --exclude tests/ci_exclude.json --known-failures tests/ci_known_failures_cpu8.json --devices 8 --timeout-s 1800
+          --label cpu8 --report cpu8-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-cpu8-${{ matrix.shard }}
+          path: cpu8-${{ matrix.shard }}.json
+
+  multi-dev2:
+    # The multidevice files (they ask jax for the device count) on 2 devices.
+    # Nightly and by hand only while the repository is private (Actions minutes); on every push once public.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reference solutions (separate data repository)
+        run: git clone --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git ../luna-reference-solutions
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install (CPU JAX + test deps)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,plot]"
+      - name: Multidevice tier, shard ${{ matrix.shard }}/4, 2 devices
+        env:
+          LUNA_REFERENCE_SOLUTIONS: ${{ github.workspace }}/../luna-reference-solutions
+        run: >
+          python tools/run_tests.py --tier multidevice --shard ${{ matrix.shard }}/4
+          --exclude tests/ci_exclude.json --known-failures tests/ci_known_failures_dev2.json --devices 2 --timeout-s 1800
+          --label dev2 --report dev2-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-dev2-${{ matrix.shard }}
+          path: dev2-${{ matrix.shard }}.json
+
+  amuse-cpu8:
+    # The Torch/AMUSE coupling tests (every test file that imports amuse, and the AMUSE files ci_exclude.json lists).
+    # Nightly and by hand only while the repository is private (Actions minutes); on every push once public.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reference solutions (separate data repository)
+        run: git clone --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git ../luna-reference-solutions
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install (CPU JAX + test deps + AMUSE v2026.3.0, the latest release)
+        run: |
+          sudo apt-get update && sudo apt-get install -y build-essential gfortran pkg-config libopenmpi-dev openmpi-bin
+          python -m venv "$HOME/venv" && echo "$HOME/venv/bin" >> "$GITHUB_PATH"
+          export VIRTUAL_ENV="$HOME/venv" PATH="$HOME/venv/bin:$PATH"
+          echo "VIRTUAL_ENV=$HOME/venv" >> "$GITHUB_ENV"
+          python -m pip install --upgrade pip wheel   # AMUSE ./setup refuses without wheel
+          pip install -e ".[test,plot]"
+          # AMUSE is not on PyPI past 2024.6.0; its ./setup builds the framework from the tagged release.
+          git clone --depth 1 --branch v2026.3.0 https://github.com/amusecode/amuse.git ../amuse
+          (cd ../amuse && ./setup install amuse-framework)
+          python -c "import amuse, amuse.units; print('AMUSE', amuse.__file__)"
+      - name: AMUSE test files, CPU-8
+        env:
+          LUNA_REFERENCE_SOLUTIONS: ${{ github.workspace }}/../luna-reference-solutions
+        run: |
+          files=$(python -c "
+          import json, pathlib, re
+          ex = json.load(open('tests/ci_exclude.json'))['files']
+          pat = re.compile(r'^\s*(import amuse|from amuse[ .]|from amuse_luna|import amuse_luna)', re.M)
+          print(' '.join(str(p) for p in sorted(pathlib.Path('tests').glob('test_*.py'))
+                         if (pat.search(p.read_text()) and str(p) not in ex) or 'AMUSE' in ex.get(str(p), '')))")
+          echo "$files"
+          python tools/run_tests.py --files $files --known-failures tests/ci_known_failures_cpu8.json \
+            --devices 8 --timeout-s 1800 --label amuse-cpu8 --report amuse-cpu8.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-amuse-cpu8
+          path: amuse-cpu8.json
+
+  coverage:
+    # No test may be skipped in every config: CPU-8, 2 devices, and Raven's GPU reports.
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    needs: [full-cpu8, multi-dev2, amuse-cpu8]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: report-cpu8-*
+          path: shards
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: report-dev2-*
+          path: shards
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: report-amuse-cpu8
+          path: amuse
+      - name: Merge the shards of each config
+        run: |
+          python tools/run_tests.py --merge-reports cpu8.json shards/cpu8-*.json --label cpu8 || true
+          python tools/run_tests.py --merge-reports dev2.json shards/dev2-*.json --label dev2 || true
+      - name: Coverage over all configs
+        run: |
+          shopt -s nullglob
+          python tools/run_tests.py --check-coverage cpu8.json dev2.json amuse/amuse-cpu8.json tests/reports/raven_*.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: report-merged
+          path: |
+            cpu8.json
+            dev2.json

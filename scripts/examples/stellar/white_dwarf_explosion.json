@@ -1,0 +1,17 @@
+{
+  "case": "white-dwarf",
+  "cells": 512,
+  "length": 4096000000.0,
+  "density": 10000000.0,
+  "temperature": 10000000.0,
+  "hot_temperature": 3000000000.0,
+  "ignition_radius": 60000000.0,
+  "burn": true,
+  "geometry": "spherical",
+  "gravity": true,
+  "well_balanced": true,
+  "screening": "screen5",
+  "neutrinos": "none",
+  "burn_min_temperature": 20000000.0,
+  "burn_min_density": 10000.0
+}

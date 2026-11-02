@@ -1,0 +1,127 @@
+"""BB79 column-density projection: LUNA vs AREPO at the final time.
+
+Side-by-side log₁₀ Σ(x, y) = ∫ ρ dz across the (x, y) midplane, with the
+rotation axis along z. The m=2 perturbation produces a two-bar morphology
+once the collapse develops.
+"""
+from __future__ import annotations
+
+import os
+import glob
+import numpy as np
+import h5py
+from scripts.validation.plots._plotkit import mpl, save, load_snap
+
+plt = mpl()
+from luna.utils.figstyle import FIGSIZE
+
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
+
+AREPO_SNAP = os.environ.get("AREPO_SNAP", "arepo/run/examples/bb79_3d/output")
+LUNA_SNAP  = "snapshots/bb_Nx64"
+
+
+def pick_snap_closest(pattern, target_t):
+    paths = sorted(glob.glob(pattern))
+    best, best_dt = paths[-1], float("inf")
+    for p in paths:
+        try:
+            with h5py.File(p, "r") as h:
+                t = float(h["Header"].attrs.get("Time", 0.0))
+        except Exception:
+            continue
+        if abs(t - target_t) < best_dt:
+            best_dt = abs(t - target_t); best = p
+    return best
+
+
+def luna_pick_snap_closest(root, target_t):
+    dirs = sorted(glob.glob(os.path.join(root, "snapdir_*")))
+    best, best_dt = dirs[-1], float("inf")
+    for d in dirs:
+        files = sorted(glob.glob(os.path.join(d, "*.hdf5")))
+        if not files: continue
+        with h5py.File(files[0], "r") as h:
+            t = float(h["cells"].attrs.get("time", 0.0))
+        if abs(t - target_t) < best_dt:
+            best_dt = abs(t - target_t); best = d
+    return best
+
+
+def arepo_column_density(snap_path, Ng=128):
+    """Bin AREPO particles to a uniform (Ng, Ng) grid integrated along z."""
+    with h5py.File(snap_path, "r") as h:
+        L = float(h["Header"].attrs["BoxSize"])
+        t = float(h["Header"].attrs["Time"])
+        pos = h["PartType0"]["Coordinates"][:]
+        mass = h["PartType0"]["Masses"][:] if "Masses" in h["PartType0"] else None
+        rho  = h["PartType0"]["Density"][:]
+    # Use Mass = ρ·V approach: since AREPO stores cell mass and volume,
+    # column density Σ(x,y) = Σ_cells (m / dxdy) where the cell falls in (x,y) bin.
+    # If Masses field isn't present, fall back to ρ·V_cell ≈ ρ·(L/N_AREPO)³,
+    # which is fine for a Cartesian-lattice IC like ours.
+    if mass is None:
+        # Approximate cell volume from total mass conservation assumption.
+        # For our Cartesian IC, mass ≈ ρ × (L/N)^3 where N = round(Npart^{1/3}).
+        N = int(round(pos.shape[0] ** (1.0/3.0)))
+        cell_vol = (L / N) ** 3
+        mass = rho * cell_vol
+    edges = np.linspace(0.0, L, Ng + 1)
+    dx = L / Ng
+    Sigma, _, _ = np.histogram2d(pos[:, 0], pos[:, 1],
+                                  bins=(edges, edges), weights=mass)
+    Sigma = Sigma / (dx * dx)
+    return Sigma, L, t
+
+
+def luna_column_density(snapdir):
+    """Load LUNA 3D ρ and integrate along z."""
+    data, a = load_snap(snapdir)
+    return data["density"].sum(axis=2) * float(a["dx"]), float(a["Lx"]), float(a["time"])
+
+
+def main():
+    target_t = 2.0
+    arepo_path = pick_snap_closest(os.path.join(AREPO_SNAP, "snap_*.hdf5"), target_t)
+    luna_dir   = luna_pick_snap_closest(LUNA_SNAP, target_t)
+
+    Sigma_A, L_A, t_A = arepo_column_density(arepo_path, Ng=64)
+    Sigma_L, L_L, t_L = luna_column_density(luna_dir)
+    print(f"  AREPO Σ range [{Sigma_A.min():.3e}, {Sigma_A.max():.3e}]  t={t_A:.3f}")
+    print(f"  LUNA  Σ range [{Sigma_L.min():.3e}, {Sigma_L.max():.3e}]  t={t_L:.3f}")
+
+    # Common log color scale (handle tiny / negative carefully).
+    Sigma_A_pos = np.maximum(Sigma_A, 1e-30)
+    Sigma_L_pos = np.maximum(Sigma_L, 1e-30)
+    vmin = np.log10(max(min(Sigma_A_pos.min(), Sigma_L_pos.min()), 1e-6))
+    vmax = np.log10(max(Sigma_A_pos.max(), Sigma_L_pos.max()))
+
+    fig, axes = plt.subplots(1, 2, figsize=(FIGSIZE[0]*2, FIGSIZE[1]))
+    extent_A = (0, L_A, 0, L_A)
+    extent_L = (0, L_L, 0, L_L)
+    im0 = axes[0].imshow(np.log10(Sigma_A_pos).T, origin="lower",
+                          extent=extent_A, vmin=vmin, vmax=vmax, cmap="magma")
+    axes[0].grid(False)
+    axes[0].text(0.05, 0.92, f"AREPO  (t={t_A:.2f})", transform=axes[0].transAxes,
+                 fontsize=LABEL_FS, color="white", fontweight="bold",
+                 bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
+    axes[0].set_xlabel("x"); axes[0].set_ylabel("y")
+    plt.colorbar(im0, ax=axes[0], shrink=0.85, label=r"$\log_{10} \Sigma$")
+    im1 = axes[1].imshow(np.log10(Sigma_L_pos).T, origin="lower",
+                          extent=extent_L, vmin=vmin, vmax=vmax, cmap="magma")
+    axes[1].grid(False)
+    axes[1].text(0.05, 0.92, f"LUNA   (t={t_L:.2f})", transform=axes[1].transAxes,
+                 fontsize=LABEL_FS, color="white", fontweight="bold",
+                 bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
+    axes[1].set_xlabel("x"); axes[1].set_ylabel("y")
+    plt.colorbar(im1, ax=axes[1], shrink=0.85, label=r"$\log_{10} \Sigma$")
+    fig.tight_layout()
+    Nx_luna = Sigma_L.shape[0]   # LUNA column density is (Nx, Ny)
+    out = f"code_paper_figs/arepo_vs_luna_bb79_projection_Nx{Nx_luna}.png"
+    save(fig, out, close=True)
+    print(f"  wrote {out}")
+
+
+if __name__ == "__main__":
+    main()

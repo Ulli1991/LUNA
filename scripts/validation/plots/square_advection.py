@@ -1,0 +1,76 @@
+"""2D square-advection time-progression plot.
+
+Runs the Square-Advected test at Nx^2 = 1024^2 with u=v=1, Lx=Ly=1, periodic.
+One full diagonal traversal => t_end = 1, so t=1 should match t=0 exactly
+modulo numerical diffusion. Saves a 1-row strip of density snapshots at
+t in {0, 0.25, 0.5, 0.75, 1.0}.
+
+Saves figures/square_advection.{pdf,png}.
+"""
+import matplotlib.pyplot as plt
+
+from luna.utils.figstyle import apply_style
+from scripts.validation.plots._plotkit import save
+
+apply_style()
+
+from luna.file_io.read_snapshot import read_snapshot, find_snapshot_at_time
+from dataclasses import replace
+from luna.template_config import Config
+from luna.setup.cli import launch
+
+
+LABEL_FS = 11   # in-panel image annotations only (axis labels inherit rcParams)
+
+NX = 1024
+T_END = 1.0
+SNAPSHOT_TIMES = [0.0, 0.25, 0.5, 0.75, 1.0]
+OUTDIR = f"snapshots/square_advection_Nx{NX}"
+VMIN, VMAX = 0.95, 2.05
+
+
+def main():
+    overrides = dict(
+        test_problem="Square-Advected",
+        SPATIAL_DIMENSION=2,
+        BOUNDARY=0,            # periodic
+        Nx=NX, Ny=NX,
+        Lx=1.0, Ly=1.0,
+        t_end=T_END,
+        ORDER=1,               # PLM
+        LIMITER=1,             # MonCen
+        PLOT_AFTER_SIM=False,
+        time_bet_snaps=0.25,
+        output_dir=OUTDIR,
+        clear_output_dir=True,
+        enable_x64=True,
+    )
+    launch(replace(Config(), **overrides))
+
+    fig, axes = plt.subplots(
+        1, len(SNAPSHOT_TIMES),
+        figsize=(2.5 * len(SNAPSHOT_TIMES), 2.8),
+        squeeze=False,
+    )
+
+    for c, t in enumerate(SNAPSHOT_TIMES):
+        ax = axes[0, c]
+        snap = read_snapshot(find_snapshot_at_time(OUTDIR, t, tol=0.02))
+        ax.imshow(snap["rho"].T, origin="lower",
+                  extent=(0, snap["Lx"], 0, snap["Ly"]),
+                  vmin=VMIN, vmax=VMAX, cmap="magma",
+                  interpolation="nearest", aspect="equal")
+        ax.text(0.05, 0.92, f"t = {t}", transform=ax.transAxes, fontsize=LABEL_FS,
+                color="white", fontweight="bold",
+                bbox=dict(facecolor="black", alpha=0.4, edgecolor="none", pad=1.5))
+        ax.grid(False)
+        if c > 0:
+            ax.set_yticklabels([])
+
+    fig.tight_layout()
+    save(fig, f"code_paper_figs/square_advection_Nx{NX}.pdf", also_png=True)
+    print(f"Saved figures/square_advection_Nx{NX}.{{pdf,png}}")
+
+
+if __name__ == "__main__":
+    main()

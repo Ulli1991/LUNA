@@ -1,0 +1,4 @@
+{
+ "note": "test ids (or files) allowed to be skipped in every standard config; each needs a written reason. Read by tools/run_tests.py --check-coverage.",
+ "tests": {}
+}

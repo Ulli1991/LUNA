@@ -1,0 +1,8 @@
+rung: NX=512 mesh=4,4,4 gpus=64 head=10.128.17.145
+=== nx512_g64_fp32 steps=100 port=40166 17:40:43 ===
+Step    90, t = 0.00000, dt = 3.14365e-10, perf = 67213.89 Mcells/s, mem = 0.19 GB
+=== nx512_g64_recon32 steps=100 port=40167 17:41:09 ===
+Step    90, t = 0.00000, dt = 3.14365e-10, perf = 62101.48 Mcells/s, mem = 0.38 GB
+=== nx512_g64_fp64 steps=100 port=40168 17:41:50 ===
+Step    90, t = 0.00000, dt = 3.14365e-10, perf = 44912.40 Mcells/s, mem = 0.38 GB
+=== rung done 17:42:11 ===

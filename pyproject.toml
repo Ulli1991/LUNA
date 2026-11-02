@@ -1,0 +1,105 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luna-hydro"
+version = "0.1.0"
+description = "Differentiable astrophysical hydrodynamics in JAX, from one CPU to many GPUs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "src/luna/amr/LICENSE-JAX-AMR"]
+authors = [{name = "Ulrich Philipp Steinwandel"}]
+keywords = ["hydrodynamics", "JAX", "GPU", "astrophysics", "cosmology", "differentiable", "Euler equations"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Environment :: GPU :: NVIDIA CUDA :: 12",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+# Run on jax 0.10.0-0.10.2; GPU builds: the CUDA or ROCm wheel at the same jax version (README.md).
+dependencies = [
+    "jax>=0.10.0,<0.11",
+    "jaxlib>=0.10.0,<0.11",
+    "h5py>=3.0",
+    "numpy>=1.23",
+    "scipy>=1.9",                                   # imported by registered ICs (ic.py loads lane_emden3d) and exact solutions
+]
+
+[project.optional-dependencies]
+# GPU JAX at the same version range; pip resolves jax, jaxlib and the plugin to one release.
+cuda12 = ["jax[cuda12]>=0.10.0,<0.11"]             # NVIDIA: CUDA 12 runtime from pip wheels
+rocm = ["jax[rocm7-local]>=0.10.0,<0.11"]          # AMD: needs a ROCm 7 install on the machine
+plot = ["matplotlib>=3.5"]
+test = ["pytest>=7.0"]
+notebooks = ["jupyter", "matplotlib>=3.5", "scipy>=1.9"]
+dev = ["black>=24.0", "ruff>=0.16", "build", "twine"]
+
+[project.scripts]
+luna = "luna.main:cli"                               # `luna run_file.py Nx=256` = `python main.py ...`
+
+[project.urls]
+Homepage = "https://github.com/Ulli1991/LUNA"
+Source = "https://github.com/Ulli1991/LUNA"
+Documentation = "https://github.com/Ulli1991/LUNA/tree/main/docs"
+Issues = "https://github.com/Ulli1991/LUNA/issues"
+Changelog = "https://github.com/Ulli1991/LUNA/blob/main/CHANGELOG.md"
+"Reference data" = "https://github.com/Ulli1991/luna-reference-solutions"
+
+# The wheel is the library luna/ only. amuse_luna/ (the Torch/AMUSE coupling, which needs AMUSE),
+# scripts/, tools/ and tests/ run from a clone; conftest.py puts src/ on the path for amuse_luna.
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["luna*"]
+
+[tool.setuptools.package-data]
+"luna.radiation" = ["*.npz"]        # the learned M2 closure's weights (m2_stage.PARAMS_FILE)
+"luna.amr" = ["LICENSE-JAX-AMR"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "slow: long-running test (full sim or shard_map JIT). Deselect with -m 'not slow'.",
+    "multigpu: needs a real multi-process / multi-GPU launch; auto-skipped unless LUNA_MULTIGPU_TEST=1.",
+    "gpu: large-resolution accuracy run; skipped on the CPU backend.",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py311", "py312", "py313"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Bug-finding rules only; each ignore below is a deliberate pattern in this code.
+select = ["E", "F", "W", "B"]
+ignore = [
+    "E501",  # line too long — black's job
+    "E731",  # lambda assignment
+    "E401",  # multiple imports on one line
+    "E402",  # imports after JAX_PLATFORMS / sys.path setup
+    "E701",  # one-line if
+    "E702",  # one-line semicolon: used deliberately for paired assignments
+    "E741",  # `l` as a name: it is the AMR level everywhere
+    "B008",  # call in a default arg (dataclass defaults)
+    "B023",  # closures defined and called in the same loop iteration
+    "B905",  # zip() without strict=
+]
+
+# Import sorting ("I") is off: import order around the environment setup is deliberate.

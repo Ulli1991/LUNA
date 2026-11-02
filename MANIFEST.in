@@ -1,0 +1,6 @@
+# The sdist is the library and its metadata; tests, tools and scripts need the full clone
+# (conftest.py, tools/run_tests.py, luna-reference-solutions), so they are not in it.
+include LICENSE README.md CITATION.cff CHANGELOG.md THIRD_PARTY.md
+include src/luna/amr/LICENSE-JAX-AMR src/luna/radiation/*.npz
+prune tests
+global-exclude CLAUDE.md DESIGN.md __pycache__ *.py[cod]
