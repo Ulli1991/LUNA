@@ -41,9 +41,10 @@ and a file's status is
 A fully skipped file used to count as a pass; now it is visible, and `ok` still means no fail or
 timeout, because which tests skip depends on the config (a GPU test skips on CPU).
 
-Skips are judged across configs with `--check-coverage REPORT...`: it fails if any test id is
-skipped (or not collected) in every report given, or if a test file is in none of them, unless
-the id is in tests/skip_allowlist.json with a written reason. The standard configs, one report
+Coverage is judged across configs with `--check-coverage REPORT...`: it fails if any test id
+passed in none of the reports given (skipped, not collected, or failed / errored wherever it ran),
+or if a test file is in none of them, unless the id is in tests/skip_allowlist.json with a
+written reason. Covered means passed, or xfailed for a strict xfail (COVERED); xpassed is not. The standard configs, one report
 each (`--label` names it in the report):
     CPU-8 / --devices 8   --devices 8 --tier fast, and --tier full (no JAX_PLATFORMS set is the
                           same: conftest pins CPU with 8 devices)
@@ -77,6 +78,11 @@ PLUGIN_DIR = os.path.join(ROOT, "tools", "pytest_plugins")   # luna_outcomes.py
 UNKNOWN_COST = 1e9          # an untimed file is slow until measured
 OUTCOMES = ("passed", "failed", "skipped", "xfailed", "xpassed", "error")
 RAN = ("passed", "failed", "xfailed", "xpassed", "error")       # the test body was reached
+# Coverage evidence: a test is covered only where it PASSED. A strict xfail that xfailed counts (its
+# registered bug raised the AssertionError it is scoped to: the expected, asserted outcome). xpassed does
+# not: under xfail_strict (pyproject) a strict xpass is reported "failed", and only a non-strict xfail can
+# xpass, and a non-strict xfail asserts nothing either way. failed / error never count.
+COVERED = ("passed", "xfailed")
 MULTIDEVICE = re.compile(r"device_count\(|len\(jax\.(local_)?devices\(")
 
 
@@ -259,19 +265,19 @@ def load_allowlist(path):
 
 
 def check_coverage(paths, allowlist_path=ALLOWLIST, all_files=None):
-    """Exit status 1 if a test is skipped (or not collected) in every report, or a test file is in
-    none of them, unless allow-listed with a reason; an allow-list entry that ran somewhere is stale
-    and also fails. A test id `f::Class` or `f` (class / module-level skip) is covered when any test
-    under it ran."""
+    """Exit status 1 if a test passed in no report (skipped, not collected, or only failed / errored
+    everywhere), or a test file is in none of them, unless allow-listed with a reason; an allow-list
+    entry that passed somewhere is stale and also fails. A test id `f::Class` or `f` (class /
+    module-level skip or error) is covered when any test under it passed. Covered = COVERED."""
     allow = load_allowlist(allowlist_path)
-    ran, skipped, files = set(), {}, set()
+    passed, failed, skipped, files = set(), {}, {}, set()
     print(f"{'config':<28}{'files':>6}{'pass':>6}{'part':>6}{'skip':>6}{'fail':>6}{'stall':>6}"
-          f"{'tests ran':>11}{'skipped':>9}")
+          f"{'tests ok':>10}{'failed':>8}{'skipped':>9}")
     for p in paths:
         with open(p) as f:
             rec = json.load(f)
         label = (rec.get("label") or os.path.basename(p)) + (f"@{rec['commit']}" if rec.get("commit") else "")
-        n_ran = n_skip = 0
+        n_ok = n_fail = n_skip = 0
         for r in rec["files"]:
             if r["file"] == "ruff check" or r["status"] == "timeout":
                 continue
@@ -280,39 +286,50 @@ def check_coverage(paths, allowlist_path=ALLOWLIST, all_files=None):
                 return 1
             files.add(r["file"])
             for tid, o in r["tests"].items():
-                if o in RAN and not (o == "error" and "::" not in tid):   # a collection error ran nothing
-                    ran.add(tid)
-                    n_ran += 1
-                else:
+                if o in COVERED:
+                    passed.add(tid)
+                    n_ok += 1
+                elif o in RAN and not (o == "error" and "::" not in tid):   # reached, but no evidence
+                    failed.setdefault(tid, []).append(f"{label}:{o}")
+                    n_fail += 1
+                else:                                                       # skipped, or a collection error
                     skipped.setdefault(tid, []).append(label)
                     n_skip += 1
         c = rec["counts"]
         print(f"{label:<28}{len(rec['files']):>6}{c.get('pass', 0):>6}{c.get('partial', 0):>6}"
-              f"{c.get('skip', 0):>6}{c.get('fail', 0):>6}{c.get('timeout', 0):>6}{n_ran:>11}{n_skip:>9}")
+              f"{c.get('skip', 0):>6}{c.get('fail', 0):>6}{c.get('timeout', 0):>6}{n_ok:>10}{n_fail:>8}{n_skip:>9}")
 
     def covered(tid):
-        return tid in ran or any(r.startswith(tid + "::") for r in ran)
+        return tid in passed or any(r.startswith(tid + "::") for r in passed)
 
     current = set(test_files() if all_files is None else all_files)
-    gone = sorted({t.split("::")[0] for t in skipped} - current)   # in an older report, not in the tree
+    seen = set(skipped) | set(failed)
+    gone = sorted({t.split("::")[0] for t in seen} - current)   # in an older report, not in the tree
     for f in gone:
         print(f"  NOT IN THE TREE (ignored)  {f}")
-    never = sorted(t for t in skipped if not covered(t) and t.split("::")[0] in current)
+    never = sorted(t for t in seen if not covered(t) and t.split("::")[0] in current)
     missing = sorted(current - files)
     stale = sorted(t for t in allow if covered(t))
-    bad_never = [t for t in never if t not in allow]
+    bad_never = [t for t in never if t not in allow or t in failed]   # the allow-list excuses skips only
     bad_missing = [f for f in missing if f not in allow]
+    n_failed = n_skipped = 0
     for t in never:
-        print(f"  {'allowed' if t in allow else 'SKIPPED EVERYWHERE'}  {t}"
-              + (f"  ({allow[t]})" if t in allow else f"  [{', '.join(skipped[t])}]"))
+        if t in allow and t not in failed:
+            print(f"  allowed  {t}  ({allow[t]})")
+            continue
+        how = "NEVER PASSED" if t in failed else "SKIPPED EVERYWHERE"   # reached somewhere, never passed
+        n_failed += t in failed
+        n_skipped += t not in failed
+        where = failed.get(t, []) + skipped.get(t, [])
+        print(f"  {how}  {t}  [{', '.join(where)}]")
     for f in missing:
         print(f"  {'allowed' if f in allow else 'IN NO REPORT'}  {f}")
     for t in stale:
-        print(f"  STALE ALLOW-LIST ENTRY (it runs)  {t}")
+        print(f"  STALE ALLOW-LIST ENTRY (it passes)  {t}")
     ok = not (bad_never or bad_missing or stale)
-    print(f"\ncoverage {'ok' if ok else 'FAILING'}: {len(ran)} test ids ran somewhere; "
-          f"{len(bad_never)} skipped in every config, {len(bad_missing)} files in no report, "
-          f"{len(stale)} stale allow-list entries ({len(allow)} allowed)")
+    print(f"\ncoverage {'ok' if ok else 'FAILING'}: {len(passed)} test ids passed somewhere; "
+          f"{n_failed} never passed where they ran, {n_skipped} skipped in every config, "
+          f"{len(bad_missing)} files in no report, {len(stale)} stale allow-list entries ({len(allow)} allowed)")
     return 0 if ok else 1
 
 
@@ -396,7 +413,7 @@ def main(argv=None):
                     help="report on the last report instead of running")
     ap.add_argument("--max-age-h", type=float, default=30.0)
     ap.add_argument("--check-coverage", nargs="+", metavar="REPORT",
-                    help="fail if a test is skipped in every one of these reports")
+                    help="fail if a test passed in none of these reports")
     ap.add_argument("--allowlist", default=ALLOWLIST,
                     help="tests allowed to skip everywhere, each with a reason")
     ap.add_argument("--devices", type=int, default=0,

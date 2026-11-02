@@ -68,9 +68,9 @@ include = ["luna*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+xfail_strict = true     # tools/run_tests.py counts xfailed as covered only because every xfail is strict
 markers = [
     "slow: long-running test (full sim or shard_map JIT). Deselect with -m 'not slow'.",
-    "multigpu: needs a real multi-process / multi-GPU launch; auto-skipped unless LUNA_MULTIGPU_TEST=1.",
     "gpu: large-resolution accuracy run; skipped on the CPU backend.",
 ]
 filterwarnings = [

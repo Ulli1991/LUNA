@@ -114,7 +114,7 @@ def test_coverage_stale_allowlist(two_configs, tmp_path, capsys):
     allow = _allow(tmp_path, {"a.py::t1": "needs hardware no standard config has",
                               "a.py::t2": "needs hardware no standard config has"})
     assert rt.check_coverage(two_configs, allow, ["a.py", "b.py"]) == 1
-    assert "STALE ALLOW-LIST ENTRY (it runs)  a.py::t2" in capsys.readouterr().out
+    assert "STALE ALLOW-LIST ENTRY (it passes)  a.py::t2" in capsys.readouterr().out
 
 
 def test_coverage_file_in_no_report(two_configs, tmp_path, capsys):
@@ -212,3 +212,61 @@ def test_coverage_collection_error_is_not_a_run(tmp_path, capsys):
     p = _report(tmp_path / "a.json", "gpu", {"c.py": {"c.py": "error"}})
     assert rt.check_coverage([p], _allow(tmp_path, {}), ["c.py"]) == 1
     assert "SKIPPED EVERYWHERE  c.py" in capsys.readouterr().out
+
+
+def test_coverage_a_test_that_only_failed_is_not_covered(tmp_path, capsys):
+    """A test that failed (or errored, or xpassed) in every config that ran it is not covered; teeth: passing it
+    in one config covers it."""
+    for bad in ("failed", "error", "xpassed"):
+        a = _report(tmp_path / "a.json", "gpu", {"a.py": {"a.py::t": bad}})
+        b = _report(tmp_path / "b.json", "cpu", {"a.py": {"a.py::t": "skipped"}})
+        assert rt.check_coverage([a, b], _allow(tmp_path, {}), ["a.py"]) == 1, bad
+        out = capsys.readouterr().out
+        assert f"NEVER PASSED  a.py::t  [gpu:{bad}, cpu]" in out, out
+        c = _report(tmp_path / "c.json", "gpu4", {"a.py": {"a.py::t": "passed"}})
+        assert rt.check_coverage([a, b, c], _allow(tmp_path, {}), ["a.py"]) == 0, bad
+        capsys.readouterr()
+
+
+def test_coverage_strict_xfail_counts(tmp_path):
+    """A strict xfail that xfailed is covered (its bug raised what it is scoped to)."""
+    a = _report(tmp_path / "a.json", "gpu", {"a.py": {"a.py::t": "xfailed"}})
+    assert rt.check_coverage([a], _allow(tmp_path, {}), ["a.py"]) == 0
+
+
+def test_coverage_module_id_needs_a_passing_test(tmp_path, capsys):
+    """A module-level skip is covered by a passing test of that file elsewhere, not by a failing one."""
+    a = _report(tmp_path / "a.json", "cpu", {"a.py": {"a.py": "skipped"}})
+    b = _report(tmp_path / "b.json", "gpu", {"a.py": {"a.py::t": "failed"}})
+    assert rt.check_coverage([a, b], _allow(tmp_path, {}), ["a.py"]) == 1
+    assert "SKIPPED EVERYWHERE  a.py  [cpu]" in capsys.readouterr().out
+    c = _report(tmp_path / "c.json", "gpu", {"a.py": {"a.py::t": "passed"}})
+    assert rt.check_coverage([a, c], _allow(tmp_path, {}), ["a.py"]) == 0
+
+
+def test_coverage_allowlist_does_not_excuse_a_failure(tmp_path, capsys):
+    """The skip allow-list excuses a skip, never a test that ran and failed."""
+    a = _report(tmp_path / "a.json", "gpu", {"a.py": {"a.py::t": "failed"}})
+    allow = _allow(tmp_path, {"a.py::t": "needs hardware no standard config has"})
+    assert rt.check_coverage([a], allow, ["a.py"]) == 1
+    assert "NEVER PASSED  a.py::t" in capsys.readouterr().out
+
+
+def test_coverage_end_to_end_failing_test(fixture_dir, tmp_path, capsys):
+    """Real run: test_fail.py::test_b fails in every config and is named; test_a passed and is covered."""
+    a = str(tmp_path / "a.json")
+    rt.write_report(a, "files", [rt.run_one("test_fail.py", 120, cwd=str(fixture_dir))], "now", "a")
+    assert rt.check_coverage([a, a], _allow(tmp_path, {}), ["test_fail.py"]) == 1
+    out = capsys.readouterr().out
+    assert "NEVER PASSED  test_fail.py::test_b" in out and "test_fail.py::test_a" not in out
+
+
+def test_xfails_are_strict():
+    """pyproject makes every xfail strict and no test opts out, which is what lets xfailed count as covered."""
+    import pathlib
+    import tomllib
+    root = pathlib.Path(rt.ROOT)
+    assert tomllib.loads((root / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]["xfail_strict"]
+    lax = [str(p) for p in sorted((root / "tests").glob("*.py"))
+           if p.name != "test_run_tests.py" and "strict=False" in p.read_text()]
+    assert not lax, lax

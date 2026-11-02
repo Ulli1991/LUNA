@@ -2,13 +2,11 @@
 
 Pins a CPU backend with enough virtual devices for the sharded / shard_map
 tests *before* JAX initialises, so the whole suite runs on any machine with no
-GPU and a deterministic device count. Multi-GPU tests that need a real
-multi-process launch are auto-skipped unless ``LUNA_MULTIGPU_TEST=1``.
+GPU and a deterministic device count.
 
 Usage:
     pytest                     # full suite (CPU, 8 virtual devices)
     pytest -m "not slow"       # the fast tier (a measured wall-clock budget)
-    LUNA_MULTIGPU_TEST=1 ...   # also run the distributed multi-GPU tests
     python tools/run_tests.py  # the same tiers, one process per file, report
 """
 import os
@@ -42,8 +40,7 @@ def _fast_files():
 
 
 def pytest_collection_modifyitems(config, items):
-    """Mark everything outside the fast tier `slow`, and skip
-    `@pytest.mark.multigpu` unless explicitly enabled."""
+    """Mark everything outside the fast tier `slow`."""
     import pytest
 
     fast = _fast_files()
@@ -52,10 +49,3 @@ def pytest_collection_modifyitems(config, items):
         if os.path.basename(str(item.fspath)) not in fast:
             item.add_marker(slow)
 
-    if os.environ.get("LUNA_MULTIGPU_TEST"):
-        return
-    skip = pytest.mark.skip(
-        reason="needs a multi-process launch; set LUNA_MULTIGPU_TEST=1 to run")
-    for item in items:
-        if "multigpu" in item.keywords:
-            item.add_marker(skip)
