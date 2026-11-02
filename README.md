@@ -1,5 +1,7 @@
 # LUNA
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23874689.svg)](https://doi.org/10.5281/zenodo.23874689)
+
 LUNA is a differentiable astrophysical hydrodynamics code written in
 [JAX](https://docs.jax.dev), with hand-written
 [Pallas](https://docs.jax.dev/en/latest/pallas/index.html) kernels as a fast path on
@@ -288,7 +290,9 @@ multi-node tiers run on the author's clusters ([docs/TESTING.md](docs/TESTING.md
 ## Citation
 
 Please cite LUNA through [`CITATION.cff`](CITATION.cff) (GitHub shows it under "Cite this
-repository").
+repository"), or by its Zenodo DOI,
+[10.5281/zenodo.23874689](https://doi.org/10.5281/zenodo.23874689), which resolves to the
+latest release (0.1.0: [10.5281/zenodo.23874690](https://doi.org/10.5281/zenodo.23874690)).
 
 ## License
 

@@ -22,6 +22,15 @@ type: software
 authors:
   - family-names: Steinwandel
     given-names: Ulrich Philipp
+    affiliation: "Max Planck Institute for Astrophysics"
+doi: 10.5281/zenodo.23874689
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23874689
+    description: "Zenodo concept DOI: every LUNA release, resolves to the latest"
+  - type: doi
+    value: 10.5281/zenodo.23874690
+    description: "Zenodo DOI of version 0.1.0"
 version: 0.1.0
 date-released: 2026-11-02
 license: BSD-3-Clause
