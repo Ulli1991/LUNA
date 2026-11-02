@@ -2,12 +2,9 @@
 
 Two layers:
   * intrinsic 2D+3D unit tests (conservation, round-trips, topology);
-  * 2D parity vs the vendored upstream JAX-AMR prolong/restrict, to prove the
-    generic re-implementation reproduces the original block behaviour.
+  * 2D parity vs upstream JAX-AMR's prolong/restrict outputs (vendored, reduced, in
+    luna-reference-solutions), to prove the generic re-implementation reproduces them.
 """
-
-import os
-import sys
 
 import jax.numpy as jnp
 import numpy as np
@@ -17,7 +14,6 @@ import pytest
 from luna.amr.config import AMRConfig
 from luna.amr import geometry as g
 
-_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # --------------------------------------------------------------------------
@@ -156,41 +152,26 @@ def test_refinement_mask_nan_block_flags_nothing():
     assert np.asarray(mask).sum() == 0.0  # NaN > t is False everywhere
 
 
-# --------------------------------------------------------------------------
-# 2D parity vs upstream JAX-AMR (Wen & Luo, https://github.com/JA4S/JAX-AMR)
+# 2D parity vs upstream JAX-AMR (Wen & Luo, https://github.com/JA4S/JAX-AMR, MIT: src/luna/amr/LICENSE-JAX-AMR)
 #
-# Upstream is NOT vendored in this repo. Point $LUNA_JAXAMR at a checkout (or
-# put one at ~/jaxamr, or pip install it) to run this test; it skips otherwise.
-# --------------------------------------------------------------------------
-def _load_upstream():
-    ext = os.environ.get("LUNA_JAXAMR", os.path.expanduser("~/jaxamr"))
-    # $LUNA_JAXAMR may be the package dir itself or its parent.
-    for cand in (os.path.dirname(os.path.abspath(ext)), ext):
-        if cand not in sys.path:
-            sys.path.insert(0, cand)
-    from jaxamr import amr as upstream  # noqa: E402
-    return upstream
+# The upstream outputs on fixed inputs are vendored, reduced, in luna-reference-solutions (PARITY): written
+# by upstream e8bbcf0 interpolate_coarse_to_fine (amr.py:289) and the restriction of interpolate_fine_to_coarse
+# (amr.py:303-305), CPU FP64, provenance in the npz key 'provenance'. No upstream import at test time.
+PARITY = "jaxamr/amr_parity_2d/parity_2d.npz"
 
 
 def test_parity_prolong_restrict_2d():
-    try:
-        up = _load_upstream()
-    except Exception as e:  # pragma: no cover - reference may be absent
-        pytest.skip(f"upstream jaxamr reference not importable: {e}")
-
-    rng = np.random.default_rng(7)
-    x = jnp.asarray(rng.standard_normal((5, 4, 8, 8)))  # (n_blk, n_var, nx, ny)
-
-    # prolong: upstream interpolate_coarse_to_fine == kron with ones((2,2))
-    ours_p = np.asarray(g.prolong(x, ndim=2))
-    up_p = np.asarray(up.interpolate_coarse_to_fine(x))
-    np.testing.assert_allclose(ours_p, up_p, rtol=1e-12, atol=1e-12)
-
-    # restrict: upstream interpolate_fine_to_coarse reshapes+means the data part.
-    fine = jnp.asarray(rng.standard_normal((5, 4, 16, 16)))
-    ours_r = np.asarray(g.restrict(fine, ndim=2))
-    up_r = np.asarray(
-        fine.reshape(fine.shape[0], fine.shape[1],
-                     fine.shape[2] // 2, 2, fine.shape[3] // 2, 2).mean(axis=(3, 5))
-    )
-    np.testing.assert_allclose(ours_r, up_r, rtol=1e-12, atol=1e-12)
+    from luna.reference_data import reference_path
+    ref = np.load(reference_path(PARITY))
+    # prolong: upstream is jnp.kron with ones((2, 2)), a copy of each coarse value: bitwise
+    ours_p = np.asarray(g.prolong(jnp.asarray(ref["coarse"]), ndim=2))
+    np.testing.assert_array_equal(ours_p, ref["prolonged"])
+    # restrict: the mean of 2 x 2 fine cells; summed in another order each sum of 4 is within 3 u sum|x| of the
+    # exact one (u = 2^-53, Higham 2002 eq. 4.4), so two orders differ by at most 6 u sum|x| / 4 per cell
+    fine = ref["fine"]
+    ours_r = np.asarray(g.restrict(jnp.asarray(fine), ndim=2))
+    s = fine.shape
+    bound = 6 * 2.0 ** -53 * np.abs(fine).reshape(s[0], s[1], s[2] // 2, 2, s[3] // 2, 2).sum(axis=(3, 5)) / 4
+    assert np.all(np.abs(ours_r - ref["restricted"]) <= bound)
+    # teeth: a restriction that takes one fine cell instead of the mean is far outside the bound
+    assert not np.all(np.abs(fine[:, :, ::2, ::2] - ref["restricted"]) <= bound)
