@@ -55,6 +55,13 @@ LUNA config rather than writing it twice.
 
 ## Running one
 
+Stock Torch drives only FLASH. LUNA needs the `luna-hydro-code` branch of
+[Ulli1991/torch](https://github.com/Ulli1991/torch/tree/luna-hydro-code), a fork
+of Torch 2.2.2 that lets another hydro code be used (`USER['hydro_code'] = 'luna'`,
+which imports `amuse_luna.interface`) and carries the fixes listed under "The
+coupling side" below. The cloud runs used commit `f6fbe7f`. Point `$TORCH_ROOT` at
+the clone; `torch_user_luna.py` puts it and its `src/` on the path.
+
 Four files in the run directory:
 
 | file | what it is |
