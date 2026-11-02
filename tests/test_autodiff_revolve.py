@@ -59,11 +59,9 @@ def test_closed_form_is_the_optimum():
             assert binomial_advances(l, c) == _dp(l, c), (l, c)
 
 
-@pytest.mark.parametrize("n", [1, 2, 7, 33, 120, 1000])
-@pytest.mark.parametrize("c", [1, 2, 3, 8, 32])
+# c <= n: more snapshots than steps is not a schedule
+@pytest.mark.parametrize("n,c", [(n, c) for c in (1, 2, 3, 8, 32) for n in (1, 2, 7, 33, 120, 1000) if c <= n])
 def test_schedule_reverses_every_step(n, c):
-    if c > n:
-        pytest.skip("more snapshots than steps")
     adv = _run_symbolic(n, c)
     assert adv == schedule(n, c)["advances"] == binomial_advances(n, c)
 
