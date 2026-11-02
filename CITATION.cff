@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software in your research, please cite it as below."
-title: "LUNA: A performance-portable and differentiable hydrodynamics and collisionless N-body code for astrophysical fluid dynamics"
+title: "LUNA: A Scalable and Differentiable Hydrodynamics and Collisional N-body Code for Astrophysical Fluid Dynamics"
 abstract: >-
   LUNA is a differentiable astrophysical hydrodynamics code written in JAX, with hand-written
   Pallas kernels as a fast path on GPUs. It solves the Euler equations in one, two and three
