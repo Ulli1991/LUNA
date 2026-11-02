@@ -23,6 +23,7 @@ authors:
   - family-names: Steinwandel
     given-names: Ulrich Philipp
     affiliation: "Max Planck Institute for Astrophysics"
+    orcid: "https://orcid.org/0000-0001-8867-5026"
 doi: 10.5281/zenodo.23874689
 identifiers:
   - type: doi
