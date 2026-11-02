@@ -35,11 +35,13 @@ class Solver(NamedTuple):
     step: object
 
 
-def admissible_flux(state, guess, high, low, dt, dx, recover, update=None):
+def admissible_flux(state, guess, high, low, dt, dx, recover, update=None, periodic=False):
     """Conservatively reduce a shared high-order flux until the complete update is EOS-admissible."""
 
     def trial(theta):
         flux = jnp.where(theta == 1, high, jnp.where(theta == 0, low, low + theta * (high - low)))
+        if periodic:   # faces 0 and N are one face: one value, else round-off leaks mass through it
+            flux = flux.at[:, -1].set(flux[:, 0])
         updated = (
             state - dt / dx * (flux[:, 1:] - flux[:, :-1])
             if update is None
@@ -229,6 +231,7 @@ def make_solver(table, *, boundary="outflow", coulomb=True, order=2, geometry="p
             dx,
             lambda state, guess: recover(table, state, guess),
             update=radial_update if radial else None,
+            periodic=mode == "wrap",
         )
         fraction = jnp.where(high_valid, fraction, 0.0)
         speed = jnp.maximum(

@@ -6,6 +6,9 @@ Three cases (planar He burn, periodic smooth flow without burning, spherical C/O
 analytic ions+radiation EOS (a zero Helmholtz table), compared at the final checkpoint: steps, time, state,
 temperature and the diagnostics JSON. No main.py path is run here.
 
+Bitwise only for a repeat in the same process; against the golden (written on a Raven CPU) within ROW_RTOL:
+another machine's CPU or GPU rounds differently (GitHub's CPUs: he_planar off at round-off, 2026-11-01).
+
 Regenerate (only on purpose, from the reference commit): python tests/test_stellar_golden.py
 """
 import hashlib
@@ -50,6 +53,7 @@ def run_case(name, workdir, monkeypatch=None):
         stellar.load_table = lambda path: table
     else:
         monkeypatch.setattr(stellar, "load_table", lambda path: table)
+    Path(workdir).mkdir(parents=True, exist_ok=True)
     path = Path(workdir) / "analytic.table"
     path.write_bytes(b"analytic ions+radiation")
     result = stellar.run(path, stellar.Config(**fields), stop, Path(workdir) / name, dt_max=dt_max)
@@ -60,16 +64,38 @@ def run_case(name, workdir, monkeypatch=None):
                 diagnostics=json.dumps(diagnostics, sort_keys=True))
 
 
+# Another CPU's or jax version's round-off, max |diff| / row max: 1.3 x the largest measured, co_spherical state
+# 4.65e-14 with jax 0.10.2 (GitHub CI's version) against the jax 0.10.1 golden, Raven login node 2026-11-02
+# (he_planar 2.7e-17, smooth_periodic 0; XLA limited to AVX2 on jax 0.10.1: all 0). Not a GPU bound: the runner's
+# slope flattening is decided by the sign of round-off, an A100 is O(1) off in co_spherical (0.36, job 31787326).
+ROW_RTOL = 6.0e-14
+
+
+def row_error(actual, desired):
+    """Max |actual - desired| over each row's max |desired|: another machine's round-off against the golden."""
+    actual, desired = np.atleast_2d(actual), np.atleast_2d(desired)
+    scale = np.max(np.abs(desired), axis=-1, keepdims=True)
+    return float(np.max(np.abs(actual - desired) / np.where(scale > 0, scale, 1.0)))
+
+
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_stellar_runner_matches_golden(name, tmp_path, monkeypatch):
-    """The runner's final checkpoint equals its frozen one bitwise (regression only)."""
+    """A repeat in the same process is bitwise; the golden is matched to ROW_RTOL (regression only)."""
     golden = np.load(reference_path(GOLDEN))
-    result = run_case(name, tmp_path, monkeypatch)
+    result = run_case(name, tmp_path / "first", monkeypatch)
+    again = run_case(name, tmp_path / "again", monkeypatch)
+    for key in ("state", "temperature", "time", "steps", "diagnostics"):
+        np.testing.assert_array_equal(again[key], result[key])
     assert result["steps"] == int(golden[f"{name}/steps"]) and result["steps"] > 3
     assert result["time"] == float(golden[f"{name}/time"])
-    np.testing.assert_array_equal(result["state"], golden[f"{name}/state"])
-    np.testing.assert_array_equal(result["temperature"], golden[f"{name}/temperature"])
-    assert result["diagnostics"] == str(golden[f"{name}/diagnostics"])
+    counters = [json.loads(d) for d in (result["diagnostics"], str(golden[f"{name}/diagnostics"]))]
+    budgets = [np.asarray(c.pop("boundary_budget")) for c in counters]
+    assert counters[0] == counters[1]
+    errors = {k: row_error(result[k], golden[f"{name}/{k}"]) for k in ("state", "temperature")}
+    errors["boundary_budget"] = row_error(budgets[0], budgets[1])
+    print(f"{jax.default_backend()} vs the Raven CPU golden, {name}: "
+          + ", ".join(f"{k} {v:.3e}" for k, v in errors.items()))
+    assert max(errors.values()) <= ROW_RTOL, errors
 
 
 if __name__ == "__main__":
