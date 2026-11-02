@@ -5,7 +5,7 @@ name: tests
 # Every push and PR:
 #   python tools/run_tests.py --tier fast               # the measured-cost fast tier
 #   python tools/run_tests.py --tier fast --devices 2   # the smallest sharded mesh
-# Nightly (schedule) and by hand (workflow_dispatch), the whole CPU suite; on every push to main once public:
+# Every push to main, nightly (schedule) and by hand (workflow_dispatch), the whole CPU suite:
 #   full-cpu8   --tier full --shard I/12   CPU, 8 virtual devices (conftest's default)
 #   multi-dev2  --tier multidevice --devices 2 --shard I/4   the files that ask for the
 #               device count, on the smallest mesh with a halo exchange
@@ -105,8 +105,7 @@ jobs:
 
   full-cpu8:
     # The whole CPU suite in 12 shards balanced by measured cost (tests/tiers.json).
-    # Nightly and by hand only while the repository is private (Actions minutes); on every push once public.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -140,8 +139,7 @@ jobs:
 
   multi-dev2:
     # The multidevice files (they ask jax for the device count) on 2 devices.
-    # Nightly and by hand only while the repository is private (Actions minutes); on every push once public.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -175,8 +173,7 @@ jobs:
 
   amuse-cpu8:
     # The Torch/AMUSE coupling tests (every test file that imports amuse, and the AMUSE files ci_exclude.json lists).
-    # Nightly and by hand only while the repository is private (Actions minutes); on every push once public.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -220,7 +217,7 @@ jobs:
 
   coverage:
     # No test may be skipped in every config: CPU-8, 2 devices, and Raven's GPU reports.
-    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: always() && github.event_name != 'pull_request'
     needs: [full-cpu8, multi-dev2, amuse-cpu8]
     runs-on: ubuntu-latest
     timeout-minutes: 10
