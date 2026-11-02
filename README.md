@@ -19,8 +19,8 @@ problems, such as optimising initial conditions with gradients taken through the
 Non-equilibrium chemistry and cooling networks, radiation transport, sink particles and
 star formation with stellar dynamics and feedback through Torch/AMUSE, and block-based
 adaptive mesh refinement are included as experimental modules. Validated capabilities
-are tested against exact solutions or other codes (AthenaK, Arepo, RAMSES), whose
-reference solutions are published with the code.
+are tested against exact solutions, published data and AthenaK; Arepo and RAMSES runs
+serve as comparisons, and all reference solutions are published with the code.
 
 Defaults on `main`: FP32
 (`enable_x64=False`), minmod limiter, HLLC, CFL 0.8, and the XLA kernel
@@ -33,37 +33,46 @@ Code, AMReX Microphysics and others, with their sources) are public in
 
 ## What LUNA can do
 
-Status: **validated** = asserted by a test against an independent reference;
-**shown** = real runs, shown in figures, not yet asserted by a test; **experimental** =
-under development, not finalised. Each row's tests and details are in
+Status: **validated** = asserted by a test with a gate that does not depend on LUNA's
+own error (round-off or an exact identity, a convergence order containing the
+theoretical one, an AthenaK matched-method bound, published data); **regression pin** =
+a test pins LUNA's own result (~1.3x its measured error, even against an exact
+solution): a change is caught, correctness is not shown; **shown** = real runs, shown in
+figures, not asserted by a test; **experimental** = under development, not finalised. Each row's tests and details are in
 [docs/CLAIMS.md](docs/CLAIMS.md).
 
 | capability | status |
 |---|---|
 | Euler hydrodynamics in 1D, 2D, 3D: unsplit MUSCL-Hancock, PLM (minmod, MC, van Leer), HLLC | validated |
-| `riemann_solver="hll"`: the robust fallback where HLLC carbuncles at grid-aligned strong shocks; chosen by the user, never switched automatically | validated |
-| Multi-GPU domain decomposition; a sharded run reproduces the single-device run | validated |
+| Shock tubes, Noh and Guderley implosions against exact solutions; Shu-Osher, Woodward-Colella, Titarev-Toro, Liska-Wendroff implosion and Kurganov-Tadmor 3 against AthenaK, same method and resolution | validated |
+| Sedov-Taylor blast; Richtmyer-Meshkov growth; nonlinear Kelvin-Helmholtz (McNally et al. 2012) | regression pin |
+| `riemann_solver="hll"`: the robust fallback where HLLC carbuncles at grid-aligned strong shocks; chosen by the user, never switched automatically | regression pin |
+| Multi-GPU domain decomposition: a sharded run equals the single-device run bitwise for hydro (`test_hydro_hard_sedov_offaxis.py:262`, `test_hydro_hard_mcnally_kh.py:318`, `test_hydro_hard_implosion.py:199`, `test_hydro_hard_kt_riemann.py:335`); to rel 2.5e-12 for gravity (`test_gravity_decomposition.py:61`), 1e-12 for radiation (`test_radiation_coupled.py:149`), 1e-11 for gradients (`test_autodiff_sharded.py:123`); AMR to atol 1e-10 with rtol 1e-5 (`test_amr_shard.py:22`), chemistry to rtol 1e-8 (`test_chemistry_integrator.py:296`, runs in no standard config yet); no comparison for cosmology/PM. All modules: [docs/CLAIMS.md](docs/CLAIMS.md#sharded-equals-one-device-per-module) | validated (hydro bitwise, others to the tolerances named) |
 | Weak scaling to 4096 NVIDIA GH200 GPUs on JUPITER (FP32, 88.9 % efficiency) | shown (measurement) |
 | NVIDIA and AMD GPUs (runs on A100, GH200, MI300A; public CI is CPU only) | shown |
 | Pallas GPU kernels (`hydro_kernel="pallas"`, opt-in), bitwise equal to the XLA kernel on A100 | validated |
-| Self-gravity, periodic and isolated boundaries; energy-conserving coupling | validated |
-| Comoving cosmology: adiabatic expansion, top-hat collapse | validated |
+| Self-gravity: Jeans waves (periodic); energy-conserving coupling (Evrard collapse, to the Poisson solve's tolerance); isolated solve sharded equals one device | validated |
+| Isolated boundaries: face potential against a direct sum, force against the uniform sphere | regression pin |
+| Comoving cosmology: adiabatic expansion | validated |
+| Comoving cosmology: spherical top-hat collapse | regression pin |
 | Cosmic web with dark-matter particles and gas; DM power spectrum compared with Arepo | shown |
-| Radiative cooling (tables validated against published equilibria; cooling in the step not yet asserted) | shown |
+| Radiative cooling: the Koyama-Inutsuka fit balances the published two-phase states to their published rounding, and the tables reproduce the fit | validated |
+| Radiative cooling in the time step | shown |
 | Chemistry networks | experimental |
 | Radiation transport, M1 and M2 closures | experimental |
 | Sink particles and star formation coupled to Torch/AMUSE | experimental |
 | Block AMR | experimental |
 | Starburst-driven wind (M82 disk, CC85 injection) | shown |
 | Driven turbulence | shown |
-| Differentiation through the solver (gradients checked against finite differences; known gaps in [docs/AUTODIFF.md](docs/AUTODIFF.md)) | shown |
+| Gradients through the solver against finite differences (the cases tested; known gaps in [docs/AUTODIFF.md](docs/AUTODIFF.md)) | validated |
+| Optimisation through whole simulations (the LUNA-word demonstration) | shown |
 
 <table>
 <tr>
 <td width="50%"><img src="code_paper_figs/kh_8192_luna_vs_athenak.png" alt="Kelvin-Helmholtz at 8192², LUNA and AthenaK"><br>
 <sub><b>Kelvin-Helmholtz at 8192²</b>, density at t = 0 to 5: LUNA (top, second order) and AthenaK (bottom, fourth-order WENOZ) as the reference. Shown: an accuracy comparison by eye, not an asserted test.</sub></td>
 <td width="50%"><img src="code_paper_figs/sedov3d_Nx1024.png" alt="3D Sedov-Taylor blast wave"><br>
-<sub><b>3D Sedov-Taylor blast</b> in an ISM-like medium: shock radius against the self-similar solution, and column density. The Sedov solution is asserted in the 2D off-axis tests (validated); this 3D run is shown.</sub></td>
+<sub><b>3D Sedov-Taylor blast</b> in an ISM-like medium: shock radius against the self-similar solution, and column density. The 2D off-axis Sedov tests pin LUNA's error against the exact solution (a regression pin); this 3D run is shown.</sub></td>
 </tr>
 <tr>
 <td><img src="code_paper_figs/cosmic_web_512_z0.png" alt="Cosmic web at z=0, dark matter and gas"><br>
@@ -89,24 +98,32 @@ More figures: [docs/GALLERY.md](docs/GALLERY.md).
 
 ## What is validated
 
-Only results that a test asserts against an independent reference (exact or analytic
-solution, published data, or another code's output) with a stated bound; the test for
+Only results that a test asserts with a gate that does not depend on LUNA's own error
+(exact or analytic solution with the theoretical order or at round-off, published data to
+its published precision, or AthenaK at the same method and resolution); the test for
 each is in [docs/CLAIMS.md](docs/CLAIMS.md), and the other codes' outputs are in
 [luna-reference-solutions](https://github.com/Ulli1991/luna-reference-solutions).
 
 - Second-order convergence on smooth flows and linear waves; HLLC and HLL fluxes against
-  Toro's tests; shock tubes against the exact Riemann solution.
-- Sedov-Taylor, Noh and Guderley against exact solutions; linear growth of
-  Kelvin-Helmholtz, Rayleigh-Taylor and Richtmyer-Meshkov against linear theory;
-  nonlinear Kelvin-Helmholtz against McNally et al. (2012).
-- HLL keeps grid-aligned strong shocks planar where HLLC carbuncles (the HLLC case is a
-  known open bug, kept as a strict xfail test).
-- A run split over several devices reproduces the single-device run (bitwise in the
-  Sedov and Kelvin-Helmholtz tests, to 1e-12 in the shard-seam test); the Pallas hydro
-  kernel equals the XLA kernel bitwise on an A100.
-- Self-gravity with periodic and isolated boundaries (Jeans waves, direct sums, energy
-  conservation in the Evrard collapse); comoving expansion and the spherical top-hat
-  collapse against exact solutions; cooling tables against published equilibria.
+  their textbook formulas and exact contacts at round-off; shock tubes converge to the
+  exact Riemann solution at the expected first order.
+- Noh and Guderley against exact solutions; linear growth of Kelvin-Helmholtz and
+  Rayleigh-Taylor against linear theory; Shu-Osher, Woodward-Colella, Titarev-Toro, the
+  Liska-Wendroff implosion and Kurganov-Tadmor 3 within AthenaK's error at the same
+  method and resolution.
+- A run split over several devices reproduces the single-device run: bitwise in the hydro
+  tests (Sedov, Kelvin-Helmholtz, implosion, Kurganov-Tadmor), to round-off tolerances for
+  gravity (2.5e-12), radiation (1e-12) and gradients (1e-11); the Pallas hydro kernel
+  equals the XLA kernel bitwise on an A100.
+- Jeans waves; energy conservation in the Evrard collapse to the Poisson solve's
+  tolerance; comoving adiabatic expansion at round-off; the cooling fit against published
+  equilibria; gradients against finite differences for the cases tested.
+
+Regression pins, not validation: Sedov-Taylor, Richtmyer-Meshkov, nonlinear
+Kelvin-Helmholtz against McNally et al. (2012), the HLL-versus-HLLC carbuncle tests (the
+HLLC case is a known open bug, kept as a strict xfail test), isolated-boundary gravity
+against direct sums and the uniform sphere, and the spherical top-hat collapse. Their
+bounds are ~1.3x LUNA's measured error against the exact solution or reference.
 
 White-dwarf detonations are in development and not on `main`.
 

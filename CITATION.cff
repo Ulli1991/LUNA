@@ -16,8 +16,8 @@ abstract: >-
   gradients taken through the solver. Non-equilibrium chemistry and cooling networks, radiation
   transport, sink particles and star formation with stellar dynamics and feedback through
   Torch/AMUSE, and block-based adaptive mesh refinement are included as experimental modules.
-  Validated capabilities are tested against exact solutions or other codes (AthenaK, Arepo,
-  RAMSES), whose reference solutions are published with the code.
+  Validated capabilities are tested against exact solutions, published data and AthenaK; Arepo
+  and RAMSES runs serve as comparisons, and all reference solutions are published with the code.
 type: software
 authors:
   - family-names: Steinwandel
