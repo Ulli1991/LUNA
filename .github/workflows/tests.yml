@@ -16,6 +16,8 @@ name: tests
 # test bug: tests/ci_known_failures_{cpu8,dev2}.json -- reported KNWN, never skipped, and a listed
 # file that passes fails the job.
 # GPU tests run in the Raven nightly; see docs/TESTING.md.
+# Every job that needs reference data fetches exactly the commit in reference-solutions.lock
+# (src/luna/reference_data.py refuses any other).
 
 on:
   push:
@@ -40,8 +42,13 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
-      - name: Reference solutions (separate data repository)
-        run: git clone --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git ../luna-reference-solutions
+      - name: Reference solutions (separate data repository, exactly the commit in reference-solutions.lock)
+        run: |
+          sha=$(sed -n 's/^commit *= *//p' reference-solutions.lock)
+          git init -q ../luna-reference-solutions
+          git -C ../luna-reference-solutions fetch -q --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git "$sha"
+          git -C ../luna-reference-solutions checkout -q --detach FETCH_HEAD
+          test "$(git -C ../luna-reference-solutions rev-parse HEAD)" = "$sha"
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -67,8 +74,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Reference solutions (separate data repository)
-        run: git clone --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git ../luna-reference-solutions
+      - name: Reference solutions (separate data repository, exactly the commit in reference-solutions.lock)
+        run: |
+          sha=$(sed -n 's/^commit *= *//p' reference-solutions.lock)
+          git init -q ../luna-reference-solutions
+          git -C ../luna-reference-solutions fetch -q --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git "$sha"
+          git -C ../luna-reference-solutions checkout -q --detach FETCH_HEAD
+          test "$(git -C ../luna-reference-solutions rev-parse HEAD)" = "$sha"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -114,8 +126,13 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - uses: actions/checkout@v4
-      - name: Reference solutions (separate data repository)
-        run: git clone --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git ../luna-reference-solutions
+      - name: Reference solutions (separate data repository, exactly the commit in reference-solutions.lock)
+        run: |
+          sha=$(sed -n 's/^commit *= *//p' reference-solutions.lock)
+          git init -q ../luna-reference-solutions
+          git -C ../luna-reference-solutions fetch -q --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git "$sha"
+          git -C ../luna-reference-solutions checkout -q --detach FETCH_HEAD
+          test "$(git -C ../luna-reference-solutions rev-parse HEAD)" = "$sha"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -148,8 +165,13 @@ jobs:
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
-      - name: Reference solutions (separate data repository)
-        run: git clone --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git ../luna-reference-solutions
+      - name: Reference solutions (separate data repository, exactly the commit in reference-solutions.lock)
+        run: |
+          sha=$(sed -n 's/^commit *= *//p' reference-solutions.lock)
+          git init -q ../luna-reference-solutions
+          git -C ../luna-reference-solutions fetch -q --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git "$sha"
+          git -C ../luna-reference-solutions checkout -q --detach FETCH_HEAD
+          test "$(git -C ../luna-reference-solutions rev-parse HEAD)" = "$sha"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -178,8 +200,13 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Reference solutions (separate data repository)
-        run: git clone --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git ../luna-reference-solutions
+      - name: Reference solutions (separate data repository, exactly the commit in reference-solutions.lock)
+        run: |
+          sha=$(sed -n 's/^commit *= *//p' reference-solutions.lock)
+          git init -q ../luna-reference-solutions
+          git -C ../luna-reference-solutions fetch -q --depth 1 https://github.com/Ulli1991/luna-reference-solutions.git "$sha"
+          git -C ../luna-reference-solutions checkout -q --detach FETCH_HEAD
+          test "$(git -C ../luna-reference-solutions rev-parse HEAD)" = "$sha"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"

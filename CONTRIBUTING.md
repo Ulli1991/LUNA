@@ -16,7 +16,11 @@ The tests compare against reference solutions kept in
 [luna-reference-solutions](https://github.com/Ulli1991/luna-reference-solutions). LUNA finds
 that repository through `$LUNA_REFERENCE_SOLUTIONS`, else as `../luna-reference-solutions`
 next to the clone, else as `~/luna-reference-solutions`, and checks every file's sha256 against
-its `MANIFEST.json`. A missing or altered file fails the test; it is never skipped.
+its `MANIFEST.json`. A missing or altered file fails the test; it is never skipped. The
+checkout must be the commit in `reference-solutions.lock` (`git -C ../luna-reference-solutions
+checkout <commit>`); another commit or a re-generated `MANIFEST.json` is refused. Working on new
+references, set `LUNA_REFERENCE_SOLUTIONS_UNLOCKED=1` (each use is logged) and update the lock
+in the commit that needs the new data.
 
 ## Run the tests
 

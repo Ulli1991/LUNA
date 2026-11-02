@@ -91,6 +91,7 @@ The experiment variables became options of the example tasks in
 
 ## Tests
 
-`LUNA_MULTIGPU_TEST=1` (declared in `conftest.py`; currently no test carries the
-`multigpu` marker) and `LUNA_JAXAMR` (path to a JAX-AMR checkout for the
-parity test in `tests/test_amr_geometry.py`).
+`LUNA_JAXAMR` (path to a JAX-AMR checkout for the parity test in
+`tests/test_amr_geometry.py`) and `LUNA_REFERENCE_SOLUTIONS_UNLOCKED=1` (accept a
+luna-reference-solutions checkout that is not the commit in `reference-solutions.lock`;
+logged, see `src/luna/reference_data.py`).

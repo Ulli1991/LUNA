@@ -1,0 +1,9 @@
+# The luna-reference-solutions revision this LUNA revision is tested against.
+# src/luna/reference_data.py refuses a checkout whose HEAD (git rev-parse HEAD, or the first word of its
+# REVISION file when git is unavailable) is not `commit`, or whose MANIFEST.json is not `manifest_sha256`.
+# CI fetches exactly `commit` (.github/workflows/tests.yml). Developer override, logged on every use:
+# LUNA_REFERENCE_SOLUTIONS_UNLOCKED=1. Change these lines together, in the commit that needs the new data.
+repository = https://github.com/Ulli1991/luna-reference-solutions.git
+commit = 8f0415c1741b4d332aa7f4a0e420e083d76fd148
+manifest_sha256 = 232ad8e8aef5193230dd208b7229e6b15c622181612b016277a7c016e78e7fcf
+tag =

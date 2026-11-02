@@ -266,10 +266,14 @@ regression-only tests) live in a separate repository,
 look for it in `$LUNA_REFERENCE_SOLUTIONS`, then next to the LUNA checkout
 (`../luna-reference-solutions`), then in `~/luna-reference-solutions`, and check every
 file's sha256 against its `MANIFEST.json`; a missing or altered file is an error, not a
-skip. Other codes are used only as accuracy references.
+skip. The checkout must be the commit pinned in `reference-solutions.lock`, with that
+commit's `MANIFEST.json`; any other is refused (`LUNA_REFERENCE_SOLUTIONS_UNLOCKED=1`
+accepts it for work on new references, and logs that it did). Other codes are used only
+as accuracy references.
 
 ```bash
 git clone https://github.com/Ulli1991/luna-reference-solutions.git ../luna-reference-solutions
+git -C ../luna-reference-solutions checkout "$(sed -n 's/^commit *= *//p' reference-solutions.lock)"   # in the LUNA clone
 ```
 
 Public CI runs the fast tier on CPU, once on one device and once on two virtual devices
