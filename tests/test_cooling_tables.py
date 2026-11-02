@@ -1,13 +1,20 @@
-"""Cooling tables against published thermal equilibria, and the isothermal projection's precision."""
+"""Cooling: the KI fit against published equilibria, the tables against the fit, and the isothermal projection's precision."""
+import dataclasses
+
 import numpy as np
 import pytest
 
 from luna.sources.cooling import combine, koyama_inutsuka_2002, sutherland_dopita_cie
 from tests._helpers import check
 
-# Published equilibria (n Lambda = Gamma) of the KI 2002 fit with its corrected 1.4e-2: Koyama &
-# Inutsuka 2004 (n 2.93, T 756 K), Jennings & Li 2021 (n 2, T 1500 K); the misprinted 14.0 gives ~1000.
-EQUILIBRIA = ((2.93, 756.0, 0.9986), (2.0, 1500.0, 1.0199))
+# Published two-phase equilibria (n [cm^-3], T [K], half a unit in the last published digit of n and of T):
+# Koyama & Inutsuka 2004 (n 2.93, T 756 K) and Jennings & Li 2021 (n 2, T 1500 K), both for the KI 2002 fit.
+EQUILIBRIA = ((2.93, 756.0, 0.005, 0.5), (2.0, 1500.0, 0.5, 50.0))
+
+
+def ki_fit(T, c=1.4e-2):
+    """Lambda / Gamma of the KI 2002 fit, written here from the paper (the low-T coefficient 1.4e-2; printed 14)."""
+    return 1.0e7 * np.exp(-1.184e5 / (T + 1000.0)) + c * np.sqrt(T) * np.exp(-92.0 / T)
 
 
 def balance(table, n, T):
@@ -15,13 +22,46 @@ def balance(table, n, T):
     return n * 10.0 ** np.interp(np.log10(T), table.log_T, table.log_Lambda) / table.heating
 
 
+def rounding_bound(n, T, dn, dT):
+    """|ln(n Lambda / Gamma)| that the published rounding of (n, T) allows: dn/n + |dln Lambda/dln T| dT/T."""
+    slope = (np.log(ki_fit(T * 1.0001)) - np.log(ki_fit(T / 1.0001))) / (2.0 * np.log(1.0001))
+    return dn / n + abs(slope) * dT / T
+
+
+def interp_bound(spacings, x):
+    """A-priori max relative error of log-log linear interpolation near log10 T = x: ln(10) sum h^2/8 max|g''|."""
+    # g = log10 Lambda(10^x). A sum over spacings: the combined table re-interpolates the KI table, and linear
+    # interpolation does not grow a max-norm error.
+    h = max(spacings)
+    xs = np.linspace(x - 2 * h, x + 2 * h, 4001)
+    g = np.log10(ki_fit(10.0 ** xs))
+    g2 = np.abs(np.diff(g, 2)).max() / (xs[1] - xs[0]) ** 2
+    return np.log(10.0) * sum(s * s for s in spacings) / 8.0 * g2
+
+
+def test_fit_balances_the_published_states():
+    """The KI fit (1.4e-2) balances both published states to their published rounding; the printed 14 does not."""
+    # Bound from the published digits, no LUNA number. Measured 2026-11-02: 756 K is 0.14 % off balance (bound
+    # 0.21 %); 1500 K is 2.0 % off (bound 27 %, n published to one digit, so a weak check). 14 is ~1000x off.
+    for n, T, dn, dT in EQUILIBRIA:
+        bound = rounding_bound(n, T, dn, dT)
+        check(f"KI fit n={n} T={T:g} |ln(n Lambda/Gamma)|", abs(np.log(n * ki_fit(T))), bound)
+        assert abs(np.log(n * ki_fit(T, c=14.0))) > bound      # teeth: the misprint is rejected
+
+
 @pytest.mark.parametrize("name", ["koyama_inutsuka", "combined"])
-def test_published_equilibria(name):
-    """Both tables hold the published two-phase states in balance, to the interpolation (0.5 %)."""
+def test_tables_reproduce_the_fit(name):
+    """Both tables give the fit's n Lambda/Gamma at the published states to the a-priori interpolation bound."""
+    # Measured 2026-11-02: 3.6e-5 at 756 K, 2.6e-5 at 1500 K (bounds 5.9e-5 / 3.0e-5 KI, 7.7e-5 / 3.9e-5 combined).
+    # Teeth: a 1 % error in the table's heating rate fails.
     ki = koyama_inutsuka_2002()
     table = ki if name == "koyama_inutsuka" else combine(ki, sutherland_dopita_cie())
-    for n, T, exact in EQUILIBRIA:
-        check(f"{name} n={n} T={T:g} |n Lambda/Gamma - exact|", abs(balance(table, n, T) / exact - 1.0), 5e-3)
+    spacings = [np.diff(ki.log_T).max()] + ([np.diff(table.log_T).max()] if table is not ki else [])
+    for n, T, _, _ in EQUILIBRIA:
+        bound = interp_bound(spacings, np.log10(T))
+        check(f"{name} n={n} T={T:g} |table / fit - 1|", abs(balance(table, n, T) / (n * ki_fit(T)) - 1.0), bound)
+        bad = dataclasses.replace(table, heating=1.01 * table.heating)
+        assert abs(balance(bad, n, T) / (n * ki_fit(T)) - 1.0) > bound      # teeth
 
 
 @pytest.mark.parametrize("mode", ["fp64", pytest.param("fp32", marks=pytest.mark.precision("fp32"))])
