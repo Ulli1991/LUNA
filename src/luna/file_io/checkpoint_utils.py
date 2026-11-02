@@ -23,7 +23,8 @@ def code_revision():
     """The full git commit of the running code, '-dirty' if tracked files differ from it; without git
     the CODE_REVISION file a deployment wrote next to the code; an installed wheel gives its version."""
     if not os.path.isfile(os.path.join(_REPO_ROOT, "..", "..", "pyproject.toml")):
-        return _installed_version()      # not a source checkout: never ask git of whatever repo encloses it
+        rev = _revision_file()           # not a source checkout: never ask git of whatever repo encloses it
+        return rev if rev != "unknown" else _installed_version()
     try:
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=_REPO_ROOT,
                               capture_output=True, text=True, timeout=10).stdout.strip()
@@ -50,7 +51,7 @@ def _installed_version():
     try:
         return "luna-hydro " + version("luna-hydro")
     except PackageNotFoundError:
-        return _revision_file()
+        return "unknown"
 
 
 def _git_revision():

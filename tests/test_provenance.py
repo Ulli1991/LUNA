@@ -53,6 +53,25 @@ def test_revision_file_is_used_without_git(tmp_path, monkeypatch):
         cu.code_revision.cache_clear()
 
 
+def test_installed_wheel_gives_its_version_and_never_asks_git(tmp_path, monkeypatch):
+    """A wheel (no pyproject.toml, no CODE_REVISION) reports its package version, not an enclosing repo's HEAD."""
+    import importlib.metadata
+    import luna.file_io.checkpoint_utils as cu
+    fake_pkg = tmp_path / "site-packages" / "luna"
+    fake_pkg.mkdir(parents=True)
+    monkeypatch.setattr(cu, "_REPO_ROOT", str(fake_pkg))
+
+    def no_git(*a, **k):
+        raise AssertionError("git asked outside a source checkout")
+    monkeypatch.setattr(cu.subprocess, "run", no_git)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "9.9.9")
+    cu.code_revision.cache_clear()
+    try:
+        assert cu.code_revision() == "luna-hydro 9.9.9"
+    finally:
+        cu.code_revision.cache_clear()
+
+
 def test_checkpoint_and_snapshot_headers_carry_revision_and_config(tmp_path):
     from luna.file_io.checkpoint_utils import code_revision
     from luna.file_io.write_checkpoint_distributed import write_checkpoint_distributed
