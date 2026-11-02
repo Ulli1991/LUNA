@@ -76,8 +76,8 @@ comes with a test. Add a line to the "Unreleased" section of [CHANGELOG.md](CHAN
    at the tag by `tools/pypi_readme.py`), runs `twine check` and a clean-venv smoke run, and
    uploads to PyPI with Trusted Publishing (no API token).
 
-The workflow is inactive until the repository is public and PyPI trusts it. One-time setup on
-pypi.org, logged in as the project owner:
+The one-time setup below is done (the v0.1.0 tag created `luna-hydro` on PyPI, 2026-11-02);
+it is kept for a move of the repository or a second maintainer. On pypi.org, as the project owner:
 
 1. Account settings, Publishing, "Add a new pending publisher" (the project does not exist yet):
    PyPI project name `luna-hydro`, owner `Ulli1991`, repository `LUNA`, workflow
@@ -87,5 +87,6 @@ pypi.org, logged in as the project owner:
 3. Optional dry run: the same pending publisher on test.pypi.org, and a copy of the workflow
    whose publish step sets `repository-url: https://test.pypi.org/legacy/`.
 
-The first tag push then creates the project on PyPI. If the repository or workflow is renamed,
-update the publisher on PyPI to match.
+A GitHub release also makes a new Zenodo version (the repository's Zenodo switch is on); the
+concept DOI 10.5281/zenodo.23874689 always resolves to the latest. If the repository or workflow
+is renamed, update the publisher on PyPI to match.

@@ -114,14 +114,15 @@ White-dwarf detonations are in development and not on `main`.
 
 Python 3.11, 3.12 or 3.13. The package is `luna-hydro`; it installs the library `luna`
 and the command `luna` (the same as `python main.py` in a clone), and pins
-`jax>=0.10.0,<0.11`. Until LUNA is on PyPI, install from a clone; the commands in
-brackets are the PyPI form for once it is published.
+`jax>=0.10.0,<0.11`. Install it from [PyPI](https://pypi.org/project/luna-hydro/), or
+from a clone (needed for the run scripts, tests and tools; see the end of this section).
 
 **CPU** (laptop, workstation, login node):
 
 ```bash
-git clone https://github.com/Ulli1991/LUNA.git
-pip install "./LUNA[plot]"              # (once published: pip install "luna-hydro[plot]")
+pip install "luna-hydro[plot]"
+# or from a clone:
+git clone https://github.com/Ulli1991/LUNA.git && pip install "./LUNA[plot]"
 ```
 
 **NVIDIA GPUs**: the `[cuda12]` extra installs JAX's CUDA 12 build of the same version,
@@ -129,11 +130,11 @@ with the CUDA libraries as pip wheels; the machine needs only an NVIDIA driver, 
 module.
 
 ```bash
-pip install "./LUNA[cuda12,plot]"       # (once published: pip install "luna-hydro[cuda12,plot]")
+pip install "luna-hydro[cuda12,plot]"    # or from a clone: pip install "./LUNA[cuda12,plot]"
 python -c "import jax; print(jax.devices())"     # [CudaDevice(id=0), ...]
 ```
 
-**AMD GPUs**: `pip install "./LUNA[rocm,plot]"` installs JAX's ROCm 7 plugin of the
+**AMD GPUs**: `pip install "luna-hydro[rocm,plot]"` (or `"./LUNA[rocm,plot]"` from a clone) installs JAX's ROCm 7 plugin of the
 same version (`jax[rocm7-local]`), which needs ROCm 7 installed on the machine (module
 or system). This route is not tested by LUNA's CI.
 
