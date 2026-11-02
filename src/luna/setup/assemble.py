@@ -16,8 +16,8 @@ from luna.setup.run_kind import COUPLED, DM
 from luna.setup.step_timing import label_methods
 
 # the gravity backend's calls the step timing and the profiler show as their own parts
-GRAVITY_PARTS = ("source", "solve", "grad", "kick_gas", "kick_drift", "gather", "close_kick",
-                 "exchange", "resort")
+GRAVITY_PARTS = ("source", "solve", "grad", "kick_gas", "kick_gas_work", "close_flux", "kick_drift", "gather",
+                 "close_kick", "exchange", "resort")
 
 
 @dataclass

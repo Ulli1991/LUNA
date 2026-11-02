@@ -62,12 +62,14 @@ def _differ(a, b):
 @pytest.fixture(scope="module")
 def driven(tmp_path_factory):
     """The driven box untimed, then timed on every step and every 2nd step."""
+    from luna.setup.gravity_energy import resolve_gravity_energy
     base = tmp_path_factory.mktemp("timing")
     runs = {}
     for every in (0, 1, 2):
         out = base / f"every{every}"
-        state = _run_loop(_driven_cfg(out, timing_every=every))
-        runs[every] = (_host(state), out, state)
+        cfg = _driven_cfg(out, timing_every=every)
+        state = _run_loop(cfg)
+        runs[every] = (_host(state), out, state, resolve_gravity_energy(cfg))
     return runs
 
 
@@ -84,10 +86,12 @@ def test_timing_writes_one_record_per_timed_step_with_every_part(driven):
         recs = [json.loads(line) for line in open(driven[every][1] / "step_timing.jsonl")]
         assert [r["step"] for r in recs] == steps
         parts = recs[-1]["parts_ms"]
+        # gravity_energy='auto' runs 'flux' here (setup/gravity_energy.py): its kicks are kick_gas_work, close_flux
+        assert driven[every][3] == "flux"
         for name in ("dt.hydro", "dt.gravity", "forcing.before", "gravity.before", "hydro",
                      "gravity.after", "forcing.after", "project.isothermal", "gravity.check",
-                     "outputs", "gravity.before/gravity.kick_gas",
-                     "gravity.after/gravity.solve", "gravity.after/gravity.kick_gas",
+                     "outputs", "gravity.before/gravity.kick_gas_work",
+                     "gravity.after/gravity.solve", "gravity.after/gravity.close_flux",
                      "gravity.after/gravity.source"):
             assert name in parts, f"{name} missing from {sorted(parts)}"
         top = sum(v[1] for k, v in parts.items() if "/" not in k)
@@ -104,7 +108,11 @@ def _main_step(state, dt, t_new, physics):
         state = stage.before(state, h, dt)
     if physics.hydro is not None:
         U0 = state.U
-        state = state.update(U=physics.hydro.step(U0, dt))
+        if physics.hydro.step_flux is not None:          # gravity_energy='flux'
+            U1, F = physics.hydro.step_flux(U0, dt)
+            state = state.update(U=U1, mass_flux=F)
+        else:
+            state = state.update(U=physics.hydro.step(U0, dt))
         face_mass = getattr(physics.hydro, "face_mass", None)
         if face_mass is not None:
             state = state.with_source(BUDGET, face_mass(U0, dt, state.sources[BUDGET]))
@@ -114,7 +122,7 @@ def _main_step(state, dt, t_new, physics):
     U = state.U
     for project in physics.projections:
         U = project(U, state.a)
-    return state.update(U=U, step=state.step + 1)
+    return state.update(U=U, step=state.step + 1, mass_flux=None, kick_work=None)
 
 
 def test_timing_off_is_the_old_step(driven, tmp_path):
@@ -135,12 +143,12 @@ def test_the_comparison_catches_parts_out_of_order(driven, tmp_path, monkeypatch
     import luna.setup.evolve as ev
     good = ev.step
 
-    def misordered(state, dt, t_new, physics, timer=None):
+    def misordered(state, dt, t_new, physics, timer=None, reports=None):
         if timer is None:
-            return good(state, dt, t_new, physics)
+            return good(state, dt, t_new, physics, None, reports)
         swapped = replace(physics, stages=list(physics.stages))
         swapped.stages.reverse()
-        return good(state, dt, t_new, swapped, timer)
+        return good(state, dt, t_new, swapped, timer, reports)
     monkeypatch.setattr(ev, "step", misordered)
     bad = _host(_run_loop(_driven_cfg(tmp_path, timing_every=1)))
     assert _differ(driven[0][0], bad), "a misordered timed step went unnoticed"
