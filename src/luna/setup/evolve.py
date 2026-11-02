@@ -176,6 +176,11 @@ def loop_step(state, physics, out, timer=None):
     if reports:
         log.push(reports[0], state.step, float(t_new))
     if physics.gravity is not None:
-        run_part("gravity.check", lambda: physics.gravity.check(state), timer)
+        try:
+            run_part("gravity.check", lambda: physics.gravity.check(state), timer)
+        except RuntimeError:
+            if log is not None:
+                log.flush()         # this step's refused faces (NaN) explain a non-finite density: name them first
+            raise
     run_part("outputs", lambda: out.after_step(state, dt), timer)
     return state, dt

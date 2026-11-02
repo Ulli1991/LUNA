@@ -38,9 +38,31 @@ GAS_REL = 1.0e-10
 
 def _cfg(**kw):
     from dataclasses import replace
+    # MC's Hancock faces at the accretion shocks either side of the pancake (cold infall onto it, from a ~ 0.95,
+    # step 115) go to p <= 0 (audit C8): first order there, counted and checked in _check_faces
     return replace(build_cfg(), output_dir="snapshots/test_pancake_coupled",
-                   PLOT_AFTER_SIM=False,
+                   PLOT_AFTER_SIM=False, allow_first_order_faces=True,
                    hydro_fused=True, **kw)   # seam-conservative kernel: GAS_REL gate
+
+
+def _check_faces(text, cfg):
+    """The first-order faces (C8) of a planar flow: x faces only, whole (y, z) planes, near the pancake at x = 0.
+
+    The IC and the flow are uniform in y and z, so every face decision repeats over a plane: the count is a
+    positive multiple of Ny Nz, and each listed cell lies within PLANES cells of x = 0 (periodic)."""
+    import re
+    total = re.findall(r"\[hydro\] run total: (\d+) first-order faces", text)
+    assert total, "no first-order face: the opt-in is no longer needed"
+    n = int(total[-1])
+    print(f"FACES coupled pancake: {n} first-order faces")
+    assert n > 0 and n % (cfg.Ny * cfg.Nz) == 0, n
+    for where in re.findall(r"first-order faces \(C8\), (.*)$", text, re.M):
+        assert not re.search(r"[yz][+-]", where), where
+        for i in re.findall(r"\((\d+), \d+, \d+\)", where):
+            assert min(int(i), cfg.Nx - 1 - int(i)) < PLANES, where
+
+
+PLANES = 6      # the accretion shocks sit 2-3 cells from x = 0 at a = 0.95-1 (A100, 64^3; 2x margin)
 
 
 def _gas_mass(U, cfg):
@@ -81,15 +103,16 @@ def _check(cfg, U0, state, n_dm):
     assert state.step > 50                              # actually integrated
 
 
-def test_coupled_pancake_local():
+def test_coupled_pancake_local(capsys):
     """One device, the whole grid: the local backend."""
     cfg = _cfg()
     dm_pos, dm_p, dm_mass = dm_zeldovich_ic(cfg)
     U0, state = run_coupled(cfg, dm_pos, dm_p, dm_mass, devices=jax.devices()[:1])
+    _check_faces(capsys.readouterr().out, cfg)
     _check(cfg, U0, state, dm_pos.shape[0])
 
 
-def test_coupled_pancake_blocks():
+def test_coupled_pancake_blocks(capsys):
     """The sharded backend on a (2,1,1) block mesh: same gates."""
     if jax.device_count() < 2:
         pytest.skip("needs >=2 devices")
@@ -97,4 +120,5 @@ def test_coupled_pancake_blocks():
     dm_pos, dm_p, dm_mass = dm_zeldovich_ic(cfg)
     U0, state = run_coupled(cfg, dm_pos, dm_p, dm_mass, devices=jax.devices()[:2],
                             pdims=(2, 1, 1))
+    _check_faces(capsys.readouterr().out, cfg)
     _check(cfg, U0, state, dm_pos.shape[0])
