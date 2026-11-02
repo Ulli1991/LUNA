@@ -256,17 +256,31 @@ def test_the_sharded_m2_half_step_is_the_single_device_one(ionization, shape):
 
 
 # -- the default is bitwise what it was ---------------------------------------
-# sha256 of the default (M1) stage's output on the inputs below, per (backend,
-# jax version), written by main at c5e92d2 -- before rad_closure existed.
+# sha256 of the default (M1) stage's output on the inputs below, per (backend, jax version).
+# The first CPU entry (jax 0.10.0, main at c5e92d2, before rad_closure existed) is still what its parent
+# f8a95a1 gives on Raven with jax 0.10.1, but the stage has changed on purpose since (aee6b67 and 3edeeea
+# round-off changes, 677bbec, 8e1cfaf), so it no longer applies. The CPU entries below: LUNA 51a76ec
+# (radiation as on main), Raven login node (Intel Xeon, AVX-512), 2026-11-02. jax 0.10.2 is GitHub CI's
+# version; its hashes are the same with XLA limited to AVX2. With jax 0.10.1 the three ionising outputs
+# change under AVX2, so that entry holds on AVX-512 CPUs.
 DEFAULT_SHA = {
-    ("cpu", "0.10.0"): {
-        "R_after": "409f283d0a025b4c7a7bc4b4b9182c028d8574da4977535d95abf6662754664f",
-        "R_before": "c1be14ecd8de64e2fc1cab88842ecbe3d9704ee47d1a4d194d0f1b88c8733c1a",
-        "R_ion": "3585cfbcb9302583cd9d7303c3357890129e67205d75424111370763d57c0878",
-        "U_after": "1d60d68ef8efa4fcb315de319d3e131c8521c3b24c85f6a790176b2b0a029b66",
-        "U_before": "6a6e193a1a8b1f0d5714abcb3bfc0df686c7cc3d5ffc514e5b984d7d4c4e024b",
-        "U_ion": "98e4aaad5c321c050926e0840edd6f3757f270ca7099100df93ca0a59bf5e8a5",
-        "x_ion": "29080ba42c258ec14c153d2e1f1f57f7e1c2add312446d38aeb8d2ff485ba77d",
+    ("cpu", "0.10.1"): {
+        "R_after": "ded117354a642646c12aaa28bfa62d7ae2d1a485f68143dd8b3b9750f91cc812",
+        "R_before": "9bcff1987ecb1dbd02cf1fb7401419168614d040dea278bbd14e5d6488f9c1b8",
+        "R_ion": "68704b8f07da6860f9a8e9713fcc10d82226a5232599a45e4fce920994097705",
+        "U_after": "b35cd477a36b651ddb468c63c9dedf76c0178fc0cbceb31eb0c273c2913b59bb",
+        "U_before": "9cc63871d718fe2ad8143ff6d3151055ff75efac00fbf788e067ac07b0d61d4d",
+        "U_ion": "b782ac290bac6b83ac845ee4953ec629bb3eb9dcf1dd0dc1bfc4521a4fd8e399",
+        "x_ion": "4a5ee272d2b39450f4810ef650b35be2950d150364b05fc496e79f4834a87662",
+    },
+    ("cpu", "0.10.2"): {
+        "R_after": "6cac172b8ae4943ec782099e4bda3b40a262147269a586a9cbd442a202f5579e",
+        "R_before": "76316a754b75f52ac32cef00da057af464774ba5331563935c301af8fe0b7356",
+        "R_ion": "e4ebc8fc328e8ae17e5a139ce41aa8534f1c690d249adb4776a3852445ec8aa3",
+        "U_after": "ef312f39bba54e9e0c64911f4aa51d01927220ecd29db7c6ee305ce60671df9d",
+        "U_before": "fba657cb0773648d4fade84a08734d421412233221de2086cbf27bab9aedc74a",
+        "U_ion": "3b796fbc553649acb475177267074b5bd5bf87096c9af3e6f666cb6b504cebda",
+        "x_ion": "e77bd4c405a06c52add8a00c9530a77fe927534df99f1052cabed6537cf3595b",
     },
     # MI300A, fused M1 kernels. No U_ion: main itself gave two different
     # hashes for it in two jobs (every other output reproduced in five runs)
@@ -318,8 +332,9 @@ def sha(a):
 
 def test_the_default_stage_is_bitwise_what_it_was():
     """rad_closure defaults to "m1", and the M1 stage -- coupled and ionising,
-    the fused kernel on a GPU -- gives the same bits as before the option
-    existed. A backend or jax version with no recorded reference skips."""
+    the fused kernel on a GPU -- gives the bits recorded in DEFAULT_SHA (regression
+    only). A backend or jax version with no recorded reference skips; CPU-8 on
+    jax 0.10.1 and 0.10.2 has one."""
     from luna.template_config import Config
     assert Config().rad_closure == "m1"
     key = (jax.default_backend(), jax.__version__)
