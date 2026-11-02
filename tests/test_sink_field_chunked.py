@@ -58,7 +58,10 @@ def test_scratch_is_a_few_grids_not_one_per_slot():
 
 def test_skipping_empty_chunks_changes_no_bit(monkeypatch):
     """Slots 0-3 empty, 4-7 one live sink, the rest empty: the chunks with no
-    live sink are skipped, and the field is bitwise the one that sums them."""
+    live sink are skipped, and the field is bitwise the one that sums them. Bitwise on
+    every machine because the field uses only correctly rounded operations: with
+    jax.lax.rsqrt (XLA:CPU on AVX-512: rsqrt14 + Newton, last bit codegen-dependent)
+    99/1728 cells differed by 1 ulp on Raven and none on GitHub's CPUs."""
     import luna.species.sinks as sk
     N, n_max = 12, 10
     s = _sinks(N, n_max)

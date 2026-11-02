@@ -164,9 +164,11 @@ class Sinks:
                     ddx = self._image(X - p[i, 0], 0)
                     ddy = self._image(Y - p[i, 1], 1)
                     ddz = self._image(Z - p[i, 2], 2)
-                    # rsqrt cubed: an FP64 pow is much slower
-                    r = jax.lax.rsqrt(ddx*ddx + ddy*ddy + ddz*ddz + eps2)
-                    inv_r3 = a[i] * G * m[i] * r * r * r
+                    # 1/(q sqrt q): sqrt and divide are correctly rounded everywhere, so the bits do not depend
+                    # on the program (XLA:CPU's FP64 rsqrt is rsqrt14 + Newton, its last bit codegen-dependent);
+                    # an FP64 pow is much slower
+                    q = ddx*ddx + ddy*ddy + ddz*ddz + eps2
+                    inv_r3 = a[i] * G * m[i] * (1.0 / (q * jnp.sqrt(q)))
                     gx = gx - ddx * inv_r3; gy = gy - ddy * inv_r3; gz = gz - ddz * inv_r3
                 return gx, gy, gz
             if not SKIP_EMPTY:
