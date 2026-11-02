@@ -71,8 +71,14 @@ over all standard configs at once:
 python tools/run_tests.py --check-coverage gpu1.json gpu2.json dev8_full.json dev2_fast.json
 ```
 
-It fails when a test is skipped in every report, or a test file is in none,
-unless `tests/skip_allowlist.json` lists it with a written reason.
+A test is covered only where it **passed**. A strict xfail that xfailed counts
+too: its registered bug raised the `AssertionError` the marker is scoped to,
+which is the asserted outcome (`xfail_strict = true` in `pyproject.toml`, and
+`tests/test_run_tests.py` checks no test opts out). `xpassed`, `failed` and
+`error` never count. The check fails when a test passed in no report
+(`NEVER PASSED` if it ran somewhere, `SKIPPED EVERYWHERE` if not) or a test
+file is in none. `tests/skip_allowlist.json` can excuse a skip, with a written
+reason, but never a test that ran and failed.
 `submit/examples/nightly_tests.sbatch` writes one report per config.
 
 ## Continuous integration
@@ -95,29 +101,23 @@ killed, stalled or never-started job cannot break the chain. A login crontab
 cannot do that, since it lives on one login node and stops when that node
 drains.
 
-## What needs a real multi-GPU launch
+## What needs several devices or processes
 
 `conftest.py` pins a CPU backend with 8 virtual devices, so the whole suite
-runs anywhere. Tests marked `multigpu` need a real multi-process launch and
-skip unless `LUNA_MULTIGPU_TEST=1`. The two-process checks that pytest cannot
+runs anywhere. Files that ask jax for the device count form the `multidevice`
+tier (`MULTIDEVICE` in `tools/run_tests.py`), run on 2 and 4 GPUs on Raven and
+on `--devices 2` on GitHub. A few tests start their own processes
+(`tests/test_amr_multiprocess.py`). The two-process runs that pytest cannot
 start live in `scripts/validation/runs/*_2proc.py` and carry their `srun`
-recipe in their docstring.
+recipe in their docstring. There is no `multigpu` marker.
 
 ## Known failures
 
-Three tests fail on the pinned stack and are tracked in
-`docs/history/AUDIT_2026-09-16.md`:
-
-| test | jax 0.10.0 | jax 0.10.2 |
-|---|---|---|
-| `test_sedov_gradients` | segfault | passes |
-| `test_poisson_adjoint` | 2.8e-3 | 2.8e-3 |
-| `test_poisson_bidiff` | failed | fixed (solver tightness) |
-
-Only the first is a stack problem; the other two were found by running them on
-both stacks and seeing the number not move. The pin stays at 0.10.1 until a
-full suite runs on 0.10.2, which is not yet possible: the coupled MUSIC blocks
-test takes 17 s on the pinned stack and did not finish in 600 s there.
+Both GitHub lists, `tests/ci_known_failures_cpu8.json` and
+`tests/ci_known_failures_dev2.json`, are empty since 4528eec: no file is
+expected to fail on the CPU configs. There is no GPU list. The committed Raven
+GPU reports are failing (next section), so the GPU tests have no known-failure
+accounting yet.
 
 ## The two-device stall
 
@@ -137,7 +137,11 @@ those files alone before believing them.
 MUSCL/HLLC grid codes. All run the production step (minmod, HLLC unless HLL is named,
 FP64, the default time step: RAMSES rule, CFL 0.8). Each bound is ~1.3x a measured value
 (lower bounds: measured / 1.3; convergence orders: measured - 0.1 .. + 0.3), and the
-measured value is written next to it. The `gpu` tier repeats each test at larger N.
+measured value is written next to it. Such a bound is a **regression pin**, even when the
+error is measured against an exact solution: it catches a change, it does not show
+correctness. A claim counts as validated only with a gate that does not depend on LUNA's
+own error (round-off or an exact identity, an order band containing the theoretical
+order, an AthenaK matched-method bound, or published data); docs/CLAIMS.md says which. The `gpu` tier repeats each test at larger N.
 
 | file | checks | CPU-8 bound (measured) |
 |---|---|---|
@@ -182,8 +186,8 @@ shard) and the multidevice files in 4 shards on 2 devices. Files GitHub
 cannot run are in `tests/ci_exclude.json`, each with its reason (today: the
 chemistry files, whose tables live in `$LUNA_DATA`). The `coverage` job
 merges each config's shards (`--merge-reports`) and runs `--check-coverage`
-over them and the committed Raven GPU reports, so a GPU-only test is not
-"skipped everywhere" when it ran on Raven.
+over them and the committed Raven GPU reports. A GPU-only test is covered only
+if it passed in a Raven report; one that failed there is `NEVER PASSED`.
 
 The Raven reports are produced by hand or by a nightly job on Raven, one
 config each (LUNA_DATA and LUNA_REFERENCE_SOLUTIONS set):
@@ -201,15 +205,22 @@ python tools/run_tests.py --merge-reports tests/reports/raven_gpu4.json gpu4-1.j
 ```
 
 Each report records its commit; the coverage table prints it next to the
-label, so a stale GPU report is visible.
+label, so a stale GPU report is visible. A merged report's `host`, `python`
+and `jax_platforms` are those of the machine that merged it, not of the runs,
+and the per-file records carry no backend: nothing in a report proves it ran on
+a GPU.
 
 The Raven reports are optional input: `coverage` reads whatever
 `tests/reports/raven_*.json` exist. Without them every GPU-only test counts as
 skipped everywhere and the check fails, which is the truth for that tree. The
-first committed pair (raven_gpu1, raven_gpu2, from 88ed228) used a 600 s
-per-file limit; 15 GPU files timed out at it, so their GPU tests still show as
-skipped everywhere -- use 3600 s. Reports from ab90619 at 3600 s replace them (raven_gpu1, raven_gpu2); no
-4-GPU report is committed (the jobs were cancelled in the queue; the nightly can add it later).
+committed raven_gpu1 and raven_gpu2 are from ab90619, a commit that is not in
+`main`'s history, at 3600 s per file, and both are failing (`ok: false`;
+raven_gpu1: 33 failing files, 75 failed tests, 19 errors). No 4-GPU report is
+committed. Over these two reports alone `--check-coverage` reports 89 test ids
+that never passed (among them `test_sedov_gpu`, the Noh GPU ladders,
+`test_tg_dissipation_gpu`, `test_sod_3d_directions_gpu`,
+`test_autodiff_revolve`, `test_stellar_golden`) and 159 skipped in both, so
+the `coverage` job fails until the reports are regenerated on a `main` commit.
 
 Files that fail on a GitHub config for a cited code or test bug are listed in
 `tests/ci_known_failures_{cpu8,dev2}.json` with the cause (file:line) and run
