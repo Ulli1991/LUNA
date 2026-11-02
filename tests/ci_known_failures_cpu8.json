@@ -1,12 +1,4 @@
 {
  "note": "files that fail on the GitHub CPU-8 config for a cited cause (tools/run_tests.py --known-failures): reported KNWN, and a listed file that passes fails the run. Each is a code or test bug to fix, not an environment gap.",
- "files": {
-  "tests/test_cosmo_hydro_coupled.py": "test_coupled_pancake_local: non-finite gas density at step 115, t=1.557 (src/luna/setup/run_report.py:105 via src/luna/gravity/kdk.py:205); test_coupled_pancake_blocks: refused at step 115, 8192 unphysical Hancock face states (C8 opt-in, src/luna/setup/face_report.py:68); tests/test_cosmo_hydro_coupled.py:88,98",
-  "tests/test_provenance.py": "test_revision_file_is_used_without_git: code_revision returns the installed version when the tree has no pyproject.toml (src/luna/file_io/checkpoint_utils.py:25, since 2dc382f); the test's fake tree has none (tests/test_provenance.py:51)",
-  "tests/test_sink_field_chunked.py": "chunked sink field differs from the direct sum at round-off (99/1728 cells, ~7e-15) on CPU-8; the test asserts bitwise (tests/test_sink_field_chunked.py:25)",
-  "tests/test_amr_shard.py": "test_shard_subcycle_gravity_reflux_matches_single_device: shard vs single device 1.6e-6 > 1e-10 on 8 CPU devices (tests/test_amr_shard.py:83)",
-  "tests/test_run_scripts_steps.py": "disc_planet_run refuses at step 2: 288 unphysical Hancock face states (C8 first-order faces are opt-in); tests/_run_script_cases.py:136",
-  "tests/test_source_splitting_order.py": "gravity_energy='flux' with a hydro that does not run Hydro.step_flux raises (src/luna/gravity/kdk.py:138)",
-  "tests/test_step_timing.py": "src/luna/setup/evolve.py:175 now calls step(state, dt, t, physics, timer, reports); the test's stub misordered() takes 4-5 arguments"
- }
+ "files": {}
 }
