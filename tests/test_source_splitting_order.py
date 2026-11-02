@@ -129,10 +129,10 @@ def _init_sg(N):
         P0 * np.ones((N, N, N))])), GAMMA)
 
 
-def _self_gravity(N, mesh):
+def _self_gravity(N, mesh, energy):
     """The gravity stage on one device, traced (no host pulls) so a whole
     step compiles as one program; the differentiable FMG, as the adjoint
-    runner uses."""
+    runner uses; energy: gravity_energy, requested explicitly."""
     from dataclasses import replace
 
     from luna.setup.assemble import build_gravity
@@ -143,11 +143,11 @@ def _self_gravity(N, mesh):
 
     cfg = replace(Config(), SELF_GRAVITY=True, SPATIAL_DIMENSION=3,
                   Nx=N, Ny=N, Nz=N, Lx=L, Ly=L, Lz=L, BOUNDARY=0,
-                  GRAVITATIONAL_G=G_SG, autodiff_mode=True)
+                  GRAVITATIONAL_G=G_SG, autodiff_mode=True, gravity_energy=energy)
     return build_gravity(cfg, mesh, GAS, DENSE, ProperClock(0.0, T_END), is_main=False)
 
 
-def _run_sg(N, kdk):
+def _run_sg(N, kdk, energy):
     from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
     from luna.setup.state import State
@@ -155,9 +155,10 @@ def _run_sg(N, kdk):
     mesh = Mesh(np.array(jax.devices()[:1]).reshape(1, 1, 1), ("x", "y", "z"))
     step = create_muscl_hancock_modular_step(
         make_halo_shardmap(mesh, 3), GAMMA, 1, 0, dx, dx, dx, inv, inv, inv,
-        0, 3, 0.4, riemann_solver="hllc", use_shardmap=True, mesh=mesh)[1]
+        0, 3, 0.4, riemann_solver="hllc", use_shardmap=True, mesh=mesh,
+        mass_flux=energy == "flux")[1]
     U = jax.device_put(_init_sg(N), NamedSharding(mesh, P(None, "x", "y", "z")))
-    grav = _self_gravity(N, mesh)
+    grav = _self_gravity(N, mesh, energy)
     dt = T_END / N
 
     # ONE compiled program per step. Driving solve and kick as separate jitted
@@ -170,8 +171,13 @@ def _run_sg(N, kdk):
     def _one(state):
         if kdk:
             state = grav.before(state, 0.5 * dt, dt)    # carried from the last solve
-            state = state.update(U=step(state.U, dt))
-            return grav.after(state, 0.5 * dt, dt)      # ONE solve, as before
+            if energy == "flux":                        # as luna.setup.evolve.step with Hydro.step_flux
+                U1, F = step(state.U, dt)
+                state = state.update(U=U1, mass_flux=F)
+            else:
+                state = state.update(U=step(state.U, dt))
+            state = grav.after(state, 0.5 * dt, dt)     # ONE solve, as before
+            return state.update(mass_flux=None, kick_work=None)
         state = state.update(U=step(state.U, dt))
         return grav.after(state, dt, 2.0 * dt)          # solve, then one full kick
 
@@ -181,13 +187,15 @@ def _run_sg(N, kdk):
     return np.asarray(state.U)
 
 
-@pytest.mark.parametrize("kdk,lo,hi", [(False, 1.7, 2.8), (True, 3.3, 4.6)])
-def test_self_gravity_splitting_order_at_fixed_cfl(kdk, lo, hi):
-    """The real Poisson solve, Lie against KDK, at one solve per step either way."""
-    sols = {N: _run_sg(N, kdk) for N in (16, 32, 64)}
+# Lie has no opening half-kick, so it books no kick work: gravity_energy='flux' refuses it (gravity/kdk.py:138).
+@pytest.mark.parametrize("kdk,energy,lo,hi", [(False, "kick", 1.7, 2.8), (True, "kick", 3.3, 4.6),
+                                              (True, "flux", 3.3, 4.6)])
+def test_self_gravity_splitting_order_at_fixed_cfl(kdk, energy, lo, hi):
+    """The real Poisson solve, Lie against KDK (both energy couplings), at one solve per step either way."""
+    sols = {N: _run_sg(N, kdk, energy) for N in (16, 32, 64)}
     e1 = float(np.mean(np.abs(sols[16] - _coarsen(sols[32]))))
     e2 = float(np.mean(np.abs(sols[32] - _coarsen(sols[64]))))
     ratio = e1 / max(e2, 1e-300)
-    print(f"[self-gravity kdk={kdk}] |16-32|={e1:.3e} |32-64|={e2:.3e} "
+    print(f"[self-gravity kdk={kdk} energy={energy}] |16-32|={e1:.3e} |32-64|={e2:.3e} "
           f"ratio={ratio:.2f} (expect ~{'4' if kdk else '2'})")
     assert lo < ratio < hi, f"order ratio {ratio:.2f} outside [{lo}, {hi}]"
