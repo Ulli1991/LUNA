@@ -29,7 +29,8 @@ for GPUs (`hydro_kernel="pallas"`); it refuses configurations it cannot run.
 
 The reference solutions the tests compare against (AthenaK, Arepo, RAMSES, the Pencil
 Code, AMReX Microphysics and others, with their sources) are public in
-[luna-reference-solutions](https://github.com/Ulli1991/luna-reference-solutions).
+[luna-reference-solutions](https://github.com/Ulli1991/luna-reference-solutions)
+(DOI [10.5281/zenodo.23876670](https://doi.org/10.5281/zenodo.23876670)).
 
 ## What LUNA can do
 

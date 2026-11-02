@@ -5,11 +5,10 @@ code disagree, the code wins.
 
 ## Where tests run
 
-| | files | |
-|---|---|---|
-| CI, every push | 35 of 183 (fast tier, 117 s) | `.github/workflows/tests.yml` |
-| nightly, viper, full tier | 183 | `submit/examples/nightly_tests.sbatch`; 59 files have no measured cost, so it has likely not run recently |
-| never in CI | gravity 0/7, chemistry 0/13, autodiff 0/9, sinks 0/3 | GPU or nightly only |
+Current, and the single source for it: docs/TESTING.md (CI matrix: fast tier and 2-device fast tier on
+every push and PR; the full CPU suite in 12 shards, the 2-device files and the AMUSE coupling files on every
+push to main and nightly; coverage over those plus the committed Raven GPU reports). The paragraph below is
+the 2026-10 audit finding, kept for the record.
 
 Multi-device tests skip silently with too few devices (`test_isolated_gravity.py:62`,
 `test_pm_blocks.py:16`); `test_poisson_multigrid_multigpu.py:60` runs unsharded on one device.

@@ -44,3 +44,11 @@ keywords:
   - astrophysics
   - ISM
   - differentiable programming
+references:
+  - type: dataset
+    title: "Reference solutions for the LUNA hydrodynamics test suite"
+    authors:
+      - family-names: Steinwandel
+        given-names: Ulrich Philipp
+    doi: 10.5281/zenodo.23876670
+    url: "https://github.com/Ulli1991/luna-reference-solutions"

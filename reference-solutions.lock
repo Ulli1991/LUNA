@@ -6,4 +6,5 @@
 repository = https://github.com/Ulli1991/luna-reference-solutions.git
 commit = 8f0415c1741b4d332aa7f4a0e420e083d76fd148
 manifest_sha256 = 232ad8e8aef5193230dd208b7229e6b15c622181612b016277a7c016e78e7fcf
-tag =
+# v1.0 on Zenodo: DOI 10.5281/zenodo.23876671 (all versions: 10.5281/zenodo.23876670)
+tag = v1.0
