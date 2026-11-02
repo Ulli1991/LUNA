@@ -78,11 +78,13 @@ def test_sharded_solve_is_one_device_at_default_depth(shape, n, boundary):
     assert max(d) < TOL
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="open bug: isolated 128^3 gathered whole (agg_n 128) is 2.7e-11 off one device, also before 2026-10-11")
 @pytest.mark.parametrize("shape", [(2, 2, 2), (8, 1, 1)])
 def test_isolated_whole_grid_gathered_is_one_device(shape):
-    """At the default agg_n=128 a 128^3 isolated grid is gathered whole: g should equal one device's to round-off."""
+    """At the default agg_n=128 a 128^3 isolated grid is gathered whole: g equals one device's to round-off.
+
+    It was 2.7e-11 off on Raven's CPUs (6.8e-12 with XLA limited to AVX2, 0 with jax 0.10.2): the multipole face
+    values summed their moments in an order XLA chose per program and vector width; they now sum in a fixed
+    pairwise order (gravity/poisson_bc.tree_sum)."""
     mesh = _mesh(shape)
     cfg = _cfg(3, 128)
     opts = PoissonOpts.from_config(cfg, cfg.gravity_warm_vcycles)

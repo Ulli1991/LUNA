@@ -3,6 +3,7 @@
 Boundary codes as in hydro: 0 periodic, 1 Neumann, 2 reflective (= Neumann for Φ), 3 isolated.
 """
 
+import jax
 import jax.numpy as jnp
 
 
@@ -25,6 +26,9 @@ def pad_inplace(phi, width, ghosts):
         U = U.at[tuple(view)].set(lo)
         view[ax] = slice(-w, None)
         U = U.at[tuple(view)].set(hi)
+        # no value change: XLA's SPMD partitioner fuses the x then y ghost writes wrongly when phi is split along
+        # y or z (O(1) wrong ghosts on 8 CPU devices, jax 0.10.1 and 0.10.2; the AMR level-0 solve under GSPMD)
+        U = jax.lax.optimization_barrier(U)
     return U
 
 
@@ -87,6 +91,16 @@ def make_odd_dirichlet_halo_3d(inplace=True):
     return halo
 
 
+def tree_sum(a):
+    """Sum of all elements in a fixed pairwise order: the bits do not depend on the program or the CPU it runs in."""
+    a = jnp.ravel(a)
+    while a.shape[0] > 1:
+        if a.shape[0] % 2:
+            a = jnp.concatenate([a, jnp.zeros((1,), a.dtype)])
+        a = a[0::2] + a[1::2]
+    return a[0]
+
+
 def multipole_dirichlet_face_values(rho, dx, fourpiG, l_max=2):
     """Multipole Φ at the box faces (Guillet & Teyssier 2011 §3); l_max=0 monopole, >=2 adds the quadrupole.
 
@@ -95,28 +109,30 @@ def multipole_dirichlet_face_values(rho, dx, fourpiG, l_max=2):
     Nx, Ny, Nz = rho.shape
     G = fourpiG / (4.0 * jnp.pi)
 
+    # the moments in a fixed order (tree_sum): XLA's jnp.sum order changes with the program and the CPU's vector
+    # width, and the faces amplified it to 1e-11 between one device and the same grid gathered on a mesh
     w = rho * (dx ** 3)
-    M_total = jnp.sum(w)
-    inv_mass = 1.0 / (jnp.sum(rho) + 1e-30)
+    M_total = tree_sum(w)
+    inv_mass = 1.0 / (tree_sum(rho) + 1e-30)
     x = (jnp.arange(Nx, dtype=jnp.float64) + 0.5) * dx
     y = (jnp.arange(Ny, dtype=jnp.float64) + 0.5) * dx
     z = (jnp.arange(Nz, dtype=jnp.float64) + 0.5) * dx
     X, Y, Z = jnp.meshgrid(x, y, z, indexing="ij")
-    cx = jnp.sum(rho * X) * inv_mass
-    cy = jnp.sum(rho * Y) * inv_mass
-    cz = jnp.sum(rho * Z) * inv_mass
+    cx = tree_sum(rho * X) * inv_mass
+    cy = tree_sum(rho * Y) * inv_mass
+    cz = tree_sum(rho * Z) * inv_mass
 
     # Traceless quadrupole about the COM, Q_ij = Σ m (3 r_i r_j − r²δ_ij).
     use_quad = l_max >= 2
     if use_quad:
         dXc, dYc, dZc = X - cx, Y - cy, Z - cz
         r2c = dXc * dXc + dYc * dYc + dZc * dZc
-        Qxx = jnp.sum(w * (3.0 * dXc * dXc - r2c))
-        Qyy = jnp.sum(w * (3.0 * dYc * dYc - r2c))
-        Qzz = jnp.sum(w * (3.0 * dZc * dZc - r2c))
-        Qxy = jnp.sum(w * (3.0 * dXc * dYc))
-        Qxz = jnp.sum(w * (3.0 * dXc * dZc))
-        Qyz = jnp.sum(w * (3.0 * dYc * dZc))
+        Qxx = tree_sum(w * (3.0 * dXc * dXc - r2c))
+        Qyy = tree_sum(w * (3.0 * dYc * dYc - r2c))
+        Qzz = tree_sum(w * (3.0 * dZc * dZc - r2c))
+        Qxy = tree_sum(w * (3.0 * dXc * dYc))
+        Qxz = tree_sum(w * (3.0 * dXc * dZc))
+        Qyz = tree_sum(w * (3.0 * dYc * dZc))
 
     Lx, Ly, Lz = Nx * dx, Ny * dx, Nz * dx
 
