@@ -35,6 +35,9 @@ def config(nx=64, t_end=1.5, amr_levels=3, amr_thr=0.15, amr_regrid=8):
         SELF_GRAVITY=True, GRAVITATIONAL_G=G,
         POISSON_FMG_VCYCLES_PER_LEVEL=1, POISSON_FMG_EXTRA_VCYCLES=0,
         problem=evrard3d.Params(M=M, R=R, u=u),
+        # the cloud's edge is a 160:1 density jump: MC's Hancock faces there go negative (audit C8), as
+        # tests/test_gravity_evrard_energy.py FACES_MC counts; first order there, counted in the log
+        allow_first_order_faces=True,
         PLOT_AFTER_SIM=False,
         output_dir=f"snapshots/evrard_Nx{nx}", clear_output_dir=True,
         enable_x64=True, enable_checkpointing=False,

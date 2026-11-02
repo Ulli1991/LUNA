@@ -48,6 +48,10 @@ def config(nx=512, orbits=30.0, cs=0.05, q=1.0e-3, sink=True):
         # inner/outer radii: what keeps the cold disc stable
         disc_damping_enabled=True, disc_damp_R_in=0.5, disc_damp_R_out=2.2,
         disc_damp_rate=10.0,
+        # the star is a point mass at a cell corner: the gas orbiting it in the few cells around it turns
+        # within one or two cells, and MC's Hancock faces there go negative (audit C8). That core is inside
+        # the damping zone, not part of the problem: first order there, counted in the log
+        allow_first_order_faces=True,
         problem=disc_planet_2d.Params(sigma0=1.0, sigma_index=0.5, R_in=0.4, R_out=2.5,
                                       floor=1.0e-4),
         PLOT_AFTER_SIM=False, clear_output_dir=True,

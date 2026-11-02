@@ -33,6 +33,7 @@ class Case:
     mass_bug: bool = False          # strict xfail: the mass check fails for `reason`
     reason: str = ""
     nonempty: tuple = field(default=())
+    faces_core: tuple = ()          # (Nx, L, r_lo, r_hi, ndim): first-order faces (C8) required, all in that shell
 
 
 CC85_F32 = "the CC85 injection adds a float32 update to the fp64 state, so the step runs in float32"
@@ -57,8 +58,9 @@ CASES = {
         reason="the Boss-Bodenheimer IC needs cfg.units; this script runs in code units"),
     "scripts.examples.runs.cc85_wind_run": Case(("nx=32", "boundary_mass_budget=1", *QUIET), "hydro", mass="cc85",
                                                 mass_bug=True, reason=CC85_F32),
+    # nx=32: at nx=16 one cell spans the disc's inner edge (R_in=0.4) and the damping zone (R < 0.5)
     "scripts.examples.runs.disc_planet_run": Case(
-        ("nx=16", *QUIET), "hydro", mass="none",
+        ("nx=32", *QUIET), "hydro", mass="none", faces_core=(32, 6.0, 0.0, 0.5, 2),
         why_not="damping zones relax the disc to its IC and the planet sink accretes"),
     "scripts.examples.runs.maclaurin_run": Case(("nx=16", *QUIET), "hydro"),
     "scripts.examples.runs.poisson_accuracy_run": Case(("nx=16",), "hydro", mass="none",
@@ -68,7 +70,11 @@ CASES = {
     "scripts.validation.runs.boss_bodenheimer_iso_run": Case(("nx=32", "boundary_mass_budget=1", *QUIET), "hydro",
                                                              mass="budget"),
     "scripts.validation.runs.driven_turbulence_run": Case(("nx=16", *QUIET), "hydro"),
-    "scripts.validation.runs.evrard_collapse_run": Case(("nx=16", *QUIET), "hydro"),
+    # first-order faces at the cloud edge R = 1 only: a face's cell sees the jump within its slope stencil
+    # (sqrt(3) dx) after the edge moved at most 2 x CFL 0.8 cells: R +- (sqrt(3) + 1.6) dx, dx = 0.25
+    "scripts.validation.runs.evrard_collapse_run": Case(
+        ("nx=16", *QUIET), "hydro",
+        faces_core=(16, 4.0, 1.0 - (3 ** 0.5 + 1.6) * 0.25, 1.0 + (3 ** 0.5 + 1.6) * 0.25, 3)),
     "scripts.validation.runs.gresho_run": Case(("nx=16", *QUIET), "hydro"),
     "scripts.validation.runs.jeans_instability_run": Case(("nx=16", *QUIET, "write_snapshots=1"), "hydro"),
     "scripts.validation.runs.kh_run": Case(("nx=16", *QUIET), "hydro"),
@@ -126,6 +132,30 @@ def run(name, tmp_path):
     return p.returncode, text, rec
 
 
+def check_core_faces(c, text):
+    """First-order faces (C8) only where the case allows them: in the cells whose centre lies in the shell
+    r_lo <= r < r_hi about the box centre, at most 2 * ndim faces per such cell per step, and at least one
+    (else the opt-in is not needed); a case without faces_core has none (it would have been refused)."""
+    lines = re.findall(r"^\[hydro\] step \d+ t=\S+: (\d+) first-order faces \(C8\)(.*)$", text, re.M)
+    if not c.faces_core:
+        assert not lines, f"first-order faces in a case that does not allow them: {lines[:2]}"
+        return
+    n_x, L, r_lo, r_hi, ndim = c.faces_core
+    centre = (np.arange(n_x) + 0.5) * (L / n_x) - 0.5 * L
+    r_cells = np.sqrt(sum(g * g for g in np.meshgrid(*([centre] * ndim), indexing="ij")))
+    n_in = int(np.sum((r_cells >= r_lo) & (r_cells < r_hi)))
+    n = sum(int(k) for k, _ in lines)
+    print(f"FACES {n} first-order faces in 2 steps; {n_in} cells in {r_lo} <= r < {r_hi}")
+    assert 1 <= n <= 2 * 2 * ndim * n_in, f"{n} first-order faces, outside [1, {2 * 2 * ndim * n_in}]"
+    cell = r"\(" + r", ".join([r"(\d+)"] * ndim) + r"\)"
+    for k, where in lines:
+        # the log lists the first FACE_REPORT_CELLS cells per shard (time_integration/integrators.py)
+        assert 0 < len(re.findall(r"[xyz][+-]", where)) <= int(k), where
+        for idx in re.findall(cell, where):
+            r = float(np.sqrt(sum(centre[int(i)] ** 2 for i in idx)))
+            assert r_lo <= r < r_hi, f"a first-order face at cell {idx}, r={r:.3f} outside [{r_lo}, {r_hi}): {where}"
+
+
 def check(name, tmp_path):
     """Run `name` and assert: IC built, finite, two steps, time advanced, mass as its case says."""
     c = CASES[name]
@@ -146,6 +176,7 @@ def check(name, tmp_path):
             assert rec["task_sizes"].get(k, 0) > 0, f"the task returned no {k}"
         return rec
     assert rec["n_steps"] == 2, f"took {rec['n_steps']} steps, not 2"
+    check_core_faces(c, text)
     assert rec["t"] > rec["t0"], f"time did not advance: t={rec['t']} from {rec['t0']}"
     if "m1" in rec:
         assert rec["finite"], "the state after two steps is not finite"
