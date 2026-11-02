@@ -274,7 +274,10 @@ jobs:
       - name: Coverage over all configs
         run: |
           shopt -s nullglob
-          python tools/run_tests.py --check-coverage cpu8.json dev2.json amuse/amuse-cpu8.json tests/reports/raven_*.json
+          # The tree's test ids come from this run's own reports: an id that only an older Raven report
+          # has (a removed test or parametrisation) is named and ignored, not judged.
+          python tools/run_tests.py --check-coverage cpu8.json dev2.json amuse/amuse-cpu8.json tests/reports/raven_*.json \
+            --tree-ids cpu8.json dev2.json amuse/amuse-cpu8.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

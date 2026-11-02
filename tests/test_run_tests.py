@@ -270,3 +270,33 @@ def test_xfails_are_strict():
     lax = [str(p) for p in sorted((root / "tests").glob("*.py"))
            if p.name != "test_run_tests.py" and "strict=False" in p.read_text()]
     assert not lax, lax
+
+
+def test_coverage_ignores_ids_no_longer_in_the_tree(tmp_path, capsys):
+    """An id of an older report whose test (or parametrisation) left the tree is named and ignored; teeth: an id
+    still in the tree that is skipped everywhere fails, and without tree ids the old id still counts."""
+    old = _report(tmp_path / "old.json", "gpu", {"a.py": {"a.py::t[gone]": "failed", "a.py::u": "skipped"}})
+    new = _report(tmp_path / "new.json", "cpu", {"a.py": {"a.py::t[kept]": "passed", "a.py::u": "passed"}})
+    tree = rt.tree_ids_from_reports([new])
+    assert tree == {"a.py::t[kept]", "a.py::u"}
+    assert rt.check_coverage([old, new], _allow(tmp_path, {}), ["a.py"], tree_ids=tree) == 0
+    assert "NOT IN THE TREE (ignored)  a.py::t[gone]" in capsys.readouterr().out
+    assert rt.check_coverage([old, new], _allow(tmp_path, {}), ["a.py"]) == 1      # no tree ids: judged
+    capsys.readouterr()
+    skip = _report(tmp_path / "skip.json", "cpu", {"a.py": {"a.py::t[kept]": "skipped", "a.py::u": "passed"}})
+    assert rt.check_coverage([old, skip], _allow(tmp_path, {}), ["a.py"], tree_ids=tree) == 1
+    assert "SKIPPED EVERYWHERE  a.py::t[kept]" in capsys.readouterr().out
+
+
+def test_coverage_keeps_ids_of_files_with_unknown_tree_ids(tmp_path, capsys):
+    """A file with no known tree ids (module-level skip or collection error in the tree's reports) keeps every id."""
+    old = _report(tmp_path / "old.json", "gpu", {"b.py": {"b.py::t": "failed"}})
+    new = _report(tmp_path / "new.json", "cpu", {"b.py": {"b.py": "skipped"}})
+    assert rt.check_coverage([old, new], _allow(tmp_path, {}), ["b.py"], tree_ids=rt.tree_ids_from_reports([new])) == 1
+    assert "NEVER PASSED  b.py::t" in capsys.readouterr().out
+
+
+def test_collect_tree_ids(fixture_dir):
+    """pytest --collect-only gives the ids of a tree of real files."""
+    ids = rt.collect_tree_ids(cwd=str(fixture_dir), path="test_pass.py")
+    assert ids == {"test_pass.py::test_a", "test_pass.py::test_b"}

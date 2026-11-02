@@ -78,7 +78,12 @@ which is the asserted outcome (`xfail_strict = true` in `pyproject.toml`, and
 `error` never count. The check fails when a test passed in no report
 (`NEVER PASSED` if it ran somewhere, `SKIPPED EVERYWHERE` if not) or a test
 file is in none. `tests/skip_allowlist.json` can excuse a skip, with a written
-reason, but never a test that ran and failed.
+reason, but never a test that ran and failed. Only the current tree is judged:
+a file no longer in it is named and ignored, and so is a test id that is not
+among the tree's ids, given by `--tree-ids REPORT...` (reports run on this
+tree, as CI passes its own) or `--collect-tree` (`pytest --collect-only`). A
+file whose ids the tree reports do not list (a module-level skip or a
+collection error there) keeps every id.
 `submit/examples/nightly_tests.sbatch` writes one report per config.
 
 ## Continuous integration
@@ -216,11 +221,13 @@ skipped everywhere and the check fails, which is the truth for that tree. The
 committed raven_gpu1 and raven_gpu2 are from ab90619, a commit that is not in
 `main`'s history, at 3600 s per file, and both are failing (`ok: false`;
 raven_gpu1: 33 failing files, 75 failed tests, 19 errors). No 4-GPU report is
-committed. Over these two reports alone `--check-coverage` reports 89 test ids
-that never passed (among them `test_sedov_gpu`, the Noh GPU ladders,
-`test_tg_dissipation_gpu`, `test_sod_3d_directions_gpu`,
-`test_autodiff_revolve`, `test_stellar_golden`) and 159 skipped in both, so
-the `coverage` job fails until the reports are regenerated on a `main` commit.
+committed. Over these two reports alone, with `--collect-tree`,
+`--check-coverage` reports 87 test ids that never passed (among them
+`test_sedov_gpu`, the Noh GPU ladders, `test_tg_dissipation_gpu`,
+`test_sod_3d_directions_gpu`, `test_autodiff_revolve`, `test_stellar_golden`)
+and 151 skipped in both (most run on CPU). The GPU-only tests among the 87
+pass in no config, so the `coverage` job fails until the reports are
+regenerated on a `main` commit.
 
 Files that fail on a GitHub config for a cited code or test bug are listed in
 `tests/ci_known_failures_{cpu8,dev2}.json` with the cause (file:line) and run

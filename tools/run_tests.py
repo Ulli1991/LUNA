@@ -264,11 +264,31 @@ def load_allowlist(path):
     return tests
 
 
-def check_coverage(paths, allowlist_path=ALLOWLIST, all_files=None):
+def tree_ids_from_reports(paths):
+    """The test ids of the current tree, from reports run on it: every id with `::` per file."""
+    ids = set()
+    for p in paths:
+        with open(p) as f:
+            for r in json.load(f)["files"]:
+                ids.update(t for t in r.get("tests", {}) if "::" in t)
+    return ids
+
+
+def collect_tree_ids(python=sys.executable, cwd=ROOT, path="tests"):
+    """The test ids of the current tree from `pytest --collect-only -q` (one process, CPU)."""
+    env = {**os.environ, "JAX_PLATFORMS": "cpu"}
+    p = subprocess.run([python, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", path],
+                       cwd=cwd, capture_output=True, text=True, env=env)
+    return {line.strip() for line in p.stdout.splitlines() if "::" in line and not line.startswith(" ")}
+
+
+def check_coverage(paths, allowlist_path=ALLOWLIST, all_files=None, tree_ids=None):
     """Exit status 1 if a test passed in no report (skipped, not collected, or only failed / errored
     everywhere), or a test file is in none of them, unless allow-listed with a reason; an allow-list
     entry that passed somewhere is stale and also fails. A test id `f::Class` or `f` (class /
-    module-level skip or error) is covered when any test under it passed. Covered = COVERED."""
+    module-level skip or error) is covered when any test under it passed. Covered = COVERED.
+    `tree_ids`: the ids of the current tree; an id of a file with known tree ids that is not among
+    them (a removed test or parametrisation, in an older report) is named and ignored."""
     allow = load_allowlist(allowlist_path)
     passed, failed, skipped, files = set(), {}, {}, set()
     print(f"{'config':<28}{'files':>6}{'pass':>6}{'part':>6}{'skip':>6}{'fail':>6}{'stall':>6}"
@@ -307,7 +327,20 @@ def check_coverage(paths, allowlist_path=ALLOWLIST, all_files=None):
     gone = sorted({t.split("::")[0] for t in seen} - current)   # in an older report, not in the tree
     for f in gone:
         print(f"  NOT IN THE TREE (ignored)  {f}")
-    never = sorted(t for t in seen if not covered(t) and t.split("::")[0] in current)
+    known = {t.split("::")[0] for t in tree_ids or ()}            # files whose current ids are known
+
+    def in_tree(t):
+        f = t.split("::")[0]
+        if f not in current:
+            return False
+        if "::" not in t or f not in known:                      # a whole file, or ids unknown: keep it
+            return True
+        return t in tree_ids or any(i.startswith(t + "::") for i in tree_ids)
+
+    gone_ids = sorted(t for t in seen if t.split("::")[0] in current and not in_tree(t))
+    for t in gone_ids:
+        print(f"  NOT IN THE TREE (ignored)  {t}")
+    never = sorted(t for t in seen if not covered(t) and in_tree(t))
     missing = sorted(current - files)
     stale = sorted(t for t in allow if covered(t))
     bad_never = [t for t in never if t not in allow or t in failed]   # the allow-list excuses skips only
@@ -414,6 +447,11 @@ def main(argv=None):
     ap.add_argument("--max-age-h", type=float, default=30.0)
     ap.add_argument("--check-coverage", nargs="+", metavar="REPORT",
                     help="fail if a test passed in none of these reports")
+    ap.add_argument("--tree-ids", nargs="+", metavar="REPORT",
+                    help="with --check-coverage: reports run on the current tree; their test ids are the "
+                    "tree's, and an id of an older report that is not among them is named and ignored")
+    ap.add_argument("--collect-tree", action="store_true",
+                    help="with --check-coverage: take the tree's test ids from pytest --collect-only")
     ap.add_argument("--allowlist", default=ALLOWLIST,
                     help="tests allowed to skip everywhere, each with a reason")
     ap.add_argument("--devices", type=int, default=0,
@@ -434,7 +472,12 @@ def main(argv=None):
     if a.check_report:
         return check_report(a.report, a.max_age_h)
     if a.check_coverage:
-        return check_coverage(a.check_coverage, a.allowlist)
+        tree = None
+        if a.tree_ids:
+            tree = tree_ids_from_reports(a.tree_ids)
+        elif a.collect_tree:
+            tree = collect_tree_ids()
+        return check_coverage(a.check_coverage, a.allowlist, tree_ids=tree)
 
     if a.merge_reports:
         return merge_reports(a.merge_reports[0], a.merge_reports[1:], a.label)
