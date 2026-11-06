@@ -10,7 +10,7 @@ name: tests
 #   multi-dev2  --tier multidevice --devices 2 --shard I/4   the files that ask for the
 #               device count, on the smallest mesh with a halo exchange
 #   coverage    merges each config's shards and runs --check-coverage over them plus
-#               the committed Raven GPU reports (tests/reports/raven_*.json): it fails
+#               the committed GPU reports (tests/reports/raven_*.json, viper_*.json): it fails
 #               if a test is skipped in every config.
 # Left out of the CPU jobs, with reasons: tests/ci_exclude.json. Failing for a cited code or
 # test bug: tests/ci_known_failures_{cpu8,dev2}.json -- reported KNWN, never skipped, and a listed
@@ -276,7 +276,7 @@ jobs:
           shopt -s nullglob
           # The tree's test ids come from this run's own reports: an id that only an older Raven report
           # has (a removed test or parametrisation) is named and ignored, not judged.
-          python tools/run_tests.py --check-coverage cpu8.json dev2.json amuse/amuse-cpu8.json tests/reports/raven_*.json \
+          python tools/run_tests.py --check-coverage cpu8.json dev2.json amuse/amuse-cpu8.json tests/reports/raven_*.json tests/reports/viper_*.json \
             --tree-ids cpu8.json dev2.json amuse/amuse-cpu8.json
       - uses: actions/upload-artifact@v4
         if: always()

@@ -83,7 +83,7 @@ RAN = ("passed", "failed", "xfailed", "xpassed", "error")       # the test body 
 # not: under xfail_strict (pyproject) a strict xpass is reported "failed", and only a non-strict xfail can
 # xpass, and a non-strict xfail asserts nothing either way. failed / error never count.
 COVERED = ("passed", "xfailed")
-MULTIDEVICE = re.compile(r"device_count\(|len\(jax\.(local_)?devices\(")
+MULTIDEVICE = re.compile(r"device_count\(|len\(jax\.(local_)?devices\(|\(2, 1, 1\)")
 
 
 def _read_costs(path):
@@ -108,7 +108,7 @@ def test_files():
 def select(tier, budget_s):
     """The files of a tier: 'fast' is the cheapest that fit in `budget_s`
     (measured), 'full' is every file, 'slow' is what fast leaves out,
-    'multidevice' the files that ask jax for the device count."""
+    'multidevice' the files that ask jax for the device count or name a split mesh."""
     costs = load_costs()
     files = test_files()
     if tier == "full":
