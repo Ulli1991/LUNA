@@ -83,7 +83,9 @@ RAN = ("passed", "failed", "xfailed", "xpassed", "error")       # the test body 
 # not: under xfail_strict (pyproject) a strict xpass is reported "failed", and only a non-strict xfail can
 # xpass, and a non-strict xfail asserts nothing either way. failed / error never count.
 COVERED = ("passed", "xfailed")
-MULTIDEVICE = re.compile(r"device_count\(|len\(jax\.(local_)?devices\(|\(2, 1, 1\)")
+MULTIDEVICE = re.compile(r"device_count\(|len\(jax\.(local_)?devices\(")
+SPLIT_MESH_FILES = {"tests/test_hydro_accuracy_sedov.py", "tests/test_hydro_accuracy_shocktube.py",
+                    "tests/test_hydro_hard_taylor_green.py"}     # their GPU tests run on a mesh of 2 without asking jax
 
 
 def _read_costs(path):
@@ -108,13 +110,13 @@ def test_files():
 def select(tier, budget_s):
     """The files of a tier: 'fast' is the cheapest that fit in `budget_s`
     (measured), 'full' is every file, 'slow' is what fast leaves out,
-    'multidevice' the files that ask jax for the device count or name a split mesh."""
+    'multidevice' the files that ask jax for the device count, and SPLIT_MESH_FILES."""
     costs = load_costs()
     files = test_files()
     if tier == "full":
         return files
     if tier == "multidevice":
-        return [f for f in files if MULTIDEVICE.search(open(os.path.join(ROOT, f)).read())]
+        return [f for f in files if f in SPLIT_MESH_FILES or MULTIDEVICE.search(open(os.path.join(ROOT, f)).read())]
     cheap, total = [], 0.0
     for f in sorted(files, key=lambda f: costs.get(f, UNKNOWN_COST)):
         c = costs.get(f, UNKNOWN_COST)
