@@ -154,6 +154,7 @@ order, an AthenaK matched-method bound, or published data); docs/CLAIMS.md says 
 | `accuracy_shocktube` | Toro 1-5 at 100-400 cells: L1 of rho, u, p, order, front position; 3D Sod along x, y, z, xy: axes and 1 vs 2 devices alike | Sod L1 rho 0.012 (0.0088) |
 | `accuracy_sedov` | 3D Sedov shock radius and interior profile vs the exact solution, 1 and 2 devices | 1.0 cell (0.81) |
 | `accuracy_smooth` | sound wave, advected sound wave, Gresho, square and sine advection: L1 ladder and order | sound order 1.76-2.16 (1.86) |
+| `accuracy_advection_3d` | density wave along the 3D diagonal, one period: L1, L2, Linf and order vs exact, p and v uniform and axes alike to round-off, 1 vs 2 devices bitwise | minmod N=64 L1 0.049 (0.0372) |
 | `accuracy_kh` | KH growth rate vs compressible linear theory | 0.039 (0.030) |
 | `hard_carbuncle` | Quirk's duct, a strong shock off a wall, 2D Noh; HLL stays planar | duct row spread 5.5e-7 (4.4e-7) |
 | `hard_galilean` | square, Sod, KH boosted by 0-100 c_s: L1 and the resolution penalty | Sod penalty at 100 c_s 11.7 (9.0) |
@@ -170,9 +171,7 @@ that fails is the one naming the bug. A different failure (a run that aborts, a 
 profile) is a plain failure, not an xfail. The suite stays green, and a fix turns the test
 into XPASS, which fails until the marker is removed, so a fix cannot land without someone
 looking at it. Open now: the HLLC carbuncle (`hard_carbuncle`, the HLLC planarity and Noh
-isotropy), a cold ambient around the polytrope whose pressure goes negative first
-(`hard_well_balanced`, GPU, step by step), and the registered `Lane-Emden-3D` IC at n = 1
-(rho = 0 at the surface).
+isotropy) and the registered `Lane-Emden-3D` IC at n = 1 (rho = 0 at the surface).
 
 ### A run that stops short fails
 
@@ -215,8 +214,9 @@ and `jax_platforms` are those of the machine that merged it, not of the runs,
 and the per-file records carry no backend: nothing in a report proves it ran on
 a GPU.
 
-The Raven reports are optional input: `coverage` reads whatever
-`tests/reports/raven_*.json` exist. Without them every GPU-only test counts as
+The GPU reports are optional input: `coverage` reads whatever
+`tests/reports/raven_*.json` and `viper_*.json` exist (viper: the same commands on MI300A,
+labels `viper_gpu1`, `viper_gpu2`). Without them every GPU-only test counts as
 skipped everywhere and the check fails, which is the truth for that tree. The
 committed raven_gpu1 and raven_gpu2 are from ab90619, a commit that is not in
 `main`'s history, at 3600 s per file, and both are failing (`ok: false`;

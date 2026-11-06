@@ -163,6 +163,6 @@ def test_amr_runner_stops_on_negative_pressure(tmp_path, monkeypatch):
         test_problem="Kelvin-Helmholtz", SPATIAL_DIMENSION=2, Nx=32, Ny=32, Lx=1.0, Ly=1.0,
         BOUNDARY=0, t_end=0.05, time_bet_snaps=0.05, AMR=True, amr_block_shape=8,
         amr_levels=1, amr_thresholds=[0.05], output_dir=str(tmp_path / "out"),
-        clear_output_dir=True)
+        clear_output_dir=True, allow_first_order_faces=True)    # else C8 stops it first, at the same bad cell
     with pytest.raises(RuntimeError, match="non-finite time"):
         run(cfg)

@@ -131,9 +131,6 @@ def test_polytrope_drift_from_rest_gpu(n):
     _assert(n, run(n, TIMES, gravity_energy="kick"), GPU_BOUNDS[n])
 
 
-COLD = "open bug: a cold ambient drains to vacuum through the diode faces; its pressure goes negative near 2.85 T_sc"
-
-
 def cold_first_bad(n, t_end=3.0):
     """Step by step to t_end T_sc with a cold ambient: None, or the first step whose state is not finite with rho, P > 0."""
     import jax.numpy as jnp
@@ -159,14 +156,11 @@ def cold_first_bad(n, t_end=3.0):
 
 
 @gpu_only
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=COLD)
 def test_cold_ambient_stays_positive_gpu(n=96):
     """A cold ambient (P = K rho^2 outside the star too) keeps rho, P > 0 and a finite state for 3 crossing times."""
     bad = cold_first_bad(n)
     print(f"MEASURED wb cold n={n} first bad state: {bad}")
-    if bad is not None and not (bad["why"] == "P <= 0" and bad["rho_min"] > 0.0 and 2.0 <= bad["t"] <= 3.0):
-        raise RunAborted(f"cold ambient failed, but not as the open bug (P <= 0 first, at 2-3 T_sc): {bad}")
-    assert bad is None, f"cold ambient: P <= 0 at step {bad['step']}, t = {bad['t']:.3f} T_sc (min P {bad['p_min']:.3e})"
+    assert bad is None, f"cold ambient: {bad}"
 
 
 LANE = "open bug: the registered Lane-Emden-3D IC at n = 1 puts rho = 0 at the surface"

@@ -95,13 +95,25 @@ def exact(d, n, t=T, sub=4):
     return out, r
 
 
+# Minmod has no unphysical Hancock face (audit C8); MC and van Leer do, first order there, the count pinned (FP64,
+# MI300A, equal in the three runs). 2D MC needs preserve_face_states as well: without it a cold inflow cell near the
+# diagonal goes to p < 0 at t = 0.507, N = 256; with it p stays > 0 and every bound holds.
+FACES = {(d, lim, n): (c, c) for (d, lim), row in {
+    (2, 1): {256: 7868, 512: 32316, 1024: 130702, 2048: 524202},
+    (2, 2): {256: 4432, 512: 18224, 1024: 73782, 2048: 296138},
+    (3, 1): {64: 4242, 128: 35883, 256: 300579},
+    (3, 2): {64: 1908, 128: 18714, 256: 165294}}.items() for n, c in row.items()}
+
+
 def run(d, n, limiter=0, solver="hllc", t=T, mesh_shape=None):
     """U at t on n^d cells (evolve checks mass and energy to round-off) and U at 0."""
     cfg = accuracy_cfg(test_problem=PROBLEM[d], SPATIAL_DIMENSION=d, Nx=n, Ny=n, Nz=n if d == 3 else 1,
                        Lx=L, Ly=L, Lz=L if d == 3 else 1.0, BOUNDARY=2, gamma=G, LIMITER=limiter,
-                       riemann_solver=solver)
+                       riemann_solver=solver, allow_first_order_faces=limiter != 0,
+                       preserve_face_states=(d, limiter) == (2, 1))
     U0_ = initial(d, n)
-    return evolve(cfg, U0_, t, mesh_shape=mesh_shape)[0], U0_
+    faces = FACES[d, limiter, n] if limiter != 0 else None
+    return evolve(cfg, U0_, t, mesh_shape=mesh_shape, faces=faces)[0], U0_
 
 
 def directions(d):
